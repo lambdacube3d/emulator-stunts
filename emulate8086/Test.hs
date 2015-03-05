@@ -1,6 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 import Data.Word
 import Data.Int
+import Data.Maybe
+import Data.Char
 import Data.Bits hiding (bit)
 import Data.IORef
 import qualified Data.ByteString as BS
@@ -9,7 +11,7 @@ import qualified Data.Vector as V
 import Control.Applicative
 --import Control.Arrow
 import Control.Monad.State
-import Control.Monad.Error
+import Control.Monad.Except
 import Control.Lens as Lens
 import Control.Concurrent
 import Control.Concurrent.MVar
@@ -20,16 +22,22 @@ import System.IO.Unsafe
 
 import Emulate
 import DosBox
+import Word1
+import Helper
 import Parse (getLabels)
 
 --------------------------------------------------------------------------------
-testCases =
+
+testHelp n = unsafePerformIO $ loadTest <$> BS.readFile ("tests/" ++ n ++ ".bin")
+
+-- http://orbides.1gb.ru/80186_tests.zip
+testTest = mapM_ testThis
   [ "add"
   , "bcdcnv"
   , "bitwise"
   , "cmpneg"
   , "control"
---  , "datatrnf"
+  , "datatrnf"
   , "div"
   , "interrupt"
   , "jmpmov"
@@ -44,51 +52,90 @@ testCases =
   , "sub"
   ]
 
-testHelp n = unsafePerformIO $ loadTest <$> BS.readFile ("tests/" ++ n ++ ".bin")
+testTest' = mapM_ testThis'
+  [ "add"
+  , "bcdcnv"
+  , "bitwise"
+  , "cmpneg"
+  , "control"
+--  , "datatrnf"
+{-  , "div"
+  , "interrupt"
+-}
+  , "jmpmov"
+{-
+  , "jump1"
+  , "jump2"
+-}  , "mul"
+--  , "rep"
+  , "rotate"
+---  , "segpr"
+  , "shifts"
+--  , "strings"
+  , "sub"
+  ]
 
--- http://orbides.1gb.ru/80186_tests.zip
-testTest = forM_ testCases $ testThis
+testThis n = testCommon "new"
+testThis' = testCommon "dosbox"
 
-testThis n = do
+showTest n = loadTest <$> BS.readFile ("tests/" ++ n ++ ".bin")
+
+testCommon pre n = do
   putStr $ "Test " ++ n ++ ": "
   m <- mkSteps . loadTest <$> BS.readFile ("tests/" ++ n ++ ".bin")
   case m of
-    (Halt,x) -> do
+    (CleanHalt,x) -> do
       res <- case n of
           "jmpmov" -> return $ BS.pack [0x01, 0x40]
-          _ -> BS.readFile $ "tests/res_" ++ n ++ ".bin"
-      let v = x ^. heap
-      putStrLn $ unwords [showHex' 4 i ++ ":" ++ showHex' 2 a ++ "/" ++ showA (showHex' 2 <$> b) | (i, a) <- zip [0..] (BS.unpack res), let b = v ^. byteAt' (i + 0), not $ similar a b]
-      when (n == "jmpmov" && x ^. ips /= 0xf400d) $ putStrLn $ "jmpmov failed " ++ showHex' 5 (x ^. ips)
+          _ -> BS.readFile $ "tests/" ++ pre ++ "_res_" ++ n ++ ".bin"
+      let v = x ^. heap . memSlice 0 (BS.length res ^. byte) . memBitChunks
+      putStrLn $ unwords $ concat $ mapWithPositions (notSimilar $ toRom res) v
+      when (n == "jmpmov" && x ^. ips /= Defined (0xf400d ^. byte)) $ putStrLn $ "jmpmov failed " ++ showAddr (fromDefined $ x ^. ips)
     (h,_) -> putStrLn $ "Error " ++ show h
 
---similar a (Ann (High (Annot "flags")) b) = (a .&. 0x0f) == (b .&. 0x0f)
-similar a (Ann (Low (Annot "flags")) b) = (a .&. 0xef) == (b .&. 0xef)
-similar a (Ann _ b) = a == b
---similar _ x = error $ "similar: " ++ show x
+takes :: [Int] -> [a] -> [[a]]
+takes [] _ = []
+takes (i:is) x = take i x: takes is (drop i x)
+
+notSimilar :: MemPiece -> Int -> Int -> BitChunk (Defined Word) -> [String]
+notSimilar _ _ _ (BitChunk _ Undefined) = []
+notSimilar ref off l a
+    | a == b   = []
+    | otherwise = [ showAddr off ++ ":" ++ show a ++ "/" ++ show b ]
+  where
+    b :: BitChunk (Defined Word)
+    b = bitChunk 0 l $ fromJust $ ref ^? memSlice off l . memBitChunks . bitChunks
+
+branchTest = loadCom <$> BS.readFile "tests/branch.com"
+main' = do
+    hSetBuffering stdout NoBuffering
+    print . fst . mkSteps =<< eaTest
+eaTest = loadCom <$> BS.readFile "tests/testea.com"
 
 comTest = unsafePerformIO $ loadCom <$> BS.readFile "bushes.com"
 
+--main = testTest'
 main = do
     vid <- newEmptyMVar
     hSetBuffering stdout NoBuffering
     args <- getArgs
+    initState <- initStateIO
     forkIO $ 
 {-
-            writeIORef st $ flip execState x $ runErrorT $ do
+            writeIORef st $ flip execState x $ runExceptT $ do
                 replicateM_ 10000 $ cachedStep
                 clearHist
 -}
 --            putStrLn "."
 
-        print $ config . videoMVar .~ vid $ config . disassStart .~ f args $ config . verboseLevel .~ 1 $ config . termLength .~ 1000 $ steps .~ 2000000 $ initState
+        print $ config . videoMVar .~ vid $ config . disassStart .~ f args $ config . verboseLevel .~ 1 $ config . termLength .~ 10000 $ steps .~ 20000000 $ initState
     drawWithFrameBuffer (takeMVar vid) $ return ()
 
   where
     f [i] = read i
     f _ = 0
 
-
+{-
 comTestMain = do
     st <- loadCom <$> BS.readFile "bushes.com" >>= newIORef
 {-
@@ -99,42 +146,45 @@ comTestMain = do
 -}
     let framebuffer = do
             x <- readIORef st
-            let gs = x ^. heap16 0x6 . ann . paragraph
+            let gs = x ^. heap16 0x6 . coerceS' "149" . paragraph
                 v = x ^. heap
 --            assert "err" $ V.length v == 320 * 200
-            return $ \x y -> v ^. byteAt (gs + 320 * y + x) 
+            return $ \x y -> fromDefined $ v ^. byteAt (gs + 320 * y + x) 
     drawWithFrameBuffer framebuffer $ do
         x <- readIORef st
-        writeIORef st $ flip execState x $ runErrorT $ do
+        writeIORef st $ flip execState x $ runExceptT $ do
             replicateM_ 10000 $ cachedStep
             clearHist
         putStrLn "."
-
+-}
 --------------------------------------------------------------------------------
 
-loadSegment = 0x100 -- can be arbitrary > 0
+loadSegment = 0x20e -- can be arbitrary?
 
-initState = unsafePerformIO $ do
+initStateIO = do
     l <- getLabels
-    loadExe l loadSegment <$> BS.readFile "../restunts/stunts/game.exe"
+    is <- read <$> readFile "interrupts.txt"
+    (config . counter' .~ (is ++ iterate (+29600) (last is))) . loadExe l loadSegment <$> BS.readFile "../restunts/stunts/game.exe"
 
-eval_ = flip evalState initState . runErrorT
-exec = flip execState initState . runErrorT
+initState = unsafePerformIO initStateIO
 
+eval_ = flip evalState initState . runExceptT
+exec = flip execState initState . runExceptT
+{-
 eval :: Machine () -> Word16
 eval s = either f undefined v
   where
-    f Halt = s' ^. ax
+    f CleanHalt = fromDefined $ s' ^. ax
     f e = error $ show e
-    (v, s') = flip runState initState $ runErrorT $ s >> forever cachedStep --(void step_)
-
+    (v, s') = flip runState initState $ runExceptT $ s >> forever cachedStep --(void step_)
+-}
 call :: String -> Machine ()
 call name = do
     let Just (seg, ipInit) = lookup name symbols
     push $ noAnn 0x0000
     push $ noAnn 0x0000
-    ds .= dataSegment
-    cs .= segments V.! seg
+    ds .= Defined dataSegment
+    cs .= Defined (segments V.! seg)
     ip .= ipInit
   where
     dataSegment = 0x2b77 + loadSegment
@@ -154,14 +204,14 @@ call name = do
 
 --------------------------------------------------------------------------------
 
-fromIntegral' = fromIntegral . asSigned
-
+fromIntegral'' = fromIntegral . asSigned
+{-
 tests = do
     quickCheck $ \i -> eval (call "sin" @. (i :: Word16)) == sin_fast i
     quickCheck $ \i -> eval (call "cos" @. (i :: Word16)) == cos_fast i
 
-    quickCheck $ \i j -> eval (call "polarAngle" @. (i :: Word16) @. (j :: Word16)) == fromIntegral (polarAngle (fromIntegral' i) (fromIntegral' j))
-    quickCheck $ \i j -> eval (call "polarRadius2D" @. (i :: Word16) @. (j :: Word16)) == fromIntegral (polarRadius2D (fromIntegral' i) (fromIntegral' j))
+    quickCheck $ \i j -> eval (call "polarAngle" @. (i :: Word16) @. (j :: Word16)) == fromIntegral (polarAngle (fromIntegral'' i) (fromIntegral'' j))
+    quickCheck $ \i j -> eval (call "polarRadius2D" @. (i :: Word16) @. (j :: Word16)) == fromIntegral (polarRadius2D (fromIntegral'' i) (fromIntegral'' j))
 --    q3d
 {-
 q3d = quickCheck $ \i_ j_ k_ -> let
@@ -175,7 +225,7 @@ q3d = quickCheck $ \i_ j_ k_ -> let
 qrp = quickCheck $ \i j ->
         eval (call "rectComparePoint" @. (V.fromList [i,j] :: Vect)) == 1
 -}
-
+-}
 ------------------------
 
 sintab :: V.Vector Word16
@@ -237,8 +287,8 @@ polarRadius2D z y = g $ f $ abs $ polarAngle z y
     f r | r >= 0x100 = -(r - 0x200)
         | otherwise = r
 
-    g r | r <= 0x80 = (abs y `shiftL` 14) `div` fromIntegral' (cos_fast $ fromIntegral r)
-        | otherwise = (abs z `shiftL` 14) `div` fromIntegral' (sin_fast $ fromIntegral r)
+    g r | r <= 0x80 = (abs y `shiftL` 14) `div` fromIntegral'' (cos_fast $ fromIntegral r)
+        | otherwise = (abs z `shiftL` 14) `div` fromIntegral'' (sin_fast $ fromIntegral r)
 
 polarRadius3D :: V.Vector Int -> Int
 polarRadius3D vec = polarRadius2D (polarRadius2D (vec V.! 0) (vec V.! 1)) (vec V.! 2)

@@ -1,3 +1,4 @@
+{-# LANGUAGE PackageImports #-}
 module DosBox
     ( drawWithFrameBuffer
     ) where
@@ -10,7 +11,7 @@ import Data.Vector.Storable as SVec
 import Control.Monad as Prelude
 import Graphics.Rendering.OpenGL.Raw.Core32
 import Graphics.Rendering.OpenGL.Raw.ARB.Compatibility
-import Graphics.UI.GLFW as GLFW
+import "GLFW-b" Graphics.UI.GLFW as GLFW
 
 drawWithFrameBuffer :: IO (Int -> Int -> Word8) -> IO () -> IO ()
 drawWithFrameBuffer framebuffer draw = do
