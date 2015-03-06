@@ -527,11 +527,11 @@ data Config_ = Config_
 $(makeLenses ''Config_)
 
 defConfig = Config_
-    { _numOfDisasmLines = 30
+    { _numOfDisasmLines = 3
     , _disassStart  = 0
     , _verboseLevel = 2
     , _termLength   = 149
-    , _instPerSec   = 1000000
+    , _instPerSec   = 710000
     , _videoMVar    = undefined --return $ \_ _ -> 0
 
     , _stackTrace   = []
@@ -570,7 +570,7 @@ emptyState = MachineState
     , _labels   = IM.empty
     , _files    = IM.empty
     , _dta      = 0
-    , _retrace  = cycle [1,9,0,8]
+    , _retrace  = cycle [1,9,0,8] --     [1,0,0,0,0,0,0,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0]
     , _intMask  = 0xf8
     }
 
@@ -585,8 +585,9 @@ setCounter = do
     config . counter .= Just (v `div` 24)
 
 getRetrace = do
+    x <- head <$> use retrace
     retrace %= tail
-    head <$> use retrace
+    return x
 
 
 trace_ :: String -> Machine ()
@@ -933,7 +934,7 @@ askCounter = do
             return False
       (c:cc) -> do
         ns <- use $ config . stepsCounter
-        if c == ns then do
+        if c <= ns then do
             config . counter' %= tail
             return True
           else do
@@ -941,8 +942,13 @@ askCounter = do
 
 hijack :: MachineState -> MachineState
 hijack s = flip execState s $ runExceptT{-!!!-} $ do
-    cc <- askCounter
-    when cc timerInt
+    mask <- use intMask
+    when (not (mask ^. bit 0)) $ do
+        cc <- askCounter
+        when cc $ do
+            trace_ "timer"
+            interrupt_ 0x08
+
 
 mkStep
   :: MachineState
@@ -997,13 +1003,17 @@ cachedStep = do
 showCode q s = showCodeH q $ hijack s
 {-
 showCodeHC :: Queue -> MachineState -> [String]
-showCodeHC q s = case IM.lookup (s ^. ips) (s ^. cache) of
-    Just m -> case flip runState s $ runExceptT m of
-        (Left e, s) -> showErr q s e
-        (Right (), s) -> 
-    _ -> 
+showCodeHC q s = case IM.lookup addr (s ^. cache) of
+    Just f -> case f q s of (str, q, s) -> str ++ showCode q s
+    Nothing -> showCode q' (s' & cache %~ IM.insert addr f)
   where
-    collect q st
+    Defined addr = s ^. ips
+
+    (f, (q', s')) = collect q s
+
+    collect q s =
+
+        showCode_ q s
 
     collect = do
         md <- fetchInstr
@@ -1814,11 +1824,6 @@ iret = do
     fl <- popF 16
     interruptF .= (fl ^. from memPieceS . interruptF')
     return () -- >>= (flags' .=)
-
-timerInt = do
-    trace_ "timer"
-    mask <- use intMask
-    when (not (mask ^. bit 0)) $ interrupt_ 0x08
 
 {-# NOINLINE unsafePerformIO' #-}
 unsafePerformIO' :: Monad m => IO a -> m a
