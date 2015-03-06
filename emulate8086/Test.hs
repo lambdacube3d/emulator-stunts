@@ -27,7 +27,7 @@ import Helper
 import Parse (getLabels)
 
 --------------------------------------------------------------------------------
-
+{-
 testHelp n = unsafePerformIO $ loadTest <$> BS.readFile ("tests/" ++ n ++ ".bin")
 
 -- http://orbides.1gb.ru/80186_tests.zip
@@ -113,7 +113,7 @@ main' = do
 eaTest = loadCom <$> BS.readFile "tests/testea.com"
 
 comTest = unsafePerformIO $ loadCom <$> BS.readFile "bushes.com"
-
+-}
 --main = testTest'
 main = do
     vid <- newEmptyMVar

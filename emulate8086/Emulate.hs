@@ -60,7 +60,6 @@ import qualified Edsl
 
 data MemPiece
     = MemPacked (F.FingerTree BitSize MemPiece)
-    | MemSlice !Int{-offset-} !Int{-length-} (Hashed MemPiece)
     | MemGroup GroupInfo MemPiece
 
     | MemBits !Int{-bitlength-} !Word
@@ -94,7 +93,6 @@ instance F.Measured BitSize ReservedInfo where
 instance F.Measured BitSize MemPiece where
     measure = \case
         MemPacked x     -> F.measure x
-        MemSlice _ l _  -> Sum l
         MemTimes i x    -> Sum $ i * measure x
         MemGroup _ x    -> F.measure x
         MemBits i _     -> Sum i
@@ -108,8 +106,8 @@ instance Hash MemPiece where
 
 --------------
 
-undef = Defined 0 --Undefined
-undefBool = Defined False
+undef = 0
+undefBool = False
 
 -- TODO: revise this
 joinMP :: MemPiece -> MemPiece -> F.FingerTree BitSize MemPiece
@@ -195,54 +193,26 @@ memPacked a = case F.viewl a of
 flattenMemPiece unGroup unMemSlice unMemTimes = \case
     MemPacked x      -> concatMap (flattenMemPiece unGroup unMemSlice unMemTimes) $ x ^. fingerTreeList
     MemGroup g x     -> unGroup (flattenMemPiece unGroup unMemSlice unMemTimes) g x
-    MemSlice off l x -> unMemSlice (flattenMemPiece unGroup unMemSlice unMemTimes) off l x
     MemTimes i x     -> unMemTimes (flattenMemPiece unGroup unMemSlice unMemTimes) i x
     x -> [x]
 
 unGroup f _ x = f x
 keepGroup _ gr f = [MemGroup gr f]
-keepMemSlice _ off l x = [MemSlice off l x]
 keepMemTimes _ i x = [MemTimes i x]
 unMemTimes f i x = concat $ replicate i $ f x
 
-showMemPiece :: MemPiece -> String
-showMemPiece = -- showAddr . measure 
-            f -- . flattenMemPiece unGroup keepMemSlice keepMemTimes
-  where
-    f (MemTimes i x) = show i ++ "x{" ++ showMemPiece x ++ "}"
-    f (MemBits i x) = "" -- show i ++ "x{" ++ showMemPiece x ++ "}"
-    f (MemRam s) = "Ram_" ++ showHex' 5 (S.length s)
-    f (MemRom s) = "Rom_" ++ showHex' 5 (BS.length s)
-    f (MemReserved i) = "res_" ++ showAddr (measure i)
-    f (MemUndefined i) = "undef_" ++ showAddr i
-    f (MemGroup _ x) = "{" ++ showMemPiece x ++ "}"
-    f (MemPacked x) = "<" ++ intercalate "|" (map f $ x ^. fingerTreeList) ++ ">"
-{-
-showMemPiece = intercalate "|" . f . flattenFRam'
-  where
-    f ps = zipWith g (scanl (+) 0 $ map measure ps) ps
-    g addr p = case p of
-        MemRam s -> "Rom " ++ showAddr addr ++ "-" ++ showAddr (addr + measure p)
-        MemTimes s MemFree -> "Free " ++ showAddr addr ++ "-" ++ showAddr (addr + measure p)
-        MemTimes s MemUninitialized -> "Uninit " ++ showAddr addr ++ "-" ++ showAddr (addr + measure p)
-        MemFilled s b -> "Filled " ++ showHex' 2 b ++ " " ++ showAddr addr ++ "-" ++ showAddr (addr + measure p)
-        MemAllocated f -> "Allocated{" ++ showMemPiece f ++ "}"
-        _ -> ""
--}
 
-memBitChunks :: Iso' MemPiece (BitChunks (Defined Word))
-memBitChunks = iso (concatMap f . flattenMemPiece unGroup keepMemSlice unMemTimes) g
+memBitChunks :: Iso' MemPiece (BitChunks (Word))
+memBitChunks = iso (concatMap f . flattenMemPiece unGroup () unMemTimes) g
   where
     g x = mconcat $ map gf x
-    gf (BitChunk 8 (Defined s)) = MemRam $ S.singleton $ fromIntegral s
-    gf (BitChunk 16 (Defined s)) = MemRam $ S.fromList [fromIntegral s, fromIntegral (s `shiftR` 8)]
-    gf (BitChunk 32 (Defined s)) = MemRam $ S.fromList [fromIntegral s, fromIntegral (s `shiftR` 8), fromIntegral (s `shiftR` 16), fromIntegral (s `shiftR` 24)]
-    gf (BitChunk n (Defined w)) = memBits 0 n w
-    gf (BitChunk n Undefined) = MemUndefined n
+    gf (BitChunk 8 ( s)) = MemRam $ S.singleton $ fromIntegral s
+    gf (BitChunk 16 ( s)) = MemRam $ S.fromList [fromIntegral s, fromIntegral (s `shiftR` 8)]
+    gf (BitChunk 32 ( s)) = MemRam $ S.fromList [fromIntegral s, fromIntegral (s `shiftR` 8), fromIntegral (s `shiftR` 16), fromIntegral (s `shiftR` 24)]
+    gf (BitChunk n ( w)) = memBits 0 n w
 
     f = \case
-        MemSlice off l x -> takeChunks l $ dropChunks off $ f (x ^. from hashed)
-        MemBits i x -> [BitChunk i $ Defined x]
+        MemBits i x -> [BitChunk i $ x]
         MemRom bs -> [bitChunk 0 8 $ fromIntegral x | x <- BS.unpack bs]
         MemRam bs -> [bitChunk 0 8 $ fromIntegral x | x <- bs ^. seqList]
         MemReserved i -> undefineds $ measure i
@@ -255,8 +225,7 @@ memBitChunks = iso (concatMap f . flattenMemPiece unGroup keepMemSlice unMemTime
 
 showBits :: String -> MemPiece -> String
 showBits mask = zipWith f mask . reverse . (^. memBitChunks . convChunks) where
-    f _ (BitChunk 1 Undefined) = '?'
-    f c (BitChunk 1 (Defined (Word1 x))) = case c of
+    f c (BitChunk 1 ( (Word1 x))) = case c of
         '_' -> head . show . fromEnum $ x
         _ -> (if x then toUpper else toLower) c
 
@@ -274,19 +243,19 @@ type MemPiece8  = MemPieceS Word8
 type MemPiece16 = MemPieceS Word16
 type MemPiece32 = MemPieceS Word32
 
-def :: MonadError Halt m => Defined a -> m a
-def = defined (throwError $ Err $ "not defined") return
+def :: MonadError Halt m => a -> m a
+def = return
 
-coerceS_ :: forall a . WordX a => Prism' (MemPieceS a) (Defined a)
+coerceS_ :: forall a . WordX a => Prism' (MemPieceS a) (a)
 coerceS_ = memPieceS . memBitChunks . bitChunks
 
 coerceS' :: WordX a => String -> Iso' (MemPieceS a) a
-coerceS' e = coerceS_' . iso (fromDefined' e) Defined
+coerceS' e = coerceS_'
 
-coerceS'' x = defined (throwError $ Err "coerceS''") return $ x ^. coerceS_' 
+coerceS'' x = x ^. coerceS_' 
 
 -- is this OK?
-coerceS_' :: forall a . WordX a => Iso' (MemPieceS a) (Defined a)
+coerceS_' :: forall a . WordX a => Iso' (MemPieceS a) (a)
 coerceS_' = prismToIso undef coerceS_
 
 
@@ -294,9 +263,9 @@ instance (WordX a) => Eq (MemPieceS a) where
     a == b = fromJust $ liftA2 (==) (a ^? coerceS_) (b ^? coerceS_)
 
 fmap' :: (WordX a, WordX b) => (a -> b) -> MemPieceS a -> MemPieceS b
-fmap' f =  (^. re coerceS_) . fmap f . fromJust . (^? coerceS_)
+fmap' f =  (^. re coerceS_) . f . fromJust . (^? coerceS_)
 
-fromRom :: MemPiece -> [Defined Word8]
+fromRom :: MemPiece -> [Word8]
 fromRom = map f . (^. memBitChunks . convChunks)
   where
     f (BitChunk 8 x) = x
@@ -309,19 +278,16 @@ annMap :: (WordX a, WordX b) => BS.ByteString -> (a -> b) -> MemPieceS a -> MemP
 annMap _ = fmap'
 
 noAnn :: (WordX a) => a -> MemPieceS a
-noAnn = (^. re coerceS_) . Defined -- MemPieceS NoAnnot
+noAnn = (^. re coerceS_) -- MemPieceS NoAnnot
 
 (@:) :: (WordX a) => BS.ByteString -> a -> MemPieceS a
-b @: x = Defined x ^. re coerceS_ --MemPieceS (Annot b) x
+b @: x = x ^. re coerceS_ --MemPieceS (Annot b) x
 infix 5 @:
-
-showA :: (WordX a) => (a -> String) -> MemPieceS a -> String
-showA f s = maybe "?A" (defined (showBits (repeat '_') $ s ^. memPieceS) f) $ s ^? coerceS_
 
 allocateMem :: Int -> MemPiece -> (Int, MemPiece)
 allocateMem req' f = (r + 16 ^. byte, f & memSlice r (req' + 16 ^. byte) .~ memAllocated (memUndefined' req'))
   where
-    l = flattenMemPiece keepGroup keepMemSlice keepMemTimes f
+    l = flattenMemPiece keepGroup () keepMemTimes f
     r = head $ concat $ mapWithPositions g l
     g addr _ (MemUndefined s) | s' >= (req' + 16 ^. byte) = [addr']
       where
@@ -364,9 +330,7 @@ high' = memPieceS . memSlice 8 8 . from memPieceS
 memSlice :: Int -> Int -> Lens' MemPiece MemPiece
 memSlice 0 l tr mp | l == measure mp = tr mp
 memSlice off l tr mp
-    | off + l > measure mp || l < 0 || off < 0 = error $ unwords ["memSlice ", showAddr off, showAddr l, showMemPiece mp]
---writeMemPiece off p (MemPacked f) = memComposed $ flip execState f $ runErrorT $ do
---    when (off + l > getSum (F.measure f)) $ throwError $ Err "end of mem"
+    | off + l > measure mp || l < 0 || off < 0 = error "memSlice "
 memSlice _ 0 tr mp = tr mempty <&> const mp  -- ??
 memSlice off l tr mp = case mp of
     --             |  a  | b0|bs| c0| cs |
@@ -433,26 +397,26 @@ wordToFlags w = MemPieceS $ mconcat
 
 -----------------------
 
-bytesAt :: Int -> Int -> Lens' MemPiece [Defined Word8]
+bytesAt :: Int -> Int -> Lens' MemPiece [Word8]
 bytesAt i j = memSlice (checkAlign 3 i) (j ^. byte)
-    . iso (f . (^. memBitChunks . convChunks)) (toRam . map (defined (error "bytesAt") id) . pad (error "pad") j . take j)
+    . iso (f . (^. memBitChunks . convChunks)) (toRam . pad (error "pad") j . take j)
   where
     f = map $ \(BitChunk 8 x) -> x
     g = map $ BitChunk 8
 
-byteAt :: Int -> Lens' MemPiece (Defined Word8)
+byteAt :: Int -> Lens' MemPiece (Word8)
 byteAt i = byteAt' i . coerceS_'
 
 byteAt' :: Int -> Lens' MemPiece MemPiece8
 byteAt' i = memSlice (checkAlign 3 i) 8 . from memPieceS
 
-wordAt :: Int -> Lens' MemPiece (Defined Word16)
+wordAt :: Int -> Lens' MemPiece ( Word16)
 wordAt i = wordAt' i . coerceS_'
 
 wordAt' :: Int -> Lens' MemPiece MemPiece16
 wordAt' i = memSlice (checkAlign 3 i) 16 . from memPieceS
 
-dwordAt :: Int -> Lens' MemPiece (Defined Word32)
+dwordAt :: Int -> Lens' MemPiece (Word32)
 dwordAt i = dwordAt' i . coerceS_'
 
 dwordAt' :: Int -> Lens' MemPiece MemPiece32
@@ -462,30 +426,8 @@ dwordAt' i = memSlice (checkAlign 3 i) 32 . from memPieceS
 -- size in bits
 type Size = Int
 
-data Key
-    = KReg Size Int
-    | Flag Char
-    | Flags
-    | Heap Size Int
-        deriving (Eq, Ord)
-
 reg8names = ["al","ah","dl","dh","bl","bh","cl","ch"]
 reg16names = ["ax","dx","bx","cx", "si","di", "cs","ss","ds","es", "ip","sp","bp"]
-
-combineKey (Heap s i: ks) = run (i + s) ks
-  where
-    run i (Heap s' i': ks) | i==i' && s==s' = run (i + s) ks
-    run i' ks = Heap (i'-i) i: combineKey ks
-combineKey (k:ks) = k: combineKey ks
-combineKey [] = []
-
-instance Show Key where
-    show (Heap _ i) = "[" ++ showAddr i ++ "]"
-    show (Flag c) = [c]
-    show Flags = "flags"
-    show (KReg 8 i) = reg8names !! (i ^. from byte)
-    show (KReg 16 i) = reg16names !! ((i ^. from byte) `div` 2)
-    show (KReg 32 0) = "dx:ax"
 
 data Config_ = Config_
     { _numOfDisasmLines :: Int
@@ -495,7 +437,6 @@ data Config_ = Config_
     , _videoMVar        :: MVar (Int -> Int -> Word8)
     , _instPerSec       :: Int
 
-    , _stackTrace       :: [Int]
     , _stepsCounter     :: Int
 
     , _counter          :: Maybe Int -- counter to count down
@@ -513,7 +454,6 @@ defConfig = Config_
     , _instPerSec   = 710000
     , _videoMVar    = undefined --return $ \_ _ -> 0
 
-    , _stackTrace   = []
     , _stepsCounter = 0
 
     , _counter = Nothing
@@ -526,7 +466,6 @@ data MachineState = MachineState
     , _regs     :: MemPiece
     , _heap     :: MemPiece
 
-    , _hist     :: Set.Set Key
     , _traceQ   :: [String]
     , _config   :: Config_
     , _cache    :: IM.IntMap (Machine ())
@@ -542,7 +481,6 @@ emptyState = MachineState
     , _regs     = toRam $ replicate (2*26) 0 --  mconcat $ replicate 26 $ memBits 0 16 0
     , _heap     = mconcat []
 
-    , _hist     = Set.empty
     , _traceQ   = []
     , _config   = defConfig
     , _cache    = IM.empty
@@ -575,39 +513,34 @@ trace_ s = traceQ %= (s:)
 steps = config . numOfDisasmLines
 
 clearHist = do
-    hi <- use hist
-    hist .= Set.empty
     h <- use traceQ
     traceQ .= []
-    return (hi, intercalate "; " $ reverse h)
-
-addHist :: Key -> MachinePart a -> MachinePart a
-addHist sh k = lens (^. k) $ \s a -> hist %~ Set.insert sh $ set k a s
+    return (intercalate "; " $ reverse h)
 
 [overflowF',directionF',interruptF',signF',zeroF',adjustF',parityF',carryF'] =
-    [ memPieceS . memSlice i 1 . from memPieceS . coerceS_' . mapping bit0  :: Lens' Flags (Defined Bool)
+    [ memPieceS . memSlice i 1 . from memPieceS . coerceS_' . bit0  :: Lens' Flags (Bool)
     | i <- [11,10,9,7,6,4,2,0]
     ]
 
 [overflowF,directionF,interruptF,signF,zeroF,adjustF,parityF,carryF] =
-    [ addHist (Flag $ reverse "____oditsz_a_p_c" !! i) $ flags . memPieceS . memSlice i 1 . from memPieceS . coerceS_' . mapping bit0  :: MachinePart (Defined Bool)
+    [ flags . memPieceS . memSlice i 1 . from memPieceS . coerceS_' . bit0  :: MachinePart (Bool)
     | i <- [11,10,9,7,6,4,2,0]
     ]
 
 reg16Lenses@[ax,dx,bx,cx, si,di, cs,ss,ds,es, ip,sp,bp]
-    = [ addHist (KReg 16 i) $ regs . wordAt i | i <- map (^. byte) [0,2..24] ]
+    = [ regs . wordAt i | i <- map (^. byte) [0,2..24] ]
 reg8Lenses@[al,ah,dl,dh,bl,bh,cl,ch]
-    = [ addHist (KReg 8 i) $ regs . byteAt i | i <- map (^. byte) [0..7] ]
-dxax = addHist (KReg 32 0) $ regs . dwordAt' 0
+    = [ regs . byteAt i | i <- map (^. byte) [0..7] ]
+dxax = regs . dwordAt' 0
 
 -- experimental
 reg16Lenses'@[ax',dx',bx',cx', si',di', cs',ss',ds',es', ip',sp',bp']
-    = [ addHist (KReg 16 i) $ regs . wordAt' i | i <- map (^. byte) [0,2..24] ]
+    = [ regs . wordAt' i | i <- map (^. byte) [0,2..24] ]
 [al',ah',dl',dh',bl',bh',cl',ch']
-    = [ addHist (KReg 8 i) $ regs . byteAt' i | i <- map (^. byte) [0..7] ]
+    = [ regs . byteAt' i | i <- map (^. byte) [0..7] ]
 
-segAddr_ :: MachinePart (Defined Word16) -> Getter MachineState (Defined Word16) -> Getter MachineState (Defined Int)
-segAddr_ seg off = to $ \s -> liftA2 segAddr (s ^. seg) (s ^. off)
+segAddr_ :: MachinePart (Word16) -> Getter MachineState ( Word16) -> Getter MachineState (Int)
+segAddr_ seg off = to $ \s -> segAddr (s ^. seg) (s ^. off)
 
 ips = segAddr_ cs ip
 sps = segAddr_ ss sp
@@ -615,244 +548,23 @@ sps = segAddr_ ss sp
 xx :: MachinePart (MemPiece16)
 xx = lens (const $ error "xx") $ \s _ -> s
 
-fs, gs :: MachinePart (Defined Word16)
-fs = lens (const $ Defined 0) $ \s _ -> s
-gs = lens (const $ Defined 0) $ \s _ -> s
+fs, gs :: MachinePart (Word16)
+fs = lens (const $ 0) $ \s _ -> s
+gs = lens (const $ 0) $ \s _ -> s
 
 
 flags = flags_ . memPieceS . iso id ((memSlice 12 4 .~ memUndefined 4) . (memSlice 1 1 .~ memBits 0 1 1) . (memSlice 3 1 .~ memBits 0 1 0) . (memSlice 5 1 .~ memBits 0 1 0)) . from memPieceS
 
-heap8  i = addHist (Heap 8 i) $ heap . byteAt' i
-heap16 i = addHist (Heap 16 i) $ heap . wordAt' i
+heap8  i = heap . byteAt' i
+heap16 i = heap . wordAt' i
 
 ----------------------
 
 instance Show MachineState where
-    show s = intercalate "\n" $
-        [ "  Flags: " ++ showFlags (s ^. flags)
-        , ("  "++) $ unwords $ zipWith showReg ["AX","BX","CX","DX"] [ax,bx,cx,dx]
-        , ("  "++) $ unwords $ zipWith showReg ["SI","DI","IP","SP","BP"] [si,di,ip,sp,bp]
-        , ("  "++) $ unwords $ zipWith showReg ["DS","ES","CS","SS"] [ds,es,cs,ss]
-{- TODO
-        , (\(a,b)->a ++ "\n" ++ b) $ (("Stack: " ++) . unwords) *** (("       " ++) . unwords) $ unzip
-            $ take 20
-            $ zip (map (showHex' 4) [s ^. sp, s ^. sp + 2..0xffff] ++ repeat "####")
-                    (take 20 . map ff . everyNth 2 $ map (maybe "##" (showHex' 2. (^. coerceS)) . (readByte_ heap_)) [s ^. sps ..])
--}
-        , "Code: "
-        ] ++ map (take $ s ^. config . termLength) (takeCont [] ["..."] (s ^. config . numOfDisasmLines) $ showCode (initQueue s) s)
-      where
-        ff [a,b] = b ++ a
-        heap_ = s ^. heap
-        showReg c k = c ++ ":" ++ showHex' 4 (s ^. k)
-
-        -- TODO: elim this
-        takeCont :: [a] -> [a] -> Int -> [a] -> [a]
-        takeCont as bs n xs = take n xs ++ f (drop n xs) where
-            f [] = as
-            f _  = bs
-
-
-
-infixr 5 .++, +.+
-
-"" .++ b = b
-a .++ b = a ++ " " ++ b
-
-b +.+ "" = b
-"" +.+ b = b
-a +.+ b = a ++ "+" ++ b
-
-showInst s Metadata{mdLength = len, mdInst = Inst{..}}
-        = showPrefix (filter nonSeg inPrefixes)
-        .++ (if inOpcode `elem` [Ixlatb] then segOverride else "")
-        .++ showOpcode inOpcode
-        .++ intercalate ", " (map showOp inOperands)
-  where
-    showOpcode op = tail $ show op
-
-    segOverride = case [s | Seg s <- inPrefixes] of
-        [] -> ""
-        [s] -> showSeg s ++ ":"
-
-    showPrefix = \case
-        [Rep, RepE]
-            | inOpcode `elem` [Icmpsb, Icmpsw, Iscasb, Iscasw] -> "repe"
-            | otherwise -> "rep"
-        [RepNE] -> "repne"
-        [] -> ""
-
-    showSeg = \case
-        ES -> val16 es' "es"
-        DS -> val16 ds' "ds"
-        SS -> val16 ss' "ss"
-        CS -> val16 cs' "cs"
-
-    val8 k n = n ++ "{" ++ showA (showHex' 2) (s ^. k) ++ "}"
-    val16 k n = n ++ "{" ++ showA (showHex' 4) (s ^. k) ++ "}"
-
-    showReg = \case
-        Reg8 r L -> case r of
-            RAX -> val8 al' "al"
-            RBX -> val8 bl' "bl"
-            RCX -> val8 cl' "cl"
-            RDX -> val8 dl' "dl"
-        Reg8 r H -> case r of
-            RAX -> val8 ah' "ah"
-            RBX -> val8 bh' "bh"
-            RCX -> val8 ch' "ch"
-            RDX -> val8 dh' "dh"
-        Reg16 r -> case r of
-            RBP -> val16 bp' "bp"
-            RSP -> val16 sp' "sp"
-            RAX -> val16 ax' "ax"
-            RBX -> val16 bx' "bx"
-            RCX -> val16 cx' "cx"
-            RDX -> val16 dx' "dx"
-            RSI -> val16 si' "si"
-            RDI -> val16 di' "di"
-        RegSeg r -> showSeg r
-        RegIP -> val16 ip' "ip"
-        RegNone -> ""
-
-    showSign v | v < 0 = "-"
-               | otherwise = ""
-
-    showOp x = case x of
-        Reg r -> showReg r
-        Imm (Immediate s v) -> case s of
-            Bits8 -> showHex' 2 v ++ "h"
-            Bits16 -> showHex' 4 v ++ "h"
-        Jump (Immediate size v) -> showAdd (fromDefined (s ^. ips) + fromIntegral len + fromIntegral v) $ case size of
-            Bits8 -> showSign v ++ showHex' 2 (abs v) ++ "h"
-            Bits16 -> showSign v ++ showHex' 4 (abs v) ++ "h"
-        Hdis86.Const (Immediate Bits0 0) -> "1" -- !!! ?
-        Ptr (Pointer seg (Immediate Bits16 off)) -> showHex' 4 seg ++ ":" ++ showHex' 4 (fromIntegral off)
-        Mem (Memory s b i 0 off)
-            -> "[" ++ segOverride ++ (showReg b +.+ showReg i +.+ showImm off) ++ "]"
-
-    showAdd v i = maybe i BSC.unpack $ IM.lookup v (s ^. labels)
-
-    showImm (Immediate s v) = case s of
-        Bits0 -> ""
-        Bits8 -> showHex' 2 (fromIntegral v :: Word8) ++ "h"
-        Bits16 -> showHex' 4 (fromIntegral v :: Word16) ++ "h"
-
-
-showInst' s Metadata{mdLength = len, mdInst = i@Inst{..}}
-        = take 55 $ pad ' ' 5 (showPrefix (filter nonSeg inPrefixes)
-        .++ (if inOpcode `elem` [Ixlatb] then segOverride else "")
-        .++ showOpcode inOpcode
-        ) .++ intercalate "," (map showOp inOperands)
-        .++ "  " .++ intercalate "  " (map showOp' inOperands)
-  where
-    showOpcode op = correct $ tail $ show op
-    correct = \case
-        "jae" -> "jnc"
-        "jb"  -> "jc"
-        "jz"  -> "je"
-        "jnz" -> "jne"
-        "popfw" -> "popf"
-        "iretw" -> "iret"
-        x -> x
-
-    segmentPrefix = case [s | Seg s <- inPrefixes] of
-        [s] -> Just s
-        [] -> Nothing
-    segOverride = case [s | Seg s <- inPrefixes] of
-        [] -> ""
-        [s] -> showSeg s ++ ":"
-
-    showPrefix = \case
-        [Rep, RepE] -> "repe"
-        [RepNE] -> "repne"
-        [] -> ""
-
-    showSeg = \case
-        ES -> "es"
-        DS -> "ds"
-        SS -> "ss"
-        CS -> "cs"
-
-    showReg = \case
-        Reg8 r L -> case r of
-            RAX -> "al"
-            RBX -> "bl"
-            RCX -> "cl"
-            RDX -> "dl"
-        Reg8 r H -> case r of
-            RAX -> "ah"
-            RBX -> "bh"
-            RCX -> "ch"
-            RDX -> "dh"
-        Reg16 r -> case r of
-            RBP -> "bp"
-            RSP -> "sp"
-            RAX -> "ax"
-            RBX -> "bx"
-            RCX -> "cx"
-            RDX -> "dx"
-            RSI -> "si"
-            RDI -> "di"
-        RegSeg r -> showSeg r
-        RegIP -> "ip"
-        RegNone -> ""
-
-    showSign v | v < 0 = "-"
-               | otherwise = ""
-
-    showOp x = case x of
-        Reg r -> showReg r
-        Imm (Immediate s v) -> case s of
-            Bits8 -> showHex''' 2 v
-            Bits16 -> showHex''' 4 v
-        Jump (Immediate size v) -> case size of
-            Bits8 -> showSign v ++ showHex''' 2 (abs v)
-            Bits16 -> showSign v ++ showHex''' 4 (abs v)
-        Hdis86.Const (Immediate Bits0 0) -> "1" -- !!! ?
-        Ptr (Pointer seg (Immediate Bits16 off)) -> showHex''' 4 seg ++ ":" ++ showHex''' 4 off
-        Mem (Memory s b i 0 off)
-            -> segOverride ++ "[" ++ (showReg b +.+ showReg i +.+ showImm off) ++ "]"
-
-    showOp' x = case x of
-{-
-        Jump (Immediate size v) -> showAdd (fromDefined (s ^. ips) + fromIntegral len + fromIntegral v) $ case size of
-            Bits8 -> showSign v ++ showHex' 2 (abs v) ++ "h"
-            Bits16 -> showSign v ++ showHex' 4 (abs v) ++ "h"
-        Hdis86.Const (Immediate Bits0 0) -> "1" -- !!! ?
-        Ptr (Pointer seg (Immediate Bits16 off)) -> showHex' 4 seg ++ ":" ++ showHex' 4 (fromIntegral off)
--}
-{-
-        Mem m
-            -> segOverride ++ "[" ++ showHex' 4 (s ^. addressOf' m) ++ "]=" ++ (case sizeByte_ i of
-                1 -> defined "?" (showHex''' 2) $ s ^. byteOperand segmentPrefix x . coerceS_'
-                2 -> defined "?" (showHex''' 4) $ s ^. wordOperand segmentPrefix x . coerceS_')
--}
-        _   -> ""
-
---    showAdd v i = maybe i BSC.unpack $ IM.lookup v (s ^. labels)
-
-    showImm (Immediate s v) = case s of
-        Bits0 -> ""
-        Bits8 -> showHex''' 2 (fromIntegral v :: Word8)
-        Bits16 -> showHex''' 4 (fromIntegral v :: Word16)
-
+    show s = intercalate "\n" $ showCode s
 
 ifff "" = []
 ifff x = [x]
-
-type Queue = [MachineState]
-
-initQueue :: MachineState -> Queue
-initQueue s = [s]
-addQueue :: MachineState -> Queue -> Queue
-addQueue s q = length q' `seq` q'
-  where
-    q' = take 30 $ s: q
-getQueueLast :: Queue -> MachineState
-getQueueLast = last
-
---runTillHalt st = flip evalState st . runErrorT $ do
 
 mkSteps :: MachineState -> (Halt, MachineState)
 mkSteps s = either (\x -> (x, s')) (const $ either (\x -> (x, s')) (const $ mkSteps s') b) a
@@ -861,9 +573,6 @@ mkSteps s = either (\x -> (x, s')) (const $ either (\x -> (x, s')) (const $ mkSt
 
 addressOf a b = evalExp $ Edsl.addressOf a b
 addressOf' a = evalExp $ Edsl.addressOf' a
-byteOperand a b = evalPart $ Edsl.byteOperand a b
-wordOperand a b = evalPart $ Edsl.wordOperand a b
-
 
 askCounter = do
     c <- use $ config . counter'
@@ -901,7 +610,7 @@ mkStep
   :: MachineState
      -> ( Bool
         , Either Halt (Either Metadata String)
-        , Either Halt (Set.Set Key, String)
+        , Either Halt (String)
         , MachineState
         )
 mkStep s = (ju, either Left (Right . fst) <$> x__, y, s') where
@@ -927,7 +636,7 @@ verboseLevel' s
 
 cachedStep :: Machine ()
 cachedStep = do
-    Defined ips <- use ips
+    ips <- use ips
     c <- use cache
     case IM.lookup ips c of
       Just m -> m
@@ -947,151 +656,41 @@ cachedStep = do
         m <- collect
         cache %= IM.insert ips m
 
-showCode q s = showCodeH q $ hijack s
-{-
-showCodeHC :: Queue -> MachineState -> [String]
-showCodeHC q s = case IM.lookup addr (s ^. cache) of
-    Just f -> case f q s of (str, q, s) -> str ++ showCode q s
-    Nothing -> showCode q' (s' & cache %~ IM.insert addr f)
-  where
-    Defined addr = s ^. ips
 
-    (f, (q', s')) = collect q s
+showCode s = showCodeH $ hijack s
 
-    collect q s =
+showCodeH :: MachineState -> [String]
+showCodeH s = case showCode_ s of
+    (_, str, Left e) -> str ++ showErr e
+    (_, str, Right s) -> str ++ showCode s
 
-        showCode_ q s
-
-    collect = do
-        md <- fetchInstr
-        ip' <- use ip
-        let (jump, m_) = case md of
-                Left md -> execInstruction md
-                Right (_, m) -> (True, m)
-            m = ip .= ip' >> m_
-        m_
-        (m >>) <$> if jump
-          then return (return ())
-          else collect
-
- case showCode_ q s of
-    (_, str, Left e) -> str ++ showErr q s e
-    (_, str, Right (q, s)) -> str ++ showCode q s
--}
-showCodeH :: Queue -> MachineState -> [String]
-showCodeH q s = case showCode_ q s of
-    (_, str, Left e) -> str ++ showErr q s e
-    (_, str, Right (q, s)) -> str ++ showCode q s
-
-showErr q s e = case verboseLevel' $ s ^. config of
-  1 -> showCode (initQueue s'') s''
-  _ -> show e: []
- where
-    s'' = getQueueLast q & config . verboseLevel .~ 2
+showErr e = show e: []
 
 
-showCode_ :: Queue -> MachineState -> (Bool, [String], Either Halt (Queue, MachineState))
-showCode_ q s = case x_ of
+showCode_ :: MachineState -> (Bool, [String], Either Halt MachineState)
+showCode_ s = case x_ of
     Left e -> (ju, [], Left e)
-    Right q -> next $ case q of
-     Right x -> case verboseLevel' $ s ^. config of
-      3 -> []
-      _ -> ifff traces
+    Right _ -> next $ ifff traces
         ++ [vid | ns `mod` ((s ^. config . instPerSec) `div` 25) == 0]
-     Left x -> case verboseLevel' $ s ^. config of 
-      1 -> ifff traces
-        ++ [vid | ns `mod` ((s ^. config . instPerSec) `div` 25) == 0]
-      2 -> dbstyle x
-      4 ->
-        maybeToList (BSC.unpack <$> IM.lookup (fromDefined $ s ^. ips) (s ^. labels))
-         ++
-         ["  " ++ pad ' ' 14 (map toUpper $ mdHex x)
-         ++ " "++ pad ' ' 27 (showInst s x)
-         ++ "" ++ traces
-         ++ (if inOpcode (mdInst x) `elem` [Icall] then " " ++ intercalate "/" (map BSC.unpack . catMaybes . map (`IM.lookup` (s ^. labels)) $ s ^. config . stackTrace) else "")
-         ++ "  " ++ unwords (map shKey $ combineKey $ Set.toList hist_)]
-        
-{-
-      3 -> case s ^. config . stepsCounter of
-            c | c `mod` 10000 == 0 -> show c: next
-            _ -> next
--}
-      3 -> dbstyle x
-      _ -> []
  where
-    dbstyle x = [unwords (
-        [ showReg' (showHex'' 4 (s ^. cs)) ip
-        , " " ++ pad ' ' 54 (showInst' s x)
-        ]
-        ++ zipWith showReg' ["EAX","EBX","ECX","EDX","ESI","EDI","EBP","ESP"] [ax,bx,cx,dx,si,di,bp,sp]
-        ++ zipWith showReg ["DS","ES","FS","GS","SS"] [ds,es,fs,gs,ss]
-        ++ zipWith showFlag "CZSOAPI" [carryF, zeroF, signF, overflowF, adjustF, parityF, interruptF]
-        )]
-
-
-    showReg c k = c ++ ":" ++ showHex'' 4 (s ^. k)
-    showReg' c k = c ++ ":" ++ showHex'' 8 (s ^. k)
-    showFlag c k = c : "F:" ++ defined "?" (show . fromEnum) (s ^. k)
-
     ns = s ^. config . stepsCounter
 
     vid = unsafePerformIO $ do
-        let gs = 0xa0000 --0x30000 -- x ^. heap16 0x6 . coerceS . paragraph
+        let gs = 0xa0000
             v = s ^. heap . memSlice (gs ^. byte) ((320 * 200) ^. byte)
-        putMVar (s ^. config . videoMVar) $ \x y -> defined 0x80 id $ v ^. byteAt' ((320 * y + x) ^. byte) . coerceS_'
-        return $ show ns ++ "; mem: " ++ showMemPiece (s ^. heap)
-                               --      show (length $ flattenMemPiece unGroup keepMemSlice keepMemTimes (s ^. heap))
+        putMVar (s ^. config . videoMVar) $ \x y -> v ^. byteAt' ((320 * y + x) ^. byte) . coerceS_'
+        return $ show ns
 
-    (hist_, traces) = case y of
-        Left e -> (Set.empty, "lost history because " ++ show e)
+    traces = case y of
+        Left e -> ("lost history because " ++ show e)
         Right s -> s
 
     next xs = (ju, xs, case y of
         Left e -> Left e
-        Right _ -> q' `seq` Right (q', s'))
-    q' = addQueue s' q
+        Right _ -> Right s')
 
     (ju, x_, y, s') = mkStep s
 
-    shKey k = case k of
-        Heap 8 i  -> diff (sh'' 1) $ heap . byteAt' i
-        Heap 16 i  -> diff (sh'' 2) $ heap . wordAt' i
-        Heap n i  -> "[" ++ showAddr i ++ "-" ++ showAddr (i+n) ++ "]"
-        Flag n  -> diff (sf [n]) $ flags . (case n of
-            'c' -> carryF'
-            'p' -> parityF'
-            'a' -> adjustF'
-            'z' -> zeroF'
-            's' -> signF'
-            'i' -> interruptF'
-            'd' -> directionF'
-            'o' -> overflowF'
-            )
-        Flags     -> diff showFlags flags
-        KReg 8 i  -> diff (sh'' 1) $ regs . byteAt' i
-        KReg 16 i  -> diff (sh'' 2) $ regs . wordAt' i
-        KReg 32 i  -> diff (sh'' 4) $ regs . dwordAt' i
-      where
-        diff :: Eq a => (a -> String) -> Lens' MachineState a -> String
-        diff f l = par (v == v') $ f v'
-          where
-            v = s ^. l
-            v' = s' ^. l
-
-        lok i def = maybe def (\s -> "[" ++ BSC.unpack s ++ "]") $ IM.lookup i (s ^. labels)
-
-        sh :: (Show a, Integral a) => Int -> a -> String
-        sh i v = show k ++ ":" ++ showHex' (2*i) v
-
-        sh'' :: (Show a, WordX a) => Int -> MemPieceS a -> String
-        sh'' i v = lok i (show k) ++ ":" ++ showA (showHex' (2*i)) v
-
-        sf k (Defined True) = map toUpper k
-        sf k (Defined False) = k
-        sf k Undefined = k ++ "?"
-
-        par True a = "(" ++ a ++ ")"
-        par False a = a
 
 immLens :: a -> Lens' b a
 immLens c = lens (const c) $ \_ _ -> error "can't update immediate value"
@@ -1099,17 +698,17 @@ immLens c = lens (const c) $ \_ _ -> error "can't update immediate value"
 
 fetchInstr :: Machine (Either Metadata (String, Machine ()))
 fetchInstr = do
-    Defined cs_ <- use cs
-    Defined ip_ <- use ip
+    cs_ <- use cs
+    ip_ <- use ip
     case M.lookup (cs_, ip_) origInterrupt of
       Just (i, m) -> return $ Right ("interrupt " ++ showHex' 2 i ++ "h", m)
       Nothing -> do
-        Defined ips <- use ips
+        ips <- use ips
         Just (md, _) <- disassembleOne disasmConfig . BS.pack . getDef . fromRom <$> use (heap . memSlice ips (maxInstLength ^. byte))
         ip %= (+ fromIntegral (mdLength md))
         return $ Left md
 
-getDef (Defined a: as) = a: getDef as
+getDef ( a: as) = a: getDef as
 getDef _ = []
 
 maxInstLength = 7
@@ -1122,19 +721,19 @@ execInstruction m = (True, evalExp $ execInstruction' m)
 
 useD k = do
     x <- use k
-    defined (throwError $ Err "useD") return x
+    return x
 
 evalPart :: Part a -> (MachinePart a -> Machine e) -> Machine e
-evalPart p cont = evalPart' p $ \x -> cont $ x . iso fromDefined Defined
+evalPart p cont = evalPart' p $ \x -> cont $ x
 
-evalPart' :: Part a -> (MachinePart (Defined a) -> Machine e) -> Machine e
+evalPart' :: Part a -> (MachinePart ( a) -> Machine e) -> Machine e
 evalPart' p cont = case p of
     Heap8 e -> evalExp e >>= \i -> cont $ heap8 i . coerceS_'
     Heap16 e -> evalExp e >>= \i -> cont $ heap16 i . coerceS_'
-    Immed e -> evalExp e >>= \i -> cont $ immLens $ Defined i
+    Immed e -> evalExp e >>= \i -> cont $ immLens $ i
     _ -> cont $ evalPart_ p
 
-evalPart_ :: Part a -> MachinePart (Defined a)
+evalPart_ :: Part a -> MachinePart ( a)
 evalPart_ = \case
     IP -> ip
     AX -> ax
@@ -1358,7 +957,7 @@ origInterrupt = M.fromList
             trace_ "Reset Pointing device"
             ah .= 0 -- ?
             bl .= 0xaa -- ?
-            carryF .= Defined False
+            carryF .= False
       v  -> throwError $ Err $ "interrupt #15,#" ++ showHex' 2 v
 
   , item 0x16 (0xf000,0x1200) $ do     -- 16h
@@ -1371,7 +970,7 @@ origInterrupt = M.fromList
             al' .= "Esc ASCII code" @: 0x1b
         0x01 -> do
             trace_ "Query Keyboard Status / Preview Key"
-            zeroF .= Defined False  -- no keys in buffer
+            zeroF .= False  -- no keys in buffer
         v  -> throwError $ Err $ "interrupt #16,#" ++ showHex' 2 v
 
 {-
@@ -1422,7 +1021,7 @@ origInterrupt = M.fromList
               0 -> do   -- read mode
                 addr <- addressOf Nothing $ memIndex RDX
                 fname <- use $ heap . bytesAt addr 20
-                let f = map (toUpper . chr . fromIntegral . defined (error "fname") id) $ takeWhile (/=0) fname
+                let f = map (toUpper . chr . fromIntegral) $ takeWhile (/=0) fname
                 trace_ $ "File: " ++ show f
                 let fn = "../original/" ++ f
                 let s = unsafePerformIO $ do
@@ -1432,14 +1031,14 @@ origInterrupt = M.fromList
                   Nothing -> do
                     trace_ $ "not found"
                     ax' .= "File not found" @: 0x02
-                    carryF .= Defined True
+                    carryF .= True
                   Just s -> do
         --            ax .= 02  -- File not found
                     handle <- max 5 . imMax <$> use files
                     trace_ $ "handle " ++ showHex' 4 handle
                     files %= IM.insert handle (fn, s, 0)
                     ax' .= "file handle" @: fromIntegral handle
-                    carryF .= Defined False
+                    carryF .=  False
 
         0x3e -> do
             trace_ "Close file"
@@ -1450,7 +1049,7 @@ origInterrupt = M.fromList
               Just (fn, _, _) -> do
                 trace_ $ "file: " ++ fn
                 files %= IM.delete handle
-                carryF .= Defined False
+                carryF .=  False
 
         0x3f -> do
             handle <- fromIntegral <$> use bx
@@ -1461,9 +1060,9 @@ origInterrupt = M.fromList
             s <- BS.take num . (\(fn, s, p) -> BS.drop p s) . (IM.! handle) <$> use files
             let len = BS.length s
             files %= flip IM.adjust handle (\(fn, s, p) -> (fn, s, p+len))
-            heap . bytesAt loc len .= map Defined (BS.unpack s)
+            heap . bytesAt loc len .= (BS.unpack s)
             ax' .= "length" @: fromIntegral len
-            carryF .= Defined False
+            carryF .=  False
 
         0x40 -> do
             handle <- fromIntegral <$> use bx
@@ -1471,10 +1070,10 @@ origInterrupt = M.fromList
             num <- fromIntegral <$> use cx
             loc <- addressOf Nothing $ memIndex RDX
             case handle of
-              1 -> trace_ . ("STDOUT: " ++) . map (chr . fromIntegral . defined (error "stdout") id) =<< use (heap . bytesAt loc num)
-              2 -> trace_ . ("STDERR: " ++) . map (chr . fromIntegral . defined (error "stderr") id) =<< use (heap . bytesAt loc num)
+              1 -> trace_ . ("STDOUT: " ++) . map (chr . fromIntegral) =<< use (heap . bytesAt loc num)
+              2 -> trace_ . ("STDERR: " ++) . map (chr . fromIntegral) =<< use (heap . bytesAt loc num)
               _ -> return ()
-            carryF .= Defined False
+            carryF .=  False
 
         0x42 -> do
             handle <- fromIntegral <$> use bx
@@ -1489,7 +1088,7 @@ origInterrupt = M.fromList
                 )
             pos' <- (^. _3) . (IM.! handle) <$> use files
             (uComb dx ax . combine) .= fromIntegral pos'
-            carryF .= Defined False
+            carryF .=  False
 
         0x44 -> do
             trace_ "I/O Control for Devices (IOCTL)"
@@ -1513,15 +1112,14 @@ origInterrupt = M.fromList
                       0 -> 0x80D3        --  0010 1000 00 000011    default drive
                 dx .= v
                 ax .= v
-            carryF .= Defined False
+            carryF .=  False
 
         0x48 -> do
             memory_paragraphs_requested <- def =<< use bx
             trace_ $ "Allocate Memory " ++ showHex' 5 (memory_paragraphs_requested ^. paragraph)
             x <- zoom heap $ allocateMem' (memory_paragraphs_requested ^. paragraph ^. byte)
             ax' .= "segment address of allocated memory block" @: (x ^. from (paragraph . byte)) -- (MCB + 1para)
-            use heap >>= trace_ . showMemPiece
-            carryF .= Defined False
+            carryF .=  False
 
         0x4a -> do
             new_requested_block_size_in_paragraphs <- def =<< use bx
@@ -1534,13 +1132,12 @@ origInterrupt = M.fromList
                 ax' .= "Insufficient memory error" @: 8
                 bx' .= "maximum block size possible" @: (x ^. from (paragraph . byte))
                 trace_ $ "insufficient, max possible: " ++ showHex' 4 (x ^. from (paragraph . byte))
-                carryF .= Defined True
+                carryF .=  True
               Right h -> do
                 ds <- use ds'
                 ax' .= ds  -- why???
                 heap .= h
-                use heap >>= trace_ . showMemPiece
-                carryF .= Defined False
+                carryF .=  False
 
         0x4c -> do
             code <- use al
@@ -1551,7 +1148,7 @@ origInterrupt = M.fromList
             attribute_used_during_search <- use cx
             addr <- addressOf Nothing $ memIndex RDX
             fname <- use $ heap . bytesAt addr 20
-            let f_ = map (chr . fromIntegral . defined (error "fname'") id) $ takeWhile (/=0) fname
+            let f_ = map (chr . fromIntegral) $ takeWhile (/=0) fname
             trace_ $ "Find file " ++ show f_
             ad <- use dta
 --            throwError Halt
@@ -1571,16 +1168,16 @@ origInterrupt = M.fromList
                 heap . dwordAt (ad + 0x1a ^. byte) .= fromIntegral (BS.length s)
                 heap . bytesAt (ad + 0x1e ^. byte) 13 .= pad 0 13 (map (fromIntegral . ord) (takeFileName f) ++ [0])
                 ax .= 0 -- ?
-                carryF .= Defined False
+                carryF .=  False
               Nothing -> do
                 trace_ $ "not found"
                 ax .= 02  -- File not found
-                carryF .= Defined True
+                carryF .=  True
 
         0x62 -> do
             trace_ "Get PSP address (DOS 3.x)"
             bx' .= "segment address of current process" @: 0x1fe  -- hack!!!  !!!
-            carryF .= Defined False
+            carryF .=  False
 
         _    -> throwError $ Err $ "dos function #" ++ showHex' 2 v
 
@@ -1687,9 +1284,9 @@ loadCom com = flip execState emptyState $ do
         , replicate (l' - l + stacksize + 2^16) 0
         ])
 
-    cs .= Defined loadSegment
-    ds .= Defined loadSegment
-    es .= Defined loadSegment
+    cs .=  loadSegment
+    ds .=  loadSegment
+    es .=  loadSegment
     ip .= 0x0100
     ax .= 0
     bx .= 0
@@ -1701,7 +1298,7 @@ loadCom com = flip execState emptyState $ do
         heap8 (segAddr gs i) .= "junk" @: 1
     heap8 (segAddr gs 0x20cd) .= "junk" @: 1
 
-    ss .= Defined (l' ^. from paragraph)
+    ss .=  (l' ^. from paragraph)
     sp .= fromIntegral stacksize
     heap16 (4 ^. byte) .= "???" @: 0
     heap16 (6 ^. byte) .= "segment" @: gs
@@ -1748,7 +1345,7 @@ programSegmentPrefix envseg endseg args = flip execState (toRam $ map (error . (
 --    bytesAt 0x5c (16 + 20) .= repeat 0
 
     byteAt' (0x80 ^. byte) .= "args length" @: fromIntegral (min maxlength $ BS.length args)
-    bytesAt (0x81 ^. byte) (maxlength + 1) .= pad 0 (maxlength + 1) (take maxlength (map Defined $ BS.unpack args) ++ [0x0D])  -- Command line string
+    bytesAt (0x81 ^. byte) (maxlength + 1) .= pad 0 (maxlength + 1) (take maxlength (BS.unpack args) ++ [0x0D])  -- Command line string
 --    byteAt 0xff .= 0x36   -- dosbox specific?
   where
     maxlength = 125
@@ -1777,17 +1374,17 @@ loadExe labs loadSegment gameExe = flip execState emptyState $ do
             , memUndefined' $ 0x10000 ^. byte
             , memUndefined' $ 0x50000 ^. byte
             ]
-    ss .= Defined (ssInit + loadSegment)
-    sp .= Defined spInit
-    cs .= Defined (csInit + loadSegment)
-    ip .= Defined ipInit
-    ds .= Defined pspSegment
-    es .= Defined pspSegment
-    cx .= Defined 0x00ff -- why?
-    dx .= Defined pspSegment -- why?
-    bp .= Defined 0x091c -- why?
-    si .= Defined 0x0012 -- why?
-    di .= Defined 0x1f40 -- why?
+    ss .=  (ssInit + loadSegment)
+    sp .=  spInit
+    cs .=  (csInit + loadSegment)
+    ip .=  ipInit
+    ds .=  pspSegment
+    es .=  pspSegment
+    cx .=  0x00ff -- why?
+    dx .=  pspSegment -- why?
+    bp .=  0x091c -- why?
+    si .=  0x0012 -- why?
+    di .=  0x1f40 -- why?
     labels .= IM.fromDistinctAscList (map (((^. byte) . (+ reladd)) *** id) $ IM.toList labs)
 
     mapM_ inter [(fromIntegral a, b) | (b, (a, _)) <- M.toList origInterrupt]
