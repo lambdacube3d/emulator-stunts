@@ -177,7 +177,7 @@ eval s = either f undefined v
     f CleanHalt = fromDefined $ s' ^. ax
     f e = error $ show e
     (v, s') = flip runState initState $ runExceptT $ s >> forever cachedStep --(void step_)
--}
+
 call :: String -> Machine ()
 call name = do
     let Just (seg, ipInit) = lookup name symbols
@@ -200,7 +200,7 @@ call name = do
         , (,) "polarRadius3D"     (11, 0x8)       -- 0x21298 - hs
         , (,) "rectComparePoint"  ( 6, 0xe) -- 0x187be - hs   -- x * 16 + y = 0x15ee2
         ]
-
+-}
 
 --------------------------------------------------------------------------------
 

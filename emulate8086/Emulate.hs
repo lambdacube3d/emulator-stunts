@@ -12,6 +12,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE LiberalTypeSynonyms #-}
 {-# LANGUAGE PackageImports #-}
 module Emulate where
 
@@ -52,6 +53,8 @@ import Hdis86.Incremental
 
 import Helper
 import Word1
+import Edsl hiding (Flags, trace_, ips, sps, segAddr_, addressOf, addressOf', byteOperand, wordOperand)
+import qualified Edsl
 
 ----------------------------------------------
 
@@ -354,8 +357,9 @@ modifyAllocated addr req f = memSlice (addr - 16 ^. byte) (req + 16 ^. byte) tr 
 --        x F.:< c -> error $ "modifyAllocated 2: " ++ showMemPiece x
 --        F.EmptyL -> error "end of mem 2"
 
-low' :: Lens' MemPiece16 MemPiece8
+low', high' :: Lens' MemPiece16 MemPiece8
 low' = memPieceS . memSlice 0 8 . from memPieceS
+high' = memPieceS . memSlice 8 8 . from memPieceS
 
 memSlice :: Int -> Int -> Lens' MemPiece MemPiece
 memSlice 0 l tr mp | l == measure mp = tr mp
@@ -427,31 +431,6 @@ wordToFlags w = MemPieceS $ mconcat
  where
     w' = fromIntegral $ (w .&. 0xed3) .|. 0x2
 
-{-
-instance Show Flags where
-    show s = concat [ showFlag n (s ^. cloneLens i)
-             | (n,i) <- zip "odiszapc" 
-            ([overflowF',directionF',interruptF',signF',zeroF',adjustF',parityF',carryF'] :: [ALens' Flags (Defined Bool)]) ]
-      where
-        showFlag c (Defined k) = [if k then toUpper c else c]
-        showFlag c _ = [c,'?']
-
-flagsToWord :: Flags -> Word16
-flagsToWord Flags'{..}
-    = 0x7002
-    & bit 0 . def "C" .~ _carryF'
-    & bit 2 . def "P" .~ _parityF'
-    & bit 4 . def "A" .~ _adjustF'
-    & bit 6 . def "Z" .~ _zeroF'
-    & bit 7 . def "S" .~ _signF'
-    & bit 9 . def "I" .~ _interruptF'
-    & bit 10 . def "D" .~ _directionF'
-    & bit 11 . def "O" .~ _overflowF'
--}
-
-
-----------------
--------------------
 -----------------------
 
 bytesAt :: Int -> Int -> Lens' MemPiece [Defined Word8]
@@ -627,7 +606,6 @@ reg16Lenses'@[ax',dx',bx',cx', si',di', cs',ss',ds',es', ip',sp',bp']
 [al',ah',dl',dh',bl',bh',cl',ch']
     = [ addHist (KReg 8 i) $ regs . byteAt' i | i <- map (^. byte) [0..7] ]
 
-
 segAddr_ :: MachinePart (Defined Word16) -> Getter MachineState (Defined Word16) -> Getter MachineState (Defined Int)
 segAddr_ seg off = to $ \s -> liftA2 segAddr (s ^. seg) (s ^. off)
 
@@ -644,45 +622,10 @@ gs = lens (const $ Defined 0) $ \s _ -> s
 
 flags = flags_ . memPieceS . iso id ((memSlice 12 4 .~ memUndefined 4) . (memSlice 1 1 .~ memBits 0 1 1) . (memSlice 3 1 .~ memBits 0 1 0) . (memSlice 5 1 .~ memBits 0 1 0)) . from memPieceS
 
-flags' :: Lens' MachineState MemPiece
-flags' = flags . memPieceS
-
 heap8  i = addHist (Heap 8 i) $ heap . byteAt' i
 heap16 i = addHist (Heap 16 i) $ heap . wordAt' i
 
-stackTop :: MachinePart (MemPiece16)
-stackTop = sps >- heap16
-
-(>-) :: Getter MachineState (Defined x) -> (x -> MachinePart (MemPieceS w)) -> MachinePart (MemPieceS w)
--- Getting a s a -> (a -> b -> s -> t) -> b -> s -> t
-(k >- f) tr a = defined (error ">-") (\x -> f x tr a) (a ^. k)
-
-
 ----------------------
-
-push :: MemPiece16 -> Machine ()
-push x = do
-    sp %= (+(-2))
-    stackTop .= x
-
-pop :: Machine (MemPiece16)
-pop = do
-    x <- use stackTop
-    sp %= (+ 2)
-    return x
-
-pushF :: MemPiece -> Machine ()
-pushF x = do
-    sp %= (+ (- fromIntegral (measure x ^. from byte)))
-    Defined a <- use sps
-    hist %= Set.insert (Heap 16 a)
-    heap . memSlice a (measure x) .= x
-
-popF :: Int -> Machine MemPiece
-popF size = do
-    Defined addr <- use sps
-    sp %= (+ fromIntegral (size ^. from byte))
-    use $ heap . memSlice addr size
 
 instance Show MachineState where
     show s = intercalate "\n" $
@@ -883,10 +826,12 @@ showInst' s Metadata{mdLength = len, mdInst = i@Inst{..}}
         Hdis86.Const (Immediate Bits0 0) -> "1" -- !!! ?
         Ptr (Pointer seg (Immediate Bits16 off)) -> showHex' 4 seg ++ ":" ++ showHex' 4 (fromIntegral off)
 -}
+{-
         Mem m
             -> segOverride ++ "[" ++ showHex' 4 (s ^. addressOf' m) ++ "]=" ++ (case sizeByte_ i of
                 1 -> defined "?" (showHex''' 2) $ s ^. byteOperand segmentPrefix x . coerceS_'
                 2 -> defined "?" (showHex''' 4) $ s ^. wordOperand segmentPrefix x . coerceS_')
+-}
         _   -> ""
 
 --    showAdd v i = maybe i BSC.unpack $ IM.lookup v (s ^. labels)
@@ -917,6 +862,12 @@ mkSteps :: MachineState -> (Halt, MachineState)
 mkSteps s = either (\x -> (x, s')) (const $ either (\x -> (x, s')) (const $ mkSteps s') b) a
   where
     (ju, a, b, s') = mkStep $ hijack s
+
+addressOf a b = evalExp $ Edsl.addressOf a b
+addressOf' a = evalExp $ Edsl.addressOf' a
+byteOperand a b = evalPart $ Edsl.byteOperand a b
+wordOperand a b = evalPart $ Edsl.wordOperand a b
+
 
 askCounter = do
     c <- use $ config . counter'
@@ -1146,91 +1097,9 @@ showCode_ q s = case x_ of
         par True a = "(" ++ a ++ ")"
         par False a = a
 
-sizeByte_ i@Inst{..}
-    | inOpcode `elem` [Icbw, Icmpsb, Imovsb, Istosb, Ilodsb, Iscasb, Ilahf] = 1
-    | inOpcode `elem` [Icwd, Icmpsw, Imovsw, Istosw, Ilodsw, Iscasw] = 2
-    | inOpcode == Iout  = fromJust $ operandSize $ inOperands !! 1
-    | otherwise = fromMaybe (error $ "size: " ++ show i) $ listToMaybe $ catMaybes $ map operandSize inOperands
-
-operandSize = \case
-    Reg (Reg16 _)   -> Just 2
-    Reg (Reg8 _ _)  -> Just 1
-    Mem (Memory Bits8 _ _ _ _)  -> Just 1
-    Mem (Memory Bits16 _ _ _ _) -> Just 2
-    Imm (Immediate Bits8 v)  -> Just 1
-    Imm (Immediate Bits16 v) -> Just 2
-    _ -> Nothing
-
-segOf = \case
-    RegIP     -> cs
-    Reg16 RSP -> ss
-    Reg16 RBP -> ss
-    Reg16 RDI -> ds -- es?
-    _         -> ds
-
-reg :: Register -> MachinePart MemPiece16
-reg = \case
-    Reg16 r -> case r of
-        RBP -> bp'
-        RSP -> sp'
-        RAX -> ax'
-        RBX -> bx'
-        RCX -> cx'
-        RDX -> dx'
-        RSI -> si'
-        RDI -> di'
-    RegSeg r -> case r of
-        ES -> es'
-        DS -> ds'
-        SS -> ss'
-        CS -> cs'
-    RegIP -> ip'
-    RegNone -> immLens $ noAnn 0
-    x -> error $ "reg: " ++ show x
-
-addressOf :: Maybe Segment -> Memory -> Getter MachineState (Defined Int)
-addressOf segmentPrefix m
-    = segAddr_ (maybe (segOf $ mBase m) ((. coerceS_') . reg . RegSeg) segmentPrefix) (addressOf' m)
-
-addressOf' :: Memory -> Getter MachineState (Defined Word16)
-addressOf' (Memory _ r r' 0 i) = to $ \s -> imm i + s ^. (reg r . coerceS_') + s ^. (reg r' . coerceS_')
-addressOf' m = error $ "addressOf': " ++ show m
-
-byteOperand :: Maybe Segment -> Operand -> MachinePart (MemPiece8)
-byteOperand segmentPrefix x = case x of
-    Reg r -> case r of
-        Reg8 r L -> case r of
-            RAX -> al'
-            RBX -> bl'
-            RCX -> cl'
-            RDX -> dl'
-        Reg8 r H -> case r of
-            RAX -> ah'
-            RBX -> bh'
-            RCX -> ch'
-            RDX -> dh'
-    Mem m -> addressOf segmentPrefix m >- heap8
-    Imm (Immediate Bits8 v) -> immLens $ noAnn $ fromIntegral v
-    Hdis86.Const (Immediate Bits0 0) -> immLens $ noAnn 1 -- !!!
-    _ -> error $ "byteOperand: " ++ show x
-
-wordOperand :: Maybe Segment -> Operand -> MachinePart (MemPiece16)
-wordOperand segmentPrefix x = case x of
-    Reg r -> reg r
-    Mem m -> addressOf segmentPrefix m >- heap16
-    Imm i -> immLens $ noAnn $ imm' i
-    Jump i -> ip >- (immLens . noAnn . (+ imm i))
-    _ -> error $ "fetch: " ++ show x
-
-imm = fromIntegral . iValue
--- patched version
-imm' (Immediate Bits8 i) = fromIntegral (fromIntegral i :: Int8)
-imm' i = imm i
-
 immLens :: a -> Lens' b a
 immLens c = lens (const c) $ \_ _ -> error "can't update immediate value"
 
-memIndex r = Memory undefined (Reg16 r) RegNone 0 $ Immediate Bits0 0
 
 fetchInstr :: Machine (Either Metadata (String, Machine ()))
 fetchInstr = do
@@ -1253,7 +1122,6 @@ disasmConfig = Config Intel Mode16 SyntaxIntel 0
 
 trr :: [Word8] -> Word16
 trr [lo, hi] = fromIntegral lo .|. (fromIntegral hi `shiftL` 8)
-
 
 
 execInstruction :: Metadata -> (Bool, Machine ())
@@ -1291,456 +1159,102 @@ useD k = do
     x <- use k
     defined (throwError $ Err "useD") return x
 
-execInstructionBody :: Metadata -> (Bool, Machine ())
-execInstructionBody mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
+evalPart :: Part a -> (MachinePart a -> Machine e) -> Machine e
+evalPart p cont = evalPart' p $ \x -> cont $ x . iso fromDefined Defined
 
-    _ | inOpcode `elem` [Ijmp, Icall] -> jump $ do
-      case op1 of
-        Ptr (Pointer seg (Immediate Bits16 v)) -> do
-            when (inOpcode == Icall) $ do
-                use cs' >>= push
-                use ip' >>= push
-            cs .= fromIntegral seg
-            ip .= fromIntegral v
-        Mem _ -> do
-            when (inOpcode == Icall) $ do
-                when far $ use cs' >>= push
-                use ip' >>= push
-            ad <- addr op1
-            move ip' $ heap16 ad
-            when far $ move cs' $ heap16 $ ad + 16
-        _ -> do
-            when (inOpcode == Icall) $ do
-                use ip' >>= push
-            move ip' op1'
-{-
-      when (inOpcode == Icall) $ do
-            x <- use ips
-            config . stackTrace %= (x :)
--}
-    _ | inOpcode `elem` [Iret, Iretf, Iiretw] -> jump $ do
---        when (inOpcode /= Iiretw) $ config . stackTrace %= tail
-        when (inOpcode == Iiretw) $ trace_ "iret"
-        pop >>= (ip' .=)
-        when (inOpcode `elem` [Iretf, Iiretw]) $ pop >>= (cs' .=)
-        when (inOpcode == Iiretw) $ popF 16 >>= (flags' .=)
-        when (length inOperands == 1) $ op1w >>= (sp %=) . liftA2 (+) . (^. coerceS_')
---        x <- use ips
-{-
-      where
-        clearStack x [] = []
-        clearStack x (a:as)
-            | x == a -> as
-            | otherwise ->
--}
-    Iint  -> jump $ use (byteOperand segmentPrefix op1) >>= interrupt . fromDefined . (^. coerceS_')
-    Iinto -> jump $ do
-        b <- useD overflowF
-        when b $ interrupt 4
+evalPart' :: Part a -> (MachinePart (Defined a) -> Machine e) -> Machine e
+evalPart' p cont = case p of
+    Heap8 e -> evalExp e >>= \i -> cont $ heap8 i . coerceS_'
+    Heap16 e -> evalExp e >>= \i -> cont $ heap16 i . coerceS_'
+    Immed e -> evalExp e >>= \i -> cont $ immLens $ Defined i
+    _ -> cont $ evalPart_ p
 
-    Ihlt  -> jump $ throwError CleanHalt
+evalPart_ :: Part a -> MachinePart (Defined a)
+evalPart_ = \case
+    IP -> ip
+    AX -> ax
+    BX -> bx
+    CX -> cx
+    DX -> dx
+    SI -> si
+    DI -> di
+    BP -> bp
+    SP -> sp
+    Es -> es
+    Ds -> ds
+    Ss -> ss
+    Cs -> cs
+    Low x -> evalPart_ x . from coerceS_' . low' . coerceS_'
+    High x -> evalPart_ x . from coerceS_' . high' . coerceS_'
+    CF -> carryF
+    PF -> parityF
+    AF -> adjustF
+    ZF -> zeroF
+    SF -> signF
+    IF -> interruptF
+    DF -> directionF
+    OF -> overflowF
+    Edsl.Flags -> flags . coerceS_'
+    DXAX -> dxax . coerceS_'
+    XX -> xx . coerceS_'
 
-    Ijp   -> jump $ condJump =<< useD parityF
-    Ijnp  -> jump $ condJump =<< not <$> useD parityF
-    Ijz   -> jump $ condJump =<< useD zeroF
-    Ijnz  -> jump $ condJump =<< not <$> useD zeroF
-    Ijo   -> jump $ condJump =<< useD overflowF
-    Ijno  -> jump $ condJump =<< not <$> useD overflowF
-    Ijs   -> jump $ condJump =<< useD signF
-    Ijns  -> jump $ condJump =<< not <$> useD signF
+evalExp :: Exp a -> Machine a
+evalExp = \case
+    C a -> return a
 
-    Ijb   -> jump $ condJump =<< useD carryF
-    Ijae  -> jump $ condJump =<< not <$> useD carryF
+    Get p -> evalPart p $ \k -> use k
+    Set p e -> evalPart p $ \k -> (k .=) =<< evalExp e
 
-    Ijbe  -> jump $ condJump =<< (||) <$> useD carryF <*> useD zeroF
-    Ija   -> jump $ condJump =<< not <$> ((||) <$> useD carryF <*> useD zeroF)
+    If b x y -> evalExp b >>= \b -> evalExp $ if b then x else y
+    Eq x y -> liftM2 (==) (evalExp x) (evalExp y)
 
-    Ijl   -> jump $ condJump =<< (/=) <$> useD signF <*> useD overflowF
-    Ijge  -> jump $ condJump =<< (==) <$> useD signF <*> useD overflowF
+    Not a -> complement <$> evalExp a
+    ShiftL a -> (`shiftL` 1) <$> evalExp a
+    ShiftR a -> (`shiftR` 1) <$> evalExp a
+    RotateL a -> (`rotateL` 1) <$> evalExp a
+    RotateR a -> (`rotateR` 1) <$> evalExp a
+    Sub a b -> liftM2 (-) (evalExp a) (evalExp b)
+    Add a b -> liftM2 (+) (evalExp a) (evalExp b)
+    Mul a b -> liftM2 (*) (evalExp a) (evalExp b)
+    And a b -> liftM2 (.&.) (evalExp a) (evalExp b)
+    Or  a b -> liftM2 (.|.) (evalExp a) (evalExp b)
+    Xor a b -> liftM2 xor (evalExp a) (evalExp b)
 
-    Ijle  -> jump $ condJump =<< (||) <$> ((/=) <$> useD signF <*> useD overflowF) <*> useD zeroF
-    Ijg   -> jump $ condJump =<< not <$> ((||) <$> ((/=) <$> useD signF <*> useD overflowF) <*> useD zeroF)
+    QuotRem a b c f -> do
+        x <- evalExp a
+        y <- evalExp b
+        case quotRemSafe x y of
+            Nothing -> evalExp c
+            Just (z,v) -> evalExp $ f (C z, C v)
 
-    Ijcxz -> jump $ condJump =<< (== 0) <$> use cx
+    Bit i e -> (^. bit i) <$> evalExp e
+    SetBit i e f -> liftM2 (\a b -> b & bit i .~ a) (evalExp e) (evalExp f)
+    HighBit e -> (^. highBit) <$> evalExp e
+    SetHighBit e f -> liftM2 (\a b -> b & highBit .~ a) (evalExp e) (evalExp f)
+    EvenParity e -> even . popCount <$> evalExp e
 
-    Iloop   -> jump $ loop $ return True
-    Iloope  -> jump $ loop $ useD zeroF
-    Iloopnz -> jump $ loop $ not <$> useD zeroF
+    Signed e -> asSigned <$> evalExp e    
+    Extend e -> extend <$> evalExp e    
+    SegAddr e f -> liftM2 segAddr (evalExp e) (evalExp f)
+    Convert e -> fromIntegral <$> evalExp e    
 
-    --------- no jump
+    Let e f -> evalExp e >>= evalExp . f . C
+    Seq a b -> evalExp a >> evalExp b
+    Tuple a b -> liftM2 (,) (evalExp a) (evalExp b)
+    Fst p -> fst <$> evalExp p
+    Snd p -> snd <$> evalExp p
 
-    _ -> nojump $ case inOpcode of
+    Iterate n f a -> evalExp n >>= \i -> evalExp $ iterate f a !! i
+    Input a -> evalExp a >>= fmap (^. coerceS' "1368") . input
+    Output a b -> evalExp a >>= \x -> evalExp b >>= \y -> output' x y
 
-        _ | length inOperands > 2 -> throwError $ Err "more than 2 operands are not supported"
+    Error h -> throwError h
+    Interrupt e -> evalExp e >>= evalExp . interrupt
 
-        Iaaa -> do
-            a <- use al
-            af <- useD adjustF
-            if (a .&. 0xf > 9 || af)
-              then do
-                al %= (.&. 0xf) . (+6)
-                ah %= (+1)
-                adjustF .= Defined True
-                carryF  .= Defined True
-              else do
-                al %= (.&. 0xf)
-                adjustF .= Defined False
-                carryF  .= Defined False
-            a <- use ah
-            setF a
-            zeroF .= Defined False
-            signF .= undefBool
-            parityF .= undefBool
-        Iaas -> do
-            a <- use al
-            af <- useD adjustF
-            if (a .&. 0xf > 9 || af)
-              then do
-                al %= (.&. 0xf) . (+(-6))
-                ah %= (+(-1))
-                adjustF .= Defined True
-                carryF  .= Defined True
-              else do
-                al %= (.&. 0xf)
-                adjustF .= Defined False
-                carryF  .= Defined False
-            a <- def =<< use al
-            setF a
-            zeroF .= Defined False
-            signF .= undefBool
-            parityF .= undefBool
-        Iaam -> do
-            a <- def =<< use al
-            ten <- def =<< use (byteOperand segmentPrefix op1 . coerceS_')
-            uComb ah al . combDef .= Defined (a `divMod` (if ten == 0 then 1 else ten)) -- hack
-            a <- def =<< use al
-            setF a
-            carryF .= Defined False     -- ???
-            overflowF .= Defined False  -- ???
-        Iaad -> do
-            ten <- def =<< use (byteOperand segmentPrefix op1 . coerceS_')
-            let f :: Integral a => a -> a -> a
-                f l h = fromIntegral ten * h + l
-            twoOp_ True f al' ah'
-            carryF .= Defined False     -- ???
-            overflowF .= Defined False  -- ???
-{-
-            al_ <- use al
-            ah_ <- use ah
-            al .= 10 * ah_ + al_
--}
-            ah .= 0
---            a <- use al
---            setF a
-        Idaa -> do
-            a <- use al
-            cf <- useD carryF
-            when (a > 0x99 || cf) $ do
-                al %= (+0x60)
-                carryF  .= Defined True
-            a <- use al
-            af <- useD adjustF
-            when (a .&. 0xf > 9 || af) $ do
-                al %= (+6)
-                adjustF .= Defined True
-            a <- use al
-            setF a
-            overflowF .= undefBool
-        Idas -> do
-            a <- use al
-            cf <- useD carryF
-            when (a > 0x99 || cf) $ do
-                al %= (+(-0x60))
-                carryF  .= Defined True
-            a <- use al
-            af <- useD adjustF
-            when (a .&. 0xf > 9 || af) $ do
-                al %= (+(-6))
-                adjustF .= Defined True
---                carryF .= True
-            a <- use al
-            setF a
-            overflowF .= undefBool
+    Trace a -> trace_ a
 
-        Ipush   -> op1w >>= push
-        Ipop    -> pop >>= setOp1
-        Ipusha  -> sequence_ [use r >>= push | r <- [ax',cx',dx',bx',sp',bp',si',di']]
-        Ipopa   -> sequence_ [pop >>= (r .=) | r <- [di',si',bp',xx,bx',dx',cx',ax']]
-        Ipushfw -> use flags' >>= pushF
-        Ipopfw  -> popF 16 >>= (flags' .=)
---        Ipopfw  -> pop >>= (flags .=)
-        Isahf -> move (flags . low') ah'
-        Ilahf -> move ah' (flags . low')
+execInstructionBody m = (True {-TODO-}, evalExp $ compileInst m)
 
-        Iclc  -> carryF     .= Defined False
-        Icmc  -> carryF     %= fmap not   -- ???
-        Istc  -> carryF     .= Defined True
-        Icld  -> directionF .= Defined False
-        Istd  -> directionF .= Defined True
-        Icli  -> interruptF .= Defined False
-        Isti  -> interruptF .= Defined True
-
-        Inop  -> return ()
-
-        Ixlatb -> do
-            x <- use al
-            move al' $ byteOperand segmentPrefix $ Mem $ Memory undefined (Reg16 RBX) RegNone 0 $ Immediate Bits16 $ fromIntegral x
-
-        Ilea -> op2addr' >>= setOp1 . noAnn
-        _ | inOpcode `elem` [Iles, Ilds] -> do
-            ad <- addr op2
-            move op1' $ heap16 ad
-            move (case inOpcode of Iles -> es'; Ilds -> ds') $ heap16 $ ad + 16
-
-        _ -> case sizeByte of
-            1 -> withSize byteOperand al' ah' ax'
-            2 -> withSize wordOperand ax' dx' dxax
-
-  where
-    setF x = do
-        zeroF   .= Defined (x == 0)
-        parityF .= Defined (even $ popCount (fromIntegral x :: Word8))
-        signF   .= Defined (x ^. highBit)
-
-    jump x = (True, x)
-    nojump x = (False, x)
-
-    far = " far " `isInfixOf` mdAssembly mdat
-
-    withSize :: forall a . (AsSigned a, Extend a, Extend (Signed a), AsSigned (X2 a), X2 (Signed a) ~ Signed (X2 a))
-        => (Maybe Segment -> Operand -> MachinePart (MemPieceS a))
-        -> MachinePart (MemPieceS a)
-        -> MachinePart (MemPieceS a)
-        -> MachinePart (MemPieceS (X2 a))
-        -> Machine ()
-    withSize tr_ alx ahd axd = case inOpcode of
-        Imov  -> move (tr op1) (tr op2)
-        Ixchg -> move (uComb (tr op1) (tr op2)) (uComb (tr op2) (tr op1))
-        Inot  -> move (tr op1) $ tr op1 . to (annMap "not" complement)
-
-        Isal  -> shiftOp $ \_ x -> (x ^. highBit, x `shiftL` 1)
-        Ishl  -> shiftOp $ \_ x -> (x ^. highBit, x `shiftL` 1)
-        Ircl  -> shiftOp $ \c x -> (x ^. highBit, x `shiftL` 1 & bit 0 .~ c)
-        Irol  -> shiftOp $ \_ x -> (x ^. highBit, x `rotateL` 1)
-        Isar  -> shiftOp $ \_ x -> (x ^. bit 0, asSigned x `shiftR` 1 & fromIntegral)
-        Ishr  -> shiftOp $ \_ x -> (x ^. bit 0, x `shiftR` 1)
-        Ircr  -> shiftOp $ \c x -> (x ^. bit 0, x `shiftR` 1 & highBit .~ c)
-        Iror  -> shiftOp $ \_ x -> (x ^. bit 0, x `rotateR` 1)
-
-        Iadd  -> twoOp True  (+)
-        Isub  -> twoOp True  (-)
-        Icmp  -> twoOp False (-)
-        Ixor  -> twoOp True   xor
-        Ior   -> twoOp True  (.|.)
-        Iand  -> twoOp True  (.&.)
-        Itest -> twoOp False (.&.)
-        Iadc  -> do
-            c <- useD carryF
-            twoOp True $ \a b -> a + b + fromIntegral (fromEnum c)
-        Isbb  -> do
-            c <- useD carryF
-            twoOp True $ \a b -> a - b - fromIntegral (fromEnum c)
-        Ineg  -> twoOp_ True (flip (-)) (tr op1) (immLens $ noAnn 0)
---        Inot  -> twoOp_ True (\a _ -> complement a) (tr op1) (immLens undefined)
-        Idec  -> twoOp_ True (+) (tr op1) (immLens $ noAnn (-1))
-        Iinc  -> twoOp_ True (+) (tr op1) (immLens $ noAnn 1)
-
-        Idiv  -> divide id id
-        Iidiv -> divide asSigned asSigned
-        Imul  -> multiply id
-        Iimul -> multiply asSigned
-
-        _ | inOpcode `elem` [Icwd, Icbw] -> move axd $ alx . to (annMap "ext" $ fromIntegral . asSigned)
-          | inOpcode `elem` [Istosb, Istosw] -> move di'' alx >> adjustIndex di
-          | inOpcode `elem` [Ilodsb, Ilodsw] -> move alx si'' >> adjustIndex si
-          | inOpcode `elem` [Imovsb, Imovsw] -> move di'' si'' >> adjustIndex si >> adjustIndex di
-          | inOpcode `elem` [Iscasb, Iscasw] -> do
-            twoOp_ False (-) di'' alx
-            adjustIndex di
-          | inOpcode `elem` [Icmpsb, Icmpsw] -> do
-            twoOp_ False (-) si'' di''
-            adjustIndex si
-            adjustIndex di
-
-        Iin -> do
-            v <- use $ wordOperand segmentPrefix op2
-            input (v ^. coerceS' "1362") >>= (tr op1 .=) . fmap' fromIntegral
-        Iout -> do
-            c <- use $ wordOperand segmentPrefix op1
-            v <- op2v
-            output' (c ^. coerceS' "1366") $ fromIntegral (v ^. coerceS' "1366b")
-
-        _ -> error $ "fatal error step: " ++ show i
-
-      where
-        si'', di'' :: MachinePart (MemPieceS a)
-        si'' = tr $ Mem $ memIndex RSI
-        di'' = tr_ (maybe (Just ES) (const $ error "di''") segmentPrefix) $ Mem $ memIndex RDI
-
-        tr :: Operand -> MachinePart (MemPieceS a)
-        tr = tr_ segmentPrefix
-
-        divide :: (Integral a, Integral c, Integral (X2 c)) => (a -> c) -> (X2 a -> X2 c) -> Machine ()
-        divide asSigned asSigned' = do
-            a <- asSigned' <$> useD (axd . coerceS_')
-            b <- fromIntegral . asSigned . (^. coerceS' "1381") <$> op1v
-            let q = quotRemSafe a b
---                (d', _) = quotRem (fromIntegral a :: Int) (fromIntegral b)
-            case q of
-              Just (d, m)
-{-
-                | fromIntegral d' /= d -> do
-                    alx .= noAnn (-1)
-                    ahd .= noAnn (-1)
--}
-                | otherwise -> do
-                    alx .= noAnn d'
-                    ahd .= noAnn (fromIntegral m)
-               where
-                d' = fromIntegral d
-              Nothing -> throwError $ Err $ "divide by zero interrupt is not called (not implemented)"
-
-        multiply :: forall c . (Extend c, FiniteBits (X2 c)) => (a -> c) -> Machine ()
-        multiply asSigned = do
-            x <- extend . asSigned <$> useD (alx . coerceS_')
-            y <- extend . asSigned . (^. coerceS' "1401") <$> op1v
-            let r = x * y
-                c = r /= extend (fromIntegral r :: c)
-            axd .= noAnn (fromIntegral r)
-            carryF    .= Defined c
-            overflowF .= Defined c
---            setF (r :: X2 c)
-            signF   .= undefBool
-            parityF .= undefBool
-            zeroF   .= undefBool
-
-        op1v = use $ tr op1
-        op2v = use $ tr op2
-{-
-        shiftOp' :: (forall b . (AsSigned b) => Bool -> b -> (Bool, b)) -> Machine ()
-        shiftOp' op = do
-            shiftOp op
--}
-        shiftOp :: (forall b . (AsSigned b) => Bool -> b -> (Bool, b)) -> Machine ()
-        shiftOp op = do
-          a_ <- (^. coerceS_') <$> op1v
-          n_ <- use (byteOperand segmentPrefix op2 . coerceS_')
-          case (a_, n_) of
-           (Defined a, Defined n_) -> do
-{-
-            let fm | inOpcode `elem` [Ircl, Ircr] = (`mod` (finiteBitSize a + 1))
-                   | inOpcode `elem` [Irol, Iror] = (`mod` finiteBitSize a)
-                   | otherwise = min (finiteBitSize a + 1)
--}
-            let fm = id
-            let n = fm . (.&. 0x1f) . fromIntegral $ n_
-            r <- case n of
-              0 -> do
---                when (
-                return a
-              _ -> do
-                c <- useD carryF
-                let (c'_, r_) = iterate (uncurry op) (c, a) !! (n - 1)
-                let (c', r)   = op c'_ r_
-                carryF .= Defined c'
-                tr op1 .= noAnn r
-
-                when (inOpcode `elem` [Isal, Isar, Ishl, Ishr]) $ do
-                    zeroF     .= Defined (r == 0)
-                    signF     .= Defined (r ^. highBit)
-                    overflowF .= undefBool --Defined (r ^. highBit /= a ^. highBit)
-                    parityF   .= Defined (even $ popCount (fromIntegral r :: Word8))
-                    adjustF   .= undefBool
-                -- ???
-                when (inOpcode `elem` [Ircl, Ircr, Irol, Iror]) $ do
-                    zeroF     .= undefBool -- Defined False --(r == 0)
-                    signF     .= undefBool -- Defined False --r ^. highBit
-                    overflowF .= undefBool -- Defined (r ^. highBit /= r_ ^. highBit)
-                    parityF   .= undefBool -- Defined False --even (popCount (fromIntegral r :: Word8))
-                    adjustF   .= undefBool -- Defined False
-
-                return r
-            return ()
-           _ -> do
-                tr op1 .= undef ^. from coerceS_'
-                carryF    .= undefBool
-                zeroF     .= undefBool -- Defined False --(r == 0)
-                signF     .= undefBool -- Defined False --r ^. highBit
-                overflowF .= undefBool -- Defined (r ^. highBit /= r_ ^. highBit)
-                parityF   .= undefBool -- Defined False --even (popCount (fromIntegral r :: Word8))
-                adjustF   .= undefBool -- Defined False
-
-{-
-overflow set:
-c8a7 -rcl-> a7e4     8
-
-overflow clear:
-3e79 -rcl-> e791     4
-
--}
-
-
-        twoOp :: Bool -> (forall b . (Integral b, FiniteBits b) => b -> b -> b) -> Machine ()
-        twoOp store op = twoOp_ store op (tr op1) (tr op2)
-
-    twoOp_ :: (AsSigned a) => Bool -> (forall a . (Integral a, FiniteBits a) => a -> a -> a) -> MachinePart (MemPieceS a) -> MachinePart (MemPieceS a) -> Machine ()
-    twoOp_ store op op1 op2 = do
-      a_ <- use $ op1 . coerceS_'
-      b_ <- use $ op2 . coerceS_'
-      case (a_, b_) of
-       (Defined a, Defined b) -> do
-        let r = op a b
-
-        when (inOpcode `notElem` [Idec, Iinc]) $
-            carryF .= Defined (fromIntegral r /= op (fromIntegral a :: Int) (fromIntegral b))
-        overflowF .= Defined (fromIntegral (asSigned r) /= op (fromIntegral (asSigned a) :: Int) (fromIntegral (asSigned b)))
-
-        zeroF     .= Defined (r == 0)
-        signF     .= Defined (r ^. highBit)
-        parityF   .= Defined (even $ popCount (fromIntegral r :: Word8))
-        when (inOpcode `notElem` []) $
-            adjustF .= undefBool
-
-        when store $ op1 .= noAnn r
-       _ -> do
-        when (inOpcode `notElem` [Idec, Iinc]) $
-            carryF .= undefBool
-        overflowF .= undefBool
-        zeroF     .= undefBool
-        signF     .= undefBool
-        parityF   .= undefBool
-        when (inOpcode `notElem` []) $
-            adjustF .= undefBool
-        when store $ op1 .= undef ^.  from coerceS_'
-
-    move a b = use b >>= (a .=)
-
-    loop cond = do
-        cx %= (+(-1)) --pred
-        condJump =<< (&&) <$> ((/= 0) <$> use cx) <*> cond
-
-    condJump b = when b $ op1w >>= (ip' .=)
-
-    adjustIndex i = do
-        d <- useD directionF
-        i %= fmap (if d then (+(-sizeByte)) else (+sizeByte))
-
-    sizeByte :: Word16
-    sizeByte = fromIntegral $ sizeByte_ i
-
-    ~(op1: ~(op2:_)) = inOperands
-
-    op1' :: MachinePart (MemPiece16)
-    op1' = wordOperand segmentPrefix op1
-    setOp1 = (op1' .=)
-    op1w = use op1'
-    addr op = case op of Mem m -> def =<< use (addressOf segmentPrefix m)
-    op2addr' = case op2 of Mem m -> def =<< use (addressOf' m)
-
-    segmentPrefix :: Maybe Segment
-    segmentPrefix = case inPrefixes of
-        [Seg s] -> Just s
-        [] -> Nothing
 
 input :: Word16 -> Machine (MemPiece16)
 input v = do
@@ -1800,30 +1314,11 @@ origInt v = case v of
     0x08 -> return ()
     _ -> throwError $ Err $ "origInt " ++ showHex' 2 v
 -}
-interrupt_, interrupt :: Word8 -> Machine ()
+interrupt_ :: Word8 -> Machine ()
 interrupt_ n = do
     i <- useD interruptF
-    if i then interrupt n
+    if i then evalExp (interrupt n)
          else trace_ $ "interrupt cancelled " ++ showHex' 2 n
-
-interrupt v = do
-    trace_ $ "interrupt " ++ showHex' 2 v
-    lo <- use $ heap16 (4*fromIntegral v ^. byte)
-    hi <- use $ heap16 (4*fromIntegral v ^. byte + 16)
-    use flags' >>= pushF
-    use cs' >>= push
-    use ip' >>= push
-    interruptF .= Defined False
-    cs' .= hi
-    ip' .= lo
-
-iret = do
-    trace_ "iret"
-    pop >>= (ip' .=)
-    pop >>= (cs' .=)
-    fl <- popF 16
-    interruptF .= (fl ^. from memPieceS . interruptF')
-    return () -- >>= (flags' .=)
 
 {-# NOINLINE unsafePerformIO' #-}
 unsafePerformIO' :: Monad m => IO a -> m a
@@ -1929,7 +1424,7 @@ origInterrupt = M.fromList
 
         0x1a -> do
             trace_ "Set Disk Transfer Address (DTA)"
-            addr <- def =<< use (addressOf Nothing $ memIndex RDX)
+            addr <- addressOf Nothing (memIndex RDX)
             dta .= addr
 
         0x25 -> do
@@ -1959,7 +1454,7 @@ origInterrupt = M.fromList
 --            v <- use dx
             case open_access_mode of
               0 -> do   -- read mode
-                addr <- def =<< use (addressOf Nothing $ memIndex RDX)
+                addr <- addressOf Nothing $ memIndex RDX
                 fname <- use $ heap . bytesAt addr 20
                 let f = map (toUpper . chr . fromIntegral . defined (error "fname") id) $ takeWhile (/=0) fname
                 trace_ $ "File: " ++ show f
@@ -1996,7 +1491,7 @@ origInterrupt = M.fromList
             fn <- (^. _1) . (IM.! handle) <$> use files
             num <- fromIntegral <$> use cx
             trace_ $ "Read " ++ showHex' 4 handle ++ ":" ++ fn ++ " " ++ showHex' 4 num
-            loc <- def =<< use (addressOf Nothing $ memIndex RDX)
+            loc <- addressOf Nothing $ memIndex RDX
             s <- BS.take num . (\(fn, s, p) -> BS.drop p s) . (IM.! handle) <$> use files
             let len = BS.length s
             files %= flip IM.adjust handle (\(fn, s, p) -> (fn, s, p+len))
@@ -2008,7 +1503,7 @@ origInterrupt = M.fromList
             handle <- fromIntegral <$> use bx
             trace_ $ "Write to " ++ showHex' 4 handle
             num <- fromIntegral <$> use cx
-            loc <- def =<< use (addressOf Nothing $ memIndex RDX)
+            loc <- addressOf Nothing $ memIndex RDX
             case handle of
               1 -> trace_ . ("STDOUT: " ++) . map (chr . fromIntegral . defined (error "stdout") id) =<< use (heap . bytesAt loc num)
               2 -> trace_ . ("STDERR: " ++) . map (chr . fromIntegral . defined (error "stderr") id) =<< use (heap . bytesAt loc num)
@@ -2088,7 +1583,7 @@ origInterrupt = M.fromList
 
         0x4e -> do
             attribute_used_during_search <- use cx
-            addr <- def =<< use (addressOf Nothing $ memIndex RDX)
+            addr <- addressOf Nothing $ memIndex RDX
             fname <- use $ heap . bytesAt addr 20
             let f_ = map (chr . fromIntegral . defined (error "fname'") id) $ takeWhile (/=0) fname
             trace_ $ "Find file " ++ show f_
@@ -2154,11 +1649,13 @@ origInterrupt = M.fromList
             trace_ "Set Mouse Mickey Pixel Ratio"
         _    -> throwError $ Err $ "Int 33h, #" ++ showHex' 2 v
   ]
-  where item a k m = (k, (a, m >> iret))
+  where 
+    item :: Word8 -> (Word16, Word16) -> Machine () -> ((Word16, Word16), (Word8, Machine ()))
+    item a k m = (k, (a, m >> evalExp iret))
 
 
 ----------------------------------------------
-
+{-
 infixl 9 @.
 m @. i = push_ i >> m
 
@@ -2166,7 +1663,7 @@ class PushVal a where
     push_ :: a -> Machine ()
 instance PushVal Word16 where
     push_ = push . noAnn
-
+-}
 ----------------------------------------------
 
 prelude1, prelude :: [Word8]
@@ -2390,67 +1887,4 @@ relocate table loc exe = BS.concat $ fst: map add (bss ++ [last])
 
     add (BS.uncons -> Just (x, BS.uncons -> Just (y, xs))) = BS.cons x' $ BS.cons y' xs
         where (y',x') = combine %~ (+ loc) $ (y,x)
-
-
------------------------------------ dead code
-
-{-
-instance Rom BS.ByteString where
-    toRam = BS.pack
-    fromRom i j = take j . BS.unpack . BS.drop i
-    readByte_ s i | 0 <= i && i < BS.length s = Just $ BS.index s i
-                  | otherwise = Nothing
-
-instance ExtRom BS.ByteString where
-    extendRom x v = 
-        (len' ^. from paragraph, v `BS.append` BS.replicate ((len' - len) + (x + 1) ^. paragraph) 0)
-      where
-        len = BS.length v
-        len' = align 16 len
-
-instance Ram (V.Vector Word8) where
-    writeByte i b x = x V.// [(i,b)]
-
-instance PushVal (V.Vector Word16) where
-    push_ v = do
-        x_ <- sLength <$> use heap
-        s <- use ds
-        push $ fromIntegral $ x_ - s ^. paragraph
-        heap %= (`sJoin` h)
-      where
-        h = toRam $ concatMap (\w -> [w ^. low, w ^. high]) $ V.toList v
-
-findRet n = do
-    op <- step_
-    case inOpcode $ mdInst op of
-        Iretf | n == 0 -> return ()
-        Iretf -> findRet (n-1)
-        Icall -> findRet (n+1)
-        _ -> findRet n
-
-instance Rom (V.Vector (MemPiece8)) where
-    toRam = V.fromList . map noAnn
-    fromRom i j = map (^. coerceS) . take j . V.toList . V.drop i
-    -- sLength = V.length
-    -- sJoin = (V.++)
-    readByte_ s i | 0 <= i && i < V.length s = Just $ (s V.! i)
-                  | otherwise = Nothing
-
--- non-rigid!
-instance Rom (IM.IntMap (MemPiece8)) where
-    toRam = IM.fromList . zip [0..] . map noAnn
-    readByte_ s i = IM.lookup i s
-
-instance Rom (S.Seq Word8) where
-    toRam = S.fromList
-    fromRom i j = take j . seqToList . S.drop i
-    readByte_ s i | 0 <= i && i < S.length s = Just $ noAnn $ S.index s i
-                  | otherwise = Nothing
-
-instance Ram (S.Seq Word8) where
-    writeByte i = S.update i . (^. coerceS)
-
-instance Ram (IM.IntMap (MemPiece8)) where
-    writeByte_ i x = Just . IM.insert i (x)
--}
 
