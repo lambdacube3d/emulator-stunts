@@ -663,10 +663,6 @@ b +.+ "" = b
 "" +.+ b = b
 a +.+ b = a ++ "+" ++ b
 
-nonSeg = \case
-    Seg _ -> False
-    x -> True
-
 showInst s Metadata{mdLength = len, mdInst = Inst{..}}
         = showPrefix (filter nonSeg inPrefixes)
         .++ (if inOpcode `elem` [Ixlatb] then segOverride else "")
@@ -1120,40 +1116,9 @@ maxInstLength = 7
 
 disasmConfig = Config Intel Mode16 SyntaxIntel 0
 
-trr :: [Word8] -> Word16
-trr [lo, hi] = fromIntegral lo .|. (fromIntegral hi `shiftL` 8)
-
 
 execInstruction :: Metadata -> (Bool, Machine ())
-execInstruction mdat@Metadata{mdInst = i@Inst{..}}
-  = case filter nonSeg inPrefixes of
-    [Rep, RepE]
-        | inOpcode `elem` [Icmpsb, Icmpsw, Iscasb, Iscasw] -> (,) jump $ cycle $ useD zeroF      -- repe
-        | inOpcode `elem` [Imovsb, Imovsw, Ilodsb, Ilodsw, Istosb, Istosw] -> (,) jump cycle'      -- rep
-    [RepNE]
-        | inOpcode `elem` [Icmpsb, Icmpsw, Iscasb, Iscasw, Imovsb, Imovsw, Ilodsb, Ilodsw, Istosb, Istosw]
-            -> (,) jump $ cycle $ not <$> useD zeroF
-    [] -> (,) jump body
-    x -> error $ "execInstruction: " ++ show x
-  where
-    (jump, body) = execInstructionBody $ mdat { mdInst = i { inPrefixes = filter (not . rep) inPrefixes }}
-
-    cycle' = do
-        c <- use cx
-        replicateM_ (fromIntegral c) body
-        cx .= 0
-        -- zeroF .= True ?
-
-    cycle cond = use cx >>= m >>= (cx .=)
-      where
-        m 0 = return 0
-        m n = do
-            body
-            let n' = n-1
-            b <- cond
-            if b then m n' else return n'
-
-    rep p = p `elem` [Rep, RepE, RepNE]
+execInstruction m = (True, evalExp $ execInstruction' m)
 
 useD k = do
     x <- use k
@@ -1245,6 +1210,7 @@ evalExp = \case
     Snd p -> snd <$> evalExp p
 
     Iterate n f a -> evalExp n >>= \i -> evalExp $ iterate f a !! i
+    Replicate n e -> evalExp n >>= \i -> replicateM_ i $ evalExp e
     Input a -> evalExp a >>= fmap (^. coerceS' "1368") . input
     Output a b -> evalExp a >>= \x -> evalExp b >>= \y -> output' x y
 

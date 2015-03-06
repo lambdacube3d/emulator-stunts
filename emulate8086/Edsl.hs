@@ -48,20 +48,19 @@ data Exp a where
     Fst :: Exp (a, b) -> Exp a
     Snd :: Exp (a, b) -> Exp b
     Iterate :: Exp Int -> (Exp a -> Exp a) -> Exp a -> Exp a
+    Replicate :: Exp Int -> Exp () -> Exp ()
+    If :: Exp Bool -> Exp a -> Exp a -> Exp a
     Error :: Halt -> Exp ()
     Trace :: String -> Exp ()
 
     Get :: Part a -> Exp a
     Set :: Part a -> Exp a -> Exp ()
 
-    If :: Exp Bool -> Exp a -> Exp a -> Exp a
     Eq :: Eq a => Exp a -> Exp a -> Exp Bool
-
     Sub, Add, Mul :: Num a => Exp a -> Exp a -> Exp a
     QuotRem :: Integral a => Exp a -> Exp a -> Exp () -> ((Exp a, Exp a) -> Exp ()) -> Exp ()
     And, Or, Xor :: Bits a => Exp a -> Exp a -> Exp a
     Not, ShiftL, ShiftR, RotateL, RotateR :: Bits a => Exp a -> Exp a
-
     Bit :: Bits a => Int -> Exp a -> Exp Bool
     SetBit :: Bits a => Int -> Exp Bool -> Exp a -> Exp a
     HighBit :: FiniteBits a => Exp a -> Exp Bool
@@ -214,6 +213,36 @@ pop = Let (Get stackTop) $ \x -> do
     x
 
 move a b = Set a $ Get b
+
+execInstruction' :: Metadata -> Exp ()
+execInstruction' mdat@Metadata{mdInst = i@Inst{..}}
+  = case filter nonSeg inPrefixes of
+    [Rep, RepE]
+        | inOpcode `elem` [Icmpsb, Icmpsw, Iscasb, Iscasw] -> cycle $ Get ZF      -- repe
+        | inOpcode `elem` [Imovsb, Imovsw, Ilodsb, Ilodsw, Istosb, Istosw] -> cycle'      -- rep
+    [RepNE]
+        | inOpcode `elem` [Icmpsb, Icmpsw, Iscasb, Iscasw, Imovsb, Imovsw, Ilodsb, Ilodsw, Istosb, Istosw]
+            -> cycle $ Not $ Get ZF
+    [] -> body
+  where
+    body = compileInst $ mdat { mdInst = i { inPrefixes = filter (not . rep) inPrefixes }}
+
+    cycle' = do
+        Replicate (Convert $ Get CX) body
+        Set CX $ C 0
+
+    cycle cond = do
+        If (Eq (C 0) $ Get CX) (return ()) $ do
+            body
+            modify CX $ Add $ C $ -1
+            If cond (cycle cond) (return ())
+
+    rep p = p `elem` [Rep, RepE, RepNE]
+
+nonSeg = \case
+    Seg _ -> False
+    x -> True
+
 
 compileInst :: Metadata -> Exp ()
 compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
