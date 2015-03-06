@@ -163,8 +163,8 @@ loadSegment = 0x20e -- can be arbitrary?
 
 initStateIO = do
     l <- getLabels
-    is <- read <$> readFile "interrupts.txt"
-    (config . counter' .~ (is ++ iterate (+29600) (last is))) . loadExe l loadSegment <$> BS.readFile "../restunts/stunts/game.exe"
+    is <- {- take 100 . -} read <$> readFile "interrupts.txt"
+    (config . counter' .~ (is {- ++ tail (iterate (+5000) (last is))-})) . loadExe l loadSegment <$> BS.readFile "../restunts/stunts/game.exe"
 
 initState = unsafePerformIO initStateIO
 
