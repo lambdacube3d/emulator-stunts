@@ -13,7 +13,7 @@ import Graphics.Rendering.OpenGL.Raw.Core32
 import Graphics.Rendering.OpenGL.Raw.ARB.Compatibility
 import "GLFW-b" Graphics.UI.GLFW as GLFW
 
-drawWithFrameBuffer :: IO (Int -> Int -> Word8) -> IO () -> IO ()
+drawWithFrameBuffer :: IO (Int -> Int -> IO Word8) -> IO () -> IO ()
 drawWithFrameBuffer framebuffer draw = do
     GLFW.init
     Just window <- GLFW.createWindow 640 400 "Haskell 8086 emulator" Nothing Nothing
@@ -27,10 +27,10 @@ drawWithFrameBuffer framebuffer draw = do
             unless b $ do
                 draw
                 f <- framebuffer
-                let vec2 = SVec.generate (640*400) $ \i ->
+                vec2 <- SVec.generateM (640*400) $ \i -> do
                         let (y,x) = i `divMod` 640
-                            a = f (x `shiftR` 1) (199 - y `shiftR` 1)
-                        in palette Vec.! fromIntegral a
+                        a <- f (x `shiftR` 1) (199 - y `shiftR` 1)
+                        return $ palette Vec.! fromIntegral a
                 SVec.unsafeWith vec2 $ glDrawPixels 640 400 gl_RGBA gl_UNSIGNED_INT_8_8_8_8
                 GLFW.swapBuffers window
                 GLFW.pollEvents

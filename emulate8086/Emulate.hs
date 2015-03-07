@@ -34,6 +34,7 @@ import qualified Data.Set as Set
 import qualified Data.Map as M
 import qualified Data.IntMap.Strict as IM
 import qualified Data.Vector as V
+import qualified Data.Vector.Unboxed.Mutable as U
 import Control.Applicative
 import Control.Arrow
 import Control.Monad.State
@@ -44,6 +45,7 @@ import Control.Exception (evaluate)
 import System.Directory
 import System.FilePath (takeFileName)
 import "Glob" System.FilePath.Glob
+--import Data.IORef
 
 import Debug.Trace
 import System.IO.Unsafe
@@ -96,9 +98,6 @@ type MemPiece8  = MemPieceS Word8
 type MemPiece16 = MemPieceS Word16
 type MemPiece32 = MemPieceS Word32
 
-def :: MonadError Halt m => a -> m a
-def = return
-
 fromRom_ :: MemPiece' -> [Word8]
 fromRom_ = IM.elems
 
@@ -114,19 +113,14 @@ wordToFlags w = fromIntegral $ (w .&. 0xed3) .|. 0x2
 
 type MemPiece' = IM.IntMap Word8
 
-memSlice_ :: Int -> Int -> Lens' MemPiece' MemPiece'
-memSlice_ i j = lens get set
-  where
-    i' = i
-    j' = j
-    set s m = IM.unions [s1, m, s2] where
-        (s1, s') = IM.split i' s
-        (_, s2) = IM.split (i' + j' - 1) s'
-    get = fst . IM.split (i' + j') . snd . IM.split (i'-1)
 
 bytesAt_ :: Int -> Int -> Lens' MemPiece' [Word8]
-bytesAt_ i j = memSlice_ i j
-    . iso IM.elems (IM.fromList . zip [i ..] . pad (error "pad") j . take j)
+bytesAt_ i' j' = lens get set
+  where
+    set s m = IM.unions [s1, (IM.fromList . zip [i' ..] . pad (error "pad") j' . take j') m, s2] where
+        (s1, s') = IM.split i' s
+        (_, s2) = IM.split (i' + j' - 1) s'
+    get = IM.elems . fst . IM.split (i' + j') . snd . IM.split (i'-1)
 
 byteAt_ :: Int -> Lens' (IM.IntMap Word8) Word8
 byteAt_ i = lens (IM.! i') $ flip $ IM.insert i' where i' = i
@@ -148,7 +142,7 @@ data Config_ = Config_
     , _disassStart      :: Int
     , _verboseLevel     :: Int
     , _termLength       :: Int  -- width of terminal
-    , _videoMVar        :: MVar (Int -> Int -> Word8)
+    , _videoMVar        :: MVar (Int -> Int -> IO Word8)
     , _instPerSec       :: Int
 
     , _stepsCounter     :: Int
@@ -175,11 +169,15 @@ defConfig = Config_
     , _speaker = 0x30 -- ??
     }
 
+data Regs = Regs { _ax_,_dx_,_bx_,_cx_, _si_,_di_, _cs_,_ss_,_ds_,_es_, _ip_,_sp_,_bp_ :: Word16 }
+
+$(makeLenses ''Regs)
+
 data MachineState = MachineState
     { _flags_   :: Flags
-    , _regs     :: MemPiece'
+    , _regs     :: Regs
     , _heap     :: MemPiece
-    , _heap'     :: MemPiece'
+    , _heap''   :: U.IOVector Word8
 
     , _traceQ   :: [String]
     , _config   :: Config_
@@ -193,9 +191,9 @@ data MachineState = MachineState
 
 emptyState = MachineState
     { _flags_   = wordToFlags 0xf202
-    , _regs     = IM.fromList $ zip [0..] $ replicate (2*26) 0
+    , _regs     = Regs 0 0 0 0  0 0  0 0 0 0  0 0 0
     , _heap     = undefined
-    , _heap'    = mempty
+    , _heap''    = undefined --mempty
 
     , _traceQ   = []
     , _config   = defConfig
@@ -207,10 +205,44 @@ emptyState = MachineState
     , _intMask  = 0xf8
     }
 
-type Machine = ExceptT Halt (State MachineState)
+type Machine = ExceptT Halt (StateT MachineState IO)
 type MachinePart a = Lens' MachineState a
 
 $(makeLenses ''MachineState)
+
+ax = regs . ax_
+bx = regs . bx_
+cx = regs . cx_
+dx = regs . dx_
+si = regs . si_
+di = regs . di_
+cs = regs . cs_
+ss = regs . ss_
+ds = regs . ds_
+es = regs . es_
+ip = regs . ip_
+sp = regs . sp_
+bp = regs . bp_
+
+
+bytesAt__ :: Int -> Int -> MachinePart' [Word8]
+bytesAt__ i' j' = (get, set)
+  where
+    set ws = use heap'' >>= \h -> lift $ lift $ zipWithM_ (U.write h) [i'..]
+        $ (pad (error "pad") j' . take j') ws
+    get = use heap'' >>= \h -> lift $ lift $ mapM (U.read h) [i'..i'+j'-1]
+
+byteAt__ :: Int -> MachinePart' Word8
+byteAt__ i = (use heap'' >>= \h -> lift $ lift $ U.read h i, \v -> use heap'' >>= \h -> lift $ lift $ U.write h i v)
+
+wordAt__ :: Int -> MachinePart' Word16
+wordAt__ i = ( use heap'' >>= \h -> lift $ lift $ (^. combine) <$> liftM2 (,) (U.read h (i+1)) (U.read h i)
+             , \v -> use heap'' >>= \h -> lift $ lift $ U.write h i (v ^. low) >> U.write h (i+1) (v ^. high))
+
+dwordAt__ :: Int -> MachinePart' Word32
+dwordAt__ i = ( (^. combine) <$> liftM2 (,) (fst $ wordAt__ $ i+2) (fst $ wordAt__ i)
+             , \v -> snd (wordAt__ i) (v ^. low) >> snd (wordAt__ $ i+2) (v ^. high))
+
 
 flags :: MachinePart MemPiece16
 flags = flags_ . iso id wordToFlags
@@ -241,16 +273,21 @@ clearHist = do
     | i <- [11,10,9,7,6,4,2,0]
     ]
 
-reg16Lenses@[ax,dx,bx,cx, si,di, cs,ss,ds,es, ip,sp,bp]
-    = [ regs . wordAt_ i | i <- [0,2..24] ]
-reg8Lenses@[al,ah,dl,dh,bl,bh,cl,ch]
-    = [ regs . byteAt_ i | i <- [0..7] ]
-dxax = regs . dwordAt_ 0
+al = ax . low :: MachinePart Word8
+ah = ax . high:: MachinePart Word8
+dl = dx . low :: MachinePart Word8
+dh = dx . high:: MachinePart Word8
+bl = bx . low :: MachinePart Word8
+bh = bx . high:: MachinePart Word8
+cl = cx . low :: MachinePart Word8
+ch = cx . high:: MachinePart Word8
 
-reg16Lenses'@[ax',dx',bx',cx', si',di', cs',ss',ds',es', ip',sp',bp']
-    = [ regs . wordAt_ i | i <- [0,2..24] ]
+dxax = ppp dx ax . combine
+
+[ax',dx',bx',cx', si',di', cs',ss',ds',es', ip',sp',bp']
+    = [ax,dx,bx,cx, si,di, cs,ss,ds,es, ip,sp,bp]
 [al',ah',dl',dh',bl',bh',cl',ch']
-    = [ regs . byteAt_ i | i <- [0..7] ]
+    = [al,ah,dl,dh,bl,bh,cl,ch]
 
 segAddr_ :: MachinePart (Word16) -> Getter MachineState ( Word16) -> Getter MachineState (Int)
 segAddr_ seg off = to $ \s -> segAddr (s ^. seg) (s ^. off)
@@ -261,22 +298,16 @@ sps = segAddr_ ss sp
 xx :: MachinePart (MemPiece16)
 xx = lens (const $ error "xx") $ \s _ -> s
 
-heap8  i = heap' . byteAt_ i
-heap16 i = heap' . wordAt_ i
-
 ----------------------
-
-instance Show MachineState where
-    show s = intercalate "\n" $ showCode s
 
 ifff "" = []
 ifff x = [x]
-
+{-
 mkSteps :: MachineState -> (Halt, MachineState)
 mkSteps s = either (\x -> (x, s')) (const $ either (\x -> (x, s')) (const $ mkSteps s') b) a
   where
     (ju, a, b, s') = mkStep $ hijack s
-
+-}
 addressOf a b = evalExp $ Edsl.addressOf a b
 addressOf' a = evalExp $ Edsl.addressOf' a
 
@@ -297,13 +328,13 @@ askCounter = do
       (c:cc) -> do
         ns <- use $ config . stepsCounter
         if c <= ns then do
-            config . counter' %= tail
+            config . counter' %= drop 1
             return True
           else do
             return False
 
-hijack :: MachineState -> MachineState
-hijack s = flip execState s $ runExceptT{-!!!-} $ do
+hijack :: Machine ()
+hijack = do
     mask <- use intMask
     when (not (mask ^. bit 0)) $ do
         cc <- askCounter
@@ -313,33 +344,24 @@ hijack s = flip execState s $ runExceptT{-!!!-} $ do
 
 
 mkStep
-  :: MachineState
-     -> ( Bool
-        , Either Halt (Either Metadata String)
-        , Either Halt (String)
-        , MachineState
-        )
-mkStep s = (ju, either Left (Right . fst) <$> x__, y, s') where
-    (x__, s_) = flip runState s $ runExceptT $ do
-        md <- fetchInstr
-        _ <- clearHist
-        return md
-
-    (ju, (y, s')) = case x__ of
-        Right (Right (_, m)) -> (True, flip runState s_ $ runExceptT $ m >> clearHist)
-        Right (Left md) -> (,) ju $ flip runState s_ $ runExceptT $ do
+  :: Machine ()
+mkStep = do
+    md <- fetchInstr
+    _ <- clearHist
+    h <- case md of
+        Right (_, m) -> m >> clearHist
+        Left md -> do
             m
             config . stepsCounter %= succ
             clearHist
           where (ju, m) = execInstruction md
-        Left _ -> (True, error "mkStep")
-        
+    when (not $ null h) $ lift $ lift $ putStrLn h
 
 
 verboseLevel' s
     = if s ^. disassStart == 0 then 3 else if s ^. stepsCounter >= s ^. disassStart then 2 else s ^. verboseLevel
     
-
+{-
 cachedStep :: Machine ()
 cachedStep = do
     ips <- use ips
@@ -361,41 +383,30 @@ cachedStep = do
 
         m <- collect
         cache %= IM.insert ips m
+-}
 
+showCode = hijack >> showCodeH
 
-showCode s = showCodeH $ hijack s
-
-showCodeH :: MachineState -> [String]
-showCodeH s = case showCode_ s of
-    (_, str, Left e) -> str ++ showErr e
-    (_, str, Right s) -> str ++ showCode s
+showCodeH :: Machine () -- State -> [String]
+showCodeH = showCode_
 
 showErr e = show e: []
 
 
-showCode_ :: MachineState -> (Bool, [String], Either Halt MachineState)
-showCode_ s = case x_ of
-    Left e -> (ju, [], Left e)
-    Right _ -> next $ ifff traces
-        ++ [vid | ns `mod` ((s ^. config . instPerSec) `div` 25) == 0]
- where
-    ns = s ^. config . stepsCounter
-
-    vid = unsafePerformIO $ do
+showCode_ :: Machine ()
+showCode_ = do
+    mkStep
+    ns <- use $ config . stepsCounter
+    ips <- use $ config . instPerSec
+    when (ns `mod` (ips `div` 25) == 0) $ do
+      v <- use heap''
+      var <- use $ config . videoMVar
+      lift $ lift $ do
         let gs = 0xa0000
-            v = s ^. heap'
-        putMVar (s ^. config . videoMVar) $ \x y -> v ^. byteAt_ (gs + 320 * y + x)
-        return $ show ns
+        putMVar var $ \x y -> U.read v (gs + 320 * y + x)
+        print ns
+    showCode
 
-    traces = case y of
-        Left e -> ("lost history because " ++ show e)
-        Right s -> s
-
-    next xs = (ju, xs, case y of
-        Left e -> Left e
-        Right _ -> Right s')
-
-    (ju, x_, y, s') = mkStep s
 
 
 immLens :: a -> Lens' b a
@@ -410,7 +421,7 @@ fetchInstr = do
       Just (i, m) -> return $ Right ("interrupt " ++ showHex' 2 i ++ "h", m)
       Nothing -> do
         ips <- use ips
-        Just (md, _) <- disassembleOne disasmConfig . BS.pack . getDef . fromRom_ <$> use (heap' . memSlice_ ips maxInstLength)
+        Just (md, _) <- disassembleOne disasmConfig . BS.pack <$> fst (bytesAt__ ips maxInstLength)
         ip %= (+ fromIntegral (mdLength md))
         return $ Left md
 
@@ -421,23 +432,21 @@ maxInstLength = 7
 
 disasmConfig = Config Intel Mode16 SyntaxIntel 0
 
-
 execInstruction :: Metadata -> (Bool, Machine ())
 execInstruction m = (True, evalExp $ execInstruction' m)
 
-useD k = do
-    x <- use k
-    return x
+type MachinePart' a = (Machine a, a -> Machine ())
 
-evalPart :: Part a -> (MachinePart a -> Machine e) -> Machine e
+evalPart :: Part a -> (MachinePart' a -> Machine e) -> Machine e
 evalPart p cont = evalPart' p $ \x -> cont $ x
 
-evalPart' :: Part a -> (MachinePart ( a) -> Machine e) -> Machine e
+evalPart' :: Part a -> (MachinePart' ( a) -> Machine e) -> Machine e
 evalPart' p cont = case p of
-    Heap8 e -> evalExp e >>= \i -> cont $ heap8 i
-    Heap16 e -> evalExp e >>= \i -> cont $ heap16 i
-    Immed e -> evalExp e >>= \i -> cont $ immLens $ i
-    _ -> cont $ evalPart_ p
+    Heap8 e -> evalExp e >>= \i -> cont $ byteAt__ i
+    Heap16 e -> evalExp e >>= \i -> cont $ wordAt__ i
+    Immed e -> evalExp e >>= \i -> cont $ le $ immLens $ i
+    _ -> cont $ le $ evalPart_ p
+le k = (use $ cloneLens k, (cloneLens k .=))
 
 evalPart_ :: Part a -> MachinePart ( a)
 evalPart_ = \case
@@ -472,8 +481,8 @@ evalExp :: Exp a -> Machine a
 evalExp = \case
     C a -> return a
 
-    Get p -> evalPart p $ \k -> use k
-    Set p e -> evalPart p $ \k -> (k .=) =<< evalExp e
+    Get p -> evalPart p $ \(k, _) -> k
+    Set p e -> evalPart p $ \(_, k) -> k =<< evalExp e
 
     If b x y -> evalExp b >>= \b -> evalExp $ if b then x else y
     Eq x y -> liftM2 (==) (evalExp x) (evalExp y)
@@ -587,7 +596,7 @@ origInt v = case v of
 -}
 interrupt_ :: Word8 -> Machine ()
 interrupt_ n = do
-    i <- useD interruptF
+    i <- use interruptF
     if i then evalExp (interrupt n)
          else trace_ $ "interrupt cancelled " ++ showHex' 2 n
 
@@ -701,8 +710,8 @@ origInterrupt = M.fromList
         0x25 -> do
             v <- fromIntegral <$> use al     -- interrupt vector number
             trace_ $ "Set Interrupt Vector " ++ showHex' 2 v
-            use dx' >>= (heap16 (4*v) .=)     -- DS:DX = pointer to interrupt handler
-            use ds' >>= (heap16 (4*v + 2) .=)
+            use dx' >>= (snd $ wordAt__ (4*v))     -- DS:DX = pointer to interrupt handler
+            use ds' >>= (snd $ wordAt__ (4*v + 2))
 
         0x30 -> do
             trace_ "Get DOS version"
@@ -716,8 +725,8 @@ origInterrupt = M.fromList
         0x35 -> do
             v <- fromIntegral <$> use al     -- interrupt vector number
             trace_ $ "Get Interrupt Vector " ++ showHex' 2 v
-            use (heap16 (4*v)) >>= (bx' .=)
-            use (heap16 (4*v + 2)) >>= (es' .=)   -- ES:BX = pointer to interrupt handler
+            fst (wordAt__ (4*v)) >>= (bx' .=)
+            fst (wordAt__ (4*v + 2)) >>= (es' .=)   -- ES:BX = pointer to interrupt handler
 
         0x3d -> do
             trace_ "Open File Using Handle"
@@ -726,7 +735,7 @@ origInterrupt = M.fromList
             case open_access_mode of
               0 -> do   -- read mode
                 addr <- addressOf Nothing $ memIndex RDX
-                fname <- use $ heap' . bytesAt_ addr 20
+                fname <- fst $ bytesAt__ addr 20
                 let f = map (toUpper . chr . fromIntegral) $ takeWhile (/=0) fname
                 trace_ $ "File: " ++ show f
                 let fn = "../original/" ++ f
@@ -766,7 +775,7 @@ origInterrupt = M.fromList
             s <- BS.take num . (\(fn, s, p) -> BS.drop p s) . (IM.! handle) <$> use files
             let len = BS.length s
             files %= flip IM.adjust handle (\(fn, s, p) -> (fn, s, p+len))
-            heap' . bytesAt_ loc len .= (BS.unpack s)
+            snd (bytesAt__ loc len) (BS.unpack s)
             ax' .= "length" @: fromIntegral len
             carryF .=  False
 
@@ -776,8 +785,8 @@ origInterrupt = M.fromList
             num <- fromIntegral <$> use cx
             loc <- addressOf Nothing $ memIndex RDX
             case handle of
-              1 -> trace_ . ("STDOUT: " ++) . map (chr . fromIntegral) =<< use (heap' . bytesAt_ loc num)
-              2 -> trace_ . ("STDERR: " ++) . map (chr . fromIntegral) =<< use (heap' . bytesAt_ loc num)
+              1 -> trace_ . ("STDOUT: " ++) . map (chr . fromIntegral) =<< fst (bytesAt__ loc num)
+              2 -> trace_ . ("STDERR: " ++) . map (chr . fromIntegral) =<< fst (bytesAt__ loc num)
               _ -> return ()
             carryF .=  False
 
@@ -828,7 +837,7 @@ origInterrupt = M.fromList
             carryF .=  False
 
         0x4a -> do
-            new_requested_block_size_in_paragraphs <- def =<< use bx
+            new_requested_block_size_in_paragraphs <- use bx
             trace_ $ "Modify allocated memory blocks to " ++ showHex' 4 new_requested_block_size_in_paragraphs
             segment_of_the_block <- use es      -- (MCB + 1para)
 --            throwError $ Err $ showRom rom
@@ -853,7 +862,7 @@ origInterrupt = M.fromList
         0x4e -> do
             attribute_used_during_search <- use cx
             addr <- addressOf Nothing $ memIndex RDX
-            fname <- use $ heap' . bytesAt_ addr 20
+            fname <- fst $ bytesAt__ addr 20
             let f_ = map (chr . fromIntegral) $ takeWhile (/=0) fname
             trace_ $ "Find file " ++ show f_
             ad <- use dta
@@ -867,12 +876,12 @@ origInterrupt = M.fromList
             case s of
               Just (f, s) -> do
                 trace_ $ "found: " ++ show f
-                heap' . bytesAt_ 0 0x1a .= map (error' . ("undefined byte " ++) . showHex' 2) [0..]
-                heap8 0x00 .= "attribute of serach" @: fromIntegral attribute_used_during_search
-                heap8 0x01 .= "disk used during search" @: 2  -- C:
-                heap' . bytesAt_ 0x02 11 .= pad 0 11 fname
-                heap' . dwordAt_ (ad + 0x1a) .= fromIntegral (BS.length s)
-                heap' . bytesAt_ (ad + 0x1e) 13 .= pad 0 13 (map (fromIntegral . ord) (takeFileName f) ++ [0])
+                snd (bytesAt__ 0 0x1a) $ map (error' . ("undefined byte " ++) . showHex' 2) [0..]
+                snd (byteAt__ 0x00) $ "attribute of serach" @: fromIntegral attribute_used_during_search
+                snd (byteAt__ 0x01) $ "disk used during search" @: 2  -- C:
+                snd (bytesAt__ 0x02 11) $ pad 0 11 fname
+                snd (dwordAt__ $ ad + 0x1a) $ fromIntegral (BS.length s)
+                snd (bytesAt__ (ad + 0x1e) 13) $ pad 0 13 (map (fromIntegral . ord) (takeFileName f) ++ [0])
                 ax .= 0 -- ?
                 carryF .=  False
               Nothing -> do
@@ -991,13 +1000,15 @@ envvars = map (fromIntegral . ord) "PATH=Z:\\\NULCOMSPEC=Z:\\COMMAND.COM\NULBLAS
 replicate' n _ | n < 0 = error "replicate'"
 replicate' n x = replicate n x
 
-loadExe :: Word16 -> BS.ByteString -> MachineState
-loadExe loadSegment gameExe = flip execState emptyState $ do
+loadExe :: Word16 -> BS.ByteString -> Machine ()
+loadExe loadSegment gameExe = do
     heap .= ( [(length rom', length rom2')], 0xa0000 - 16)
-    heap' .= IM.fromList (zip [0..] $ concat
+    h <- lift $ lift $ U.new 0x100000
+    heap'' .= h
+    zipWithM_ (snd . byteAt__) [0..] $ concat
             [ rom2'
             , memUndefined'' $ 0x100000 - length rom2'
-            ])
+            ]
     ss .=  (ssInit + loadSegment)
     sp .=  spInit
     cs .=  (csInit + loadSegment)
@@ -1013,10 +1024,10 @@ loadExe loadSegment gameExe = flip execState emptyState $ do
 
     mapM_ inter [(fromIntegral a, b) | (b, (a, _)) <- M.toList origInterrupt]
 
-    heap16 0x410 .= "equipment word" @: 0xd426 --- 0x4463   --- ???
-    heap8  0x417 .= "keyboard shift flag 1" @: 0x20
+    snd (wordAt__ 0x410) $ "equipment word" @: 0xd426 --- 0x4463   --- ???
+    snd (byteAt__ 0x417) $ "keyboard shift flag 1" @: 0x20
 
-    clearHist
+    void $ clearHist
   where
     rom' = concat
             [ prelude'
@@ -1036,8 +1047,8 @@ loadExe loadSegment gameExe = flip execState emptyState $ do
     psp' = programSegmentPrefix' (length prelude' ^. from paragraph) endseg ""
 
     inter (i, (hi, lo)) = do
-        heap16 (4*i) .= "interrupt lo" @: lo
-        heap16 (4*i + 2) .= "interrupt hi" @: hi
+        snd (wordAt__ $ 4*i) $ "interrupt lo" @: lo
+        snd (wordAt__ $ 4*i + 2) $ "interrupt hi" @: hi
 
     reladd = loadSegment ^. paragraph
 

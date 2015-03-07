@@ -120,17 +120,25 @@ main = do
     vid <- newEmptyMVar
     hSetBuffering stdout NoBuffering
     args <- getArgs
-    initState <- initStateIO
-    print $ length $ IM.elems $ initState ^. heap'
-    forkIO $ 
+
+--    l <- getLabels
+    is <- {- take 100 . -} read <$> readFile "interrupts.txt"
+    let initState = (config . counter' .~ (is {- ++ tail (iterate (+5000) (last is))-})) $ emptyState
+
+    game <- BS.readFile "../restunts/stunts/game.exe"
+
+--    print $ length $ IM.elems $ initState ^. heap'
+    forkIO $ do
 {-
             writeIORef st $ flip execState x $ runExceptT $ do
                 replicateM_ 10000 $ cachedStep
                 clearHist
 -}
 --            putStrLn "."
-
-        print $ config . videoMVar .~ vid $ config . disassStart .~ f args $ config . verboseLevel .~ 1 $ config . termLength .~ 10000 $ steps .~ 20000000 $ initState
+        let x = config . videoMVar .~ vid $ config . disassStart .~ f args $ config . verboseLevel .~ 1 $ config . termLength .~ 10000 $ steps .~ 20000000 $ initState
+        void $ flip evalStateT x $ runExceptT $ do
+            loadExe loadSegment game
+            showCode
     drawWithFrameBuffer (takeMVar vid) $ return ()
 
   where
@@ -163,16 +171,12 @@ comTestMain = do
 
 loadSegment = 0x20e -- can be arbitrary?
 
-initStateIO = do
---    l <- getLabels
-    is <- {- take 100 . -} read <$> readFile "interrupts.txt"
-    (config . counter' .~ (is {- ++ tail (iterate (+5000) (last is))-})) . loadExe loadSegment <$> BS.readFile "../restunts/stunts/game.exe"
-
+{-
 initState = unsafePerformIO initStateIO
 
 eval_ = flip evalState initState . runExceptT
 exec = flip execState initState . runExceptT
-{-
+
 eval :: Machine () -> Word16
 eval s = either f undefined v
   where
