@@ -263,7 +263,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
                 push $ Get IP
             Let (addr op1) $ \ad -> do
                 Set IP $ Get $ Heap16 ad
-                when far $ Set Cs $ Get $ Heap16 $ Add (C $ 2 ^. byte) ad
+                when far $ Set Cs $ Get $ Heap16 $ Add (C 2) ad
         _ -> do
             when (inOpcode == Icall) $ do
                 push $ Get IP
@@ -328,7 +328,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
     Ilea -> Set op1w op2addr'
     _ | inOpcode `elem` [Iles, Ilds] -> Let (addr op2) $ \ad -> do
         Set op1w $ Get $ Heap16 ad
-        Set (case inOpcode of Iles -> Es; Ilds -> Ds) $ Get $ Heap16 $ Add (C $ 2 ^. byte) ad
+        Set (case inOpcode of Iles -> Es; Ilds -> Ds) $ Get $ Heap16 $ Add (C 2) ad
 
     _ -> case sizeByte of
         1 -> withSize byteOperand (Low AX) (High AX) AX
@@ -488,8 +488,8 @@ interrupt v = do
     push $ Get Cs
     push $ Get IP
     Set IF $ C False
-    Set Cs $ Get $ Heap16 $ C (4*fromIntegral v ^. byte + 16)
-    Set IP $ Get $ Heap16 $ C (4*fromIntegral v ^. byte)
+    Set Cs $ Get $ Heap16 $ C (4*fromIntegral v + 2)
+    Set IP $ Get $ Heap16 $ C (4*fromIntegral v)
 
 iret = do
 --    trace_ "iret"
