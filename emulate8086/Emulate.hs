@@ -231,12 +231,12 @@ showBits mask = zipWith f mask . reverse . (^. memBitChunks . convChunks) where
 
 --------------
 
--- we statically know that the size of the MemPiece is 'a' (a ~ WordX)
-newtype MemPieceS a
-    = MemPieceS { _memPieceS :: MemPiece }
-    deriving Show
+type MemPieceS a = a
 
-$(makeLenses ''MemPieceS)
+memPieceS :: WordX a => Iso' (a) MemPiece
+memPieceS = memPieceS' . from (prismToIso undef $ memBitChunks . bitChunks)
+
+memPieceS' = iso id id
 
 type MemPiece1  = MemPieceS Word1
 type MemPiece8  = MemPieceS Word8
@@ -246,29 +246,25 @@ type MemPiece32 = MemPieceS Word32
 def :: MonadError Halt m => a -> m a
 def = return
 
-coerceS_ :: forall a . WordX a => Prism' (MemPieceS a) (a)
-coerceS_ = memPieceS . memBitChunks . bitChunks
-
 coerceS' :: WordX a => String -> Iso' (MemPieceS a) a
-coerceS' e = coerceS_'
+coerceS' e = iso id id
 
 coerceS'' x = x ^. coerceS_' 
 
 -- is this OK?
 coerceS_' :: forall a . WordX a => Iso' (MemPieceS a) (a)
-coerceS_' = prismToIso undef coerceS_
-
-
-instance (WordX a) => Eq (MemPieceS a) where
-    a == b = fromJust $ liftA2 (==) (a ^? coerceS_) (b ^? coerceS_)
+coerceS_' = iso id id
 
 fmap' :: (WordX a, WordX b) => (a -> b) -> MemPieceS a -> MemPieceS b
-fmap' f =  (^. re coerceS_) . f . fromJust . (^? coerceS_)
+fmap' f = f
 
 fromRom :: MemPiece -> [Word8]
 fromRom = map f . (^. memBitChunks . convChunks)
   where
     f (BitChunk 8 x) = x
+
+fromRom_ :: MemPiece' -> [Word8]
+fromRom_ = IM.elems
 
 {-
 instance Functor MemPieceS where
@@ -278,10 +274,10 @@ annMap :: (WordX a, WordX b) => BS.ByteString -> (a -> b) -> MemPieceS a -> MemP
 annMap _ = fmap'
 
 noAnn :: (WordX a) => a -> MemPieceS a
-noAnn = (^. re coerceS_) -- MemPieceS NoAnnot
+noAnn = id -- MemPieceS NoAnnot
 
 (@:) :: (WordX a) => BS.ByteString -> a -> MemPieceS a
-b @: x = x ^. re coerceS_ --MemPieceS (Annot b) x
+b @: x = x --MemPieceS (Annot b) x
 infix 5 @:
 
 allocateMem :: Int -> MemPiece -> (Int, MemPiece)
@@ -324,8 +320,8 @@ modifyAllocated addr req f = memSlice (addr - 16 ^. byte) (req + 16 ^. byte) tr 
 --        F.EmptyL -> error "end of mem 2"
 
 low', high' :: Lens' MemPiece16 MemPiece8
-low' = memPieceS . memSlice 0 8 . from memPieceS
-high' = memPieceS . memSlice 8 8 . from memPieceS
+low' = memPieceS' . low . from memPieceS'
+high' = memPieceS' . high . from memPieceS'
 
 memSlice :: Int -> Int -> Lens' MemPiece MemPiece
 memSlice 0 l tr mp | l == measure mp = tr mp
@@ -382,18 +378,10 @@ memSlice off l tr mp = case mp of
 
 type Flags = MemPiece16
 
-showFlags :: Flags -> String
-showFlags = showBits "____oditsz_a_p_c" . (^. memPieceS)
-
 wordToFlags :: Word16 -> Flags
-wordToFlags w = MemPieceS $ mconcat
-    [ memBits 0 8 w'
-    , MemUndefined 1
-    , memBits 9 3 w'
-    , MemUndefined 4
-    ]
- where
-    w' = fromIntegral $ (w .&. 0xed3) .|. 0x2
+wordToFlags w = fromIntegral $ (w .&. 0xed3) .|. 0x2
+
+
 
 -----------------------
 
@@ -404,20 +392,50 @@ bytesAt i j = memSlice (checkAlign 3 i) (j ^. byte)
     f = map $ \(BitChunk 8 x) -> x
     g = map $ BitChunk 8
 
+
+type MemPiece' = IM.IntMap Word8
+
+memSlice_ :: Int -> Int -> Lens' MemPiece' MemPiece'
+memSlice_ i j = lens get set
+  where
+    i' = i ^. from byte
+    j' = j ^. from byte
+    set s m = IM.unions [s1, m, s2] where
+        (s1, s') = IM.split i' s
+        (_, s2) = IM.split (i' + j' - 1) s'
+    get = fst . IM.split (i' + j') . snd . IM.split (i'-1)
+
+bytesAt_ :: Int -> Int -> Lens' MemPiece' [Word8]
+bytesAt_ i j = memSlice_ i (j ^. byte)
+    . iso IM.elems (IM.fromList . zip [i ^. from byte ..] . pad (error "pad") j . take j)
+
+
 byteAt :: Int -> Lens' MemPiece (Word8)
-byteAt i = byteAt' i . coerceS_'
+byteAt i = byteAt' i
 
 byteAt' :: Int -> Lens' MemPiece MemPiece8
 byteAt' i = memSlice (checkAlign 3 i) 8 . from memPieceS
 
+byteAt_ :: Int -> Lens' (IM.IntMap Word8) Word8
+byteAt_ i = lens (IM.! i') $ flip $ IM.insert i' where i' = i ^. from byte
+
+wordAt_ :: Int -> Lens' (IM.IntMap Word8) Word16
+wordAt_ i = ppp (byteAt_ (i + 1 ^. byte)) (byteAt_ i) . combine
+
+dwordAt_ :: Int -> Lens' (IM.IntMap Word8) Word32
+dwordAt_ i = ppp (wordAt_ (i + 2 ^. byte)) (wordAt_ i) . combine
+
 wordAt :: Int -> Lens' MemPiece ( Word16)
-wordAt i = wordAt' i . coerceS_'
+wordAt i = wordAt' i
+
+ppp :: Lens' a b -> Lens' a c -> Lens' a (b, c)
+ppp k l = lens (\s -> (s ^. k, s ^. l)) $ flip $ \(x, y) -> (k .~ x) . (l .~ y)
 
 wordAt' :: Int -> Lens' MemPiece MemPiece16
 wordAt' i = memSlice (checkAlign 3 i) 16 . from memPieceS
 
 dwordAt :: Int -> Lens' MemPiece (Word32)
-dwordAt i = dwordAt' i . coerceS_'
+dwordAt i = dwordAt' i
 
 dwordAt' :: Int -> Lens' MemPiece MemPiece32
 dwordAt' i = memSlice (checkAlign 3 i) 32 . from memPieceS
@@ -463,8 +481,9 @@ defConfig = Config_
 
 data MachineState = MachineState
     { _flags_   :: Flags
-    , _regs     :: MemPiece
+    , _regs     :: MemPiece'
     , _heap     :: MemPiece
+    , _heap'     :: MemPiece'
 
     , _traceQ   :: [String]
     , _config   :: Config_
@@ -478,8 +497,9 @@ data MachineState = MachineState
 
 emptyState = MachineState
     { _flags_   = wordToFlags 0xf202
-    , _regs     = toRam $ replicate (2*26) 0 --  mconcat $ replicate 26 $ memBits 0 16 0
+    , _regs     = IM.fromList $ zip [0..] $ replicate (2*26) 0 --  mconcat $ replicate 26 $ memBits 0 16 0
     , _heap     = mconcat []
+    , _heap'    = mempty
 
     , _traceQ   = []
     , _config   = defConfig
@@ -495,6 +515,9 @@ type Machine = ExceptT Halt (State MachineState)
 type MachinePart a = Lens' MachineState a
 
 $(makeLenses ''MachineState)
+
+flags :: MachinePart MemPiece16
+flags = flags_ . iso wordToFlags wordToFlags
 
 setCounter = do
     trace_ "setCounter"
@@ -518,26 +541,26 @@ clearHist = do
     return (intercalate "; " $ reverse h)
 
 [overflowF',directionF',interruptF',signF',zeroF',adjustF',parityF',carryF'] =
-    [ memPieceS . memSlice i 1 . from memPieceS . coerceS_' . bit0  :: Lens' Flags (Bool)
+    [ memPieceS' . bit i :: Lens' Flags (Bool)
     | i <- [11,10,9,7,6,4,2,0]
     ]
 
 [overflowF,directionF,interruptF,signF,zeroF,adjustF,parityF,carryF] =
-    [ flags . memPieceS . memSlice i 1 . from memPieceS . coerceS_' . bit0  :: MachinePart (Bool)
+    [ flags . memPieceS' . bit i  :: MachinePart (Bool)
     | i <- [11,10,9,7,6,4,2,0]
     ]
 
 reg16Lenses@[ax,dx,bx,cx, si,di, cs,ss,ds,es, ip,sp,bp]
-    = [ regs . wordAt i | i <- map (^. byte) [0,2..24] ]
+    = [ regs . wordAt_ i | i <- map (^. byte) [0,2..24] ]
 reg8Lenses@[al,ah,dl,dh,bl,bh,cl,ch]
-    = [ regs . byteAt i | i <- map (^. byte) [0..7] ]
-dxax = regs . dwordAt' 0
+    = [ regs . byteAt_ i | i <- map (^. byte) [0..7] ]
+dxax = regs . dwordAt_ 0
 
 -- experimental
 reg16Lenses'@[ax',dx',bx',cx', si',di', cs',ss',ds',es', ip',sp',bp']
-    = [ regs . wordAt' i | i <- map (^. byte) [0,2..24] ]
+    = [ regs . wordAt_ i | i <- map (^. byte) [0,2..24] ]
 [al',ah',dl',dh',bl',bh',cl',ch']
-    = [ regs . byteAt' i | i <- map (^. byte) [0..7] ]
+    = [ regs . byteAt_ i | i <- map (^. byte) [0..7] ]
 
 segAddr_ :: MachinePart (Word16) -> Getter MachineState ( Word16) -> Getter MachineState (Int)
 segAddr_ seg off = to $ \s -> segAddr (s ^. seg) (s ^. off)
@@ -552,11 +575,8 @@ fs, gs :: MachinePart (Word16)
 fs = lens (const $ 0) $ \s _ -> s
 gs = lens (const $ 0) $ \s _ -> s
 
-
-flags = flags_ . memPieceS . iso id ((memSlice 12 4 .~ memUndefined 4) . (memSlice 1 1 .~ memBits 0 1 1) . (memSlice 3 1 .~ memBits 0 1 0) . (memSlice 5 1 .~ memBits 0 1 0)) . from memPieceS
-
-heap8  i = heap . byteAt' i
-heap16 i = heap . wordAt' i
+heap8  i = heap' . byteAt_ i
+heap16 i = heap' . wordAt_ i
 
 ----------------------
 
@@ -677,8 +697,8 @@ showCode_ s = case x_ of
 
     vid = unsafePerformIO $ do
         let gs = 0xa0000
-            v = s ^. heap . memSlice (gs ^. byte) ((320 * 200) ^. byte)
-        putMVar (s ^. config . videoMVar) $ \x y -> v ^. byteAt' ((320 * y + x) ^. byte) . coerceS_'
+            v = s ^. heap' -- . memSlice_ (gs ^. byte) ((320 * 200) ^. byte)
+        putMVar (s ^. config . videoMVar) $ \x y -> v ^. byteAt_ (gs ^. byte + (320 * y + x) ^. byte) . coerceS_'
         return $ show ns
 
     traces = case y of
@@ -704,7 +724,7 @@ fetchInstr = do
       Just (i, m) -> return $ Right ("interrupt " ++ showHex' 2 i ++ "h", m)
       Nothing -> do
         ips <- use ips
-        Just (md, _) <- disassembleOne disasmConfig . BS.pack . getDef . fromRom <$> use (heap . memSlice ips (maxInstLength ^. byte))
+        Just (md, _) <- disassembleOne disasmConfig . BS.pack . getDef . fromRom_ <$> use (heap' . memSlice_ ips (maxInstLength ^. byte))
         ip %= (+ fromIntegral (mdLength md))
         return $ Left md
 
@@ -1020,7 +1040,7 @@ origInterrupt = M.fromList
             case open_access_mode of
               0 -> do   -- read mode
                 addr <- addressOf Nothing $ memIndex RDX
-                fname <- use $ heap . bytesAt addr 20
+                fname <- use $ heap' . bytesAt_ addr 20
                 let f = map (toUpper . chr . fromIntegral) $ takeWhile (/=0) fname
                 trace_ $ "File: " ++ show f
                 let fn = "../original/" ++ f
@@ -1060,7 +1080,7 @@ origInterrupt = M.fromList
             s <- BS.take num . (\(fn, s, p) -> BS.drop p s) . (IM.! handle) <$> use files
             let len = BS.length s
             files %= flip IM.adjust handle (\(fn, s, p) -> (fn, s, p+len))
-            heap . bytesAt loc len .= (BS.unpack s)
+            heap' . bytesAt_ loc len .= (BS.unpack s)
             ax' .= "length" @: fromIntegral len
             carryF .=  False
 
@@ -1070,8 +1090,8 @@ origInterrupt = M.fromList
             num <- fromIntegral <$> use cx
             loc <- addressOf Nothing $ memIndex RDX
             case handle of
-              1 -> trace_ . ("STDOUT: " ++) . map (chr . fromIntegral) =<< use (heap . bytesAt loc num)
-              2 -> trace_ . ("STDERR: " ++) . map (chr . fromIntegral) =<< use (heap . bytesAt loc num)
+              1 -> trace_ . ("STDOUT: " ++) . map (chr . fromIntegral) =<< use (heap' . bytesAt_ loc num)
+              2 -> trace_ . ("STDERR: " ++) . map (chr . fromIntegral) =<< use (heap' . bytesAt_ loc num)
               _ -> return ()
             carryF .=  False
 
@@ -1147,7 +1167,7 @@ origInterrupt = M.fromList
         0x4e -> do
             attribute_used_during_search <- use cx
             addr <- addressOf Nothing $ memIndex RDX
-            fname <- use $ heap . bytesAt addr 20
+            fname <- use $ heap' . bytesAt_ addr 20
             let f_ = map (chr . fromIntegral) $ takeWhile (/=0) fname
             trace_ $ "Find file " ++ show f_
             ad <- use dta
@@ -1161,12 +1181,12 @@ origInterrupt = M.fromList
             case s of
               Just (f, s) -> do
                 trace_ $ "found: " ++ show f
-                heap . bytesAt (0 ^. byte) 0x1a .= map (error . ("undefined byte " ++) . showHex' 2) [0..]
+                heap' . bytesAt_ (0 ^. byte) 0x1a .= map (error' . ("undefined byte " ++) . showHex' 2) [0..]
                 heap8 (0x00 ^. byte) .= "attribute of serach" @: fromIntegral attribute_used_during_search
                 heap8 (0x01 ^. byte) .= "disk used during search" @: 2  -- C:
-                heap . bytesAt (0x02 ^. byte) 11 .= pad 0 11 fname
-                heap . dwordAt (ad + 0x1a ^. byte) .= fromIntegral (BS.length s)
-                heap . bytesAt (ad + 0x1e ^. byte) 13 .= pad 0 13 (map (fromIntegral . ord) (takeFileName f) ++ [0])
+                heap' . bytesAt_ (0x02 ^. byte) 11 .= pad 0 11 fname
+                heap' . dwordAt_ (ad + 0x1a ^. byte) .= fromIntegral (BS.length s)
+                heap' . bytesAt_ (ad + 0x1e ^. byte) 13 .= pad 0 13 (map (fromIntegral . ord) (takeFileName f) ++ [0])
                 ax .= 0 -- ?
                 carryF .=  False
               Nothing -> do
@@ -1186,7 +1206,7 @@ origInterrupt = M.fromList
     throwError $ Err $ "int 24"
 
   , item 0x33 (0xc7ff,0x0010) $ do     -- 33h
-    trace_ "Mouse Services"
+--    trace_ "Mouse Services"
     v <- use ax
     case v of
         0x00 -> do
@@ -1194,7 +1214,7 @@ origInterrupt = M.fromList
             ax' .= "mouse?" @: 0xffff -- "mouse driver not installed" @: 0x0000
             bx' .= "number of buttons" @: 3 -- 0
         0x03 -> do
-            trace_ "Get Mouse position and button status"
+--            trace_ "Get Mouse position and button status"
             cx' .= "mouse X" @: 0
             dx' .= "mouse Y" @: 0
             bx' .= "button status" @: 0
@@ -1241,10 +1261,22 @@ prelude
      = prelude1
     ++ [error $ "dos area " ++ showHex' 2 i | i <- [length prelude1..0x1f40-1]]
 
+prelude1'
+     = [error' $ "interruptTable " ++ showHex' 2 (i `div` 4) | i <- [0..1023]]
+    ++ replicate 172 (error' "BIOS communication area")
+    ++ replicate 68 (error' "reserved by IBM")
+    ++ replicate 16 (error' "user communication area")
+    ++ replicate 256 (error' "DOS communication area")
+    ++ [error' $ "dos area " ++ showHex' 2 i | i <- [0x600 ..0x700-1]]
+prelude'
+     = prelude1'
+    ++ [error' $ "dos area " ++ showHex' 2 i | i <- [length prelude1..0x1f40-1]]
+
+
 origTimer =
     [0x50, 0xb0, 0x20, 0xe6, 0x20, 0x58, 0xcf]       -- push ax; mov al, 20h; out 20h, al; pop ax; iret
     ++ replicate (maxInstLength - 1) 0  -- hack for fetchinstruction
-
+{-
 loadTest :: BS.ByteString -> MachineState
 loadTest com = flip execState emptyState $ do
     heap .= mconcat
@@ -1312,7 +1344,7 @@ loadCom com = flip execState emptyState $ do
     stacksize = 2^8 :: Int
 
     loadSegment = 0x1000
-
+-}
 programSegmentPrefix :: Word16 -> Word16 -> BS.ByteString -> MemPiece
 programSegmentPrefix envseg endseg args = flip execState (toRam $ map (error . ("psp uninitialized byte: " ++) . showHex' 2) [0..0xff] :: MemPiece) $ do
 
@@ -1350,6 +1382,47 @@ programSegmentPrefix envseg endseg args = flip execState (toRam $ map (error . (
   where
     maxlength = 125
 
+error' :: String -> Word8
+error' _ = 0
+memUndefined'' i = replicate (i ^. from byte) 0
+
+programSegmentPrefix' :: Word16 -> Word16 -> BS.ByteString -> MemPiece'
+programSegmentPrefix' envseg endseg args = flip execState (IM.fromList $ zip [0..] $ map (error' . ("psp uninitialized byte: " ++) . showHex' 2) [0..0xff] :: MemPiece') $ do
+
+    wordAt_ (0x00 ^. byte) .= "CP/M exit, always contain code 'int 20h'" @: 0x20CD
+    wordAt_ (0x02 ^. byte) .= "Segment of the first byte beyond the memory allocated to the program" @: endseg
+--    bytesAt 0x05 5 .= [0xea, 0xff, 0xff, 0xad, 0xde]   -- FAR call to MSDOS function dispatcher (int 21h)?
+--    dwordAt 0x0a .= 0xf00020c8    -- Terminate address of previous program (old INT 22h)
+--    dwordAt 0x0e .= 0x01180000    -- Break address of previous program (old INT 23h)
+--    dwordAt 0x12 .= 0x01180110    -- Critical error address of previous program (old INT 24h)
+--    wordAt 0x16 .= 0x0118    -- Caller's PSP segment (usually COMMAND.COM - internal)
+
+    -- Job File Table (JFT) (internal)
+--    bytesAt 0x18 20 .= [0x01, 0x01, 0x01, 0x00, 0x02, 0x03] ++ repeat 0xff
+
+    wordAt_ (0x2c ^. byte) .= "Environment segment" @: envseg
+--    dwordAt 0x2e .= 0x0192ffe6 -- SS:SP on entry to last INT 21h call (internal)
+
+--    wordAt 0x32 .= 0x0014 -- JFT size (internal)
+--    dwordAt 0x34 .= 0x01920018-- Pointer to JFT (internal)
+--    dwordAt 0x38 .= 0xffffffff -- Pointer to previous PSP (only used by SHARE in DOS 3.3 and later)
+    -- 3Ch-3Fh     4 bytes     Reserved
+--    wordAt 0x40 .= 0x0005 -- DOS version to return (DOS 4 and later, alterable via SETVER in DOS 5 and later)
+    -- 42h-4Fh     14 bytes     Reserved
+    bytesAt_ (0x50 ^. byte) 3 .= [0xcd, 0x21, 0xcb] -- (code) Far call to DOS (always contain INT 21h + RETF)
+    -- 53h-54h     2 bytes     Reserved
+    -- 55h-5Bh     7 bytes     Reserved (can be used to make first FCB into an extended FCB)
+
+    -- 5Ch-6Bh     16 bytes     Unopened Standard FCB 1
+    -- 6Ch-7Fh     20 bytes     Unopened Standard FCB 2 (overwritten if FCB 1 is opened)
+--    bytesAt 0x5c (16 + 20) .= repeat 0
+
+    byteAt_ (0x80 ^. byte) .= "args length" @: fromIntegral (min maxlength $ BS.length args)
+    bytesAt_ (0x81 ^. byte) (maxlength + 1) .= pad 0 (maxlength + 1) (take maxlength (BS.unpack args) ++ [0x0D])  -- Command line string
+--    byteAt 0xff .= 0x36   -- dosbox specific?
+  where
+    maxlength = 125
+
 pspSize = 256 :: Int
 
 
@@ -1362,11 +1435,13 @@ envvars = map (fromIntegral . ord) "PATH=Z:\\\NULCOMSPEC=Z:\\COMMAND.COM\NULBLAS
 
 --envvars = [0,0,0,0,0] --"\NUL\NUL\NUL\NUL\NUL\NUL" -- BS.concat (map (`BS.append` "\NUL") ["PATH="]) `BS.append` "\NUL"
 
+reform m = memUndefined' (measure m)
+
 replicate' n _ | n < 0 = error "replicate'"
 replicate' n x = replicate n x
 
-loadExe :: IM.IntMap BS.ByteString -> Word16 -> BS.ByteString -> MachineState
-loadExe labs loadSegment gameExe = flip execState emptyState $ do
+loadExe :: Word16 -> BS.ByteString -> MachineState
+loadExe loadSegment gameExe = flip execState emptyState $ do
     heap .= mconcat
             [ rom2
             , memUndefined' $ 0xa0000 ^. byte - measure rom2 - 16 ^. byte -- ???
@@ -1374,6 +1449,13 @@ loadExe labs loadSegment gameExe = flip execState emptyState $ do
             , memUndefined' $ 0x10000 ^. byte
             , memUndefined' $ 0x50000 ^. byte
             ]
+    heap' .= IM.fromList (zip [0..] $ concat
+            [ rom2'
+            , memUndefined'' $ 0xa0000 ^. byte - measure rom2 - 16 ^. byte -- ???
+            , memUndefined'' $ 16 ^. byte --toRam $ replicate 16 $ error "unknown reserved"
+            , memUndefined'' $ 0x10000 ^. byte
+            , memUndefined'' $ 0x50000 ^. byte
+            ])
     ss .=  (ssInit + loadSegment)
     sp .=  spInit
     cs .=  (csInit + loadSegment)
@@ -1385,7 +1467,7 @@ loadExe labs loadSegment gameExe = flip execState emptyState $ do
     bp .=  0x091c -- why?
     si .=  0x0012 -- why?
     di .=  0x1f40 -- why?
-    labels .= IM.fromDistinctAscList (map (((^. byte) . (+ reladd)) *** id) $ IM.toList labs)
+    labels .= mempty
 
     mapM_ inter [(fromIntegral a, b) | (b, (a, _)) <- M.toList origInterrupt]
 
@@ -1404,14 +1486,30 @@ loadExe labs loadSegment gameExe = flip execState emptyState $ do
             , toRam $ replicate' (loadSegment ^. paragraph - length prelude - length envvars - measure psp ^. from byte - 16) $ error "dos internals 2"
             ]
     rom2 = mconcat
-        [ rom
-        , memAllocated $ mconcat
+        [ reform rom
+        , memAllocated $ reform $ mconcat
             [ psp
             , toRom $ relocate relocationTable loadSegment $ BS.drop headerSize gameExe
             , memUndefined' $ additionalMemoryAllocated ^. paragraph . byte
             ]
         ]
 
+    rom' = concat
+            [ prelude'
+            , envvars
+            , replicate' (loadSegment ^. paragraph - length prelude - length envvars - measure psp ^. from byte - 16) 0
+            ]
+    rom2' = concat
+        [ rom'
+        , concat
+            [ replicate 16 0
+            , IM.elems psp'
+            , BS.unpack $ relocate relocationTable loadSegment $ BS.drop headerSize gameExe
+            , memUndefined'' $ additionalMemoryAllocated ^. paragraph . byte
+            ]
+        ]
+
+    psp' = programSegmentPrefix' (length prelude ^. from paragraph) endseg ""
     psp = programSegmentPrefix (length prelude ^. from paragraph) endseg ""
 
     inter (i, (hi, lo)) = do

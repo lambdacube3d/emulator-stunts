@@ -7,6 +7,7 @@ import Data.Bits hiding (bit)
 import Data.IORef
 import qualified Data.ByteString as BS
 import qualified Data.Sequence as S
+import qualified Data.IntMap as IM
 import qualified Data.Vector as V
 import Control.Applicative
 --import Control.Arrow
@@ -120,6 +121,7 @@ main = do
     hSetBuffering stdout NoBuffering
     args <- getArgs
     initState <- initStateIO
+    print $ length $ IM.elems $ initState ^. heap'
     forkIO $ 
 {-
             writeIORef st $ flip execState x $ runExceptT $ do
@@ -162,9 +164,9 @@ comTestMain = do
 loadSegment = 0x20e -- can be arbitrary?
 
 initStateIO = do
-    l <- getLabels
+--    l <- getLabels
     is <- {- take 100 . -} read <$> readFile "interrupts.txt"
-    (config . counter' .~ (is {- ++ tail (iterate (+5000) (last is))-})) . loadExe l loadSegment <$> BS.readFile "../restunts/stunts/game.exe"
+    (config . counter' .~ (is {- ++ tail (iterate (+5000) (last is))-})) . loadExe loadSegment <$> BS.readFile "../restunts/stunts/game.exe"
 
 initState = unsafePerformIO initStateIO
 
