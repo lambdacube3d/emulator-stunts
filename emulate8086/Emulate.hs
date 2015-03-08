@@ -125,15 +125,18 @@ data Regs = Regs { _ax_,_dx_,_bx_,_cx_, _si_,_di_, _cs_,_ss_,_ds_,_es_, _ip_,_sp
 
 $(makeLenses ''Regs)
 
+type UVec = U.IOVector Word16
+type Cache = (IM.IntMap (Exp ()), IM.IntMap (Machine ()))
+
 data MachineState = MachineState
     { _flags_   :: Flags
     , _regs     :: Regs
     , _heap     :: MemPiece
-    , _heap''   :: U.IOVector Word8
+    , _heap''   :: UVec
 
     , _traceQ   :: [String]
     , _config   :: Config_
-    , _cache    :: IM.IntMap (Machine ())
+    , _cache    :: Cache
     , _labels   :: IM.IntMap BS.ByteString
     , _files    :: IM.IntMap (FilePath, BS.ByteString, Int)  -- filename, file, position
     , _dta      :: Int
@@ -149,7 +152,7 @@ emptyState = MachineState
 
     , _traceQ   = []
     , _config   = defConfig
-    , _cache    = IM.empty
+    , _cache    = (IM.empty, IM.empty)
     , _labels   = IM.empty
     , _files    = IM.empty
     , _dta      = 0
@@ -179,20 +182,37 @@ ip = regs . ip_
 sp = regs . sp_
 bp = regs . bp_
 
+uRead, uReadInfo :: UVec -> Int -> IO Word8
+uRead h i = (^. low) <$> U.read h i
+uReadInfo h i = (^. high) <$> U.read h i
+
+uWrite, uWriteInfo :: UVec -> Int -> Word8 -> IO ()
+uWrite h i v = do
+    x <- U.read h i
+    U.write h i $ (0, v) ^. combine
+    let info = x ^. high :: Word8
+        xh = info .&. 7
+        i' = i - fromIntegral xh + 1
+    when (xh > 1) $ do
+        when (info == 0xff) $ error "system area written"
+        uWriteInfo h i' 0
+uWriteInfo h i v = do
+    x <- U.read h i
+    U.write h i $ high .~ v $ x
 
 bytesAt__ :: Int -> Int -> MachinePart' [Word8]
 bytesAt__ i' j' = (get, set)
   where
-    set ws = use heap'' >>= \h -> liftIO $ zipWithM_ (U.write h) [i'..]
+    set ws = use heap'' >>= \h -> liftIO $ zipWithM_ (uWrite h) [i'..]
         $ (pad (error "pad") j' . take j') ws
-    get = use heap'' >>= \h -> liftIO $ mapM (U.read h) [i'..i'+j'-1]
+    get = use heap'' >>= \h -> liftIO $ mapM (uRead h) [i'..i'+j'-1]
 
 byteAt__ :: Int -> MachinePart' Word8
-byteAt__ i = (use heap'' >>= \h -> liftIO $ U.read h i, \v -> use heap'' >>= \h -> liftIO $ U.write h i v)
+byteAt__ i = (use heap'' >>= \h -> liftIO $ uRead h i, \v -> use heap'' >>= \h -> liftIO $ uWrite h i v)
 
 wordAt__ :: Int -> MachinePart' Word16
-wordAt__ i = ( use heap'' >>= \h -> liftIO $ (^. combine) <$> liftM2 (,) (U.read h (i+1)) (U.read h i)
-             , \v -> use heap'' >>= \h -> liftIO $ U.write h i (v ^. low) >> U.write h (i+1) (v ^. high))
+wordAt__ i = ( use heap'' >>= \h -> liftIO $ (^. combine) <$> liftM2 (,) (uRead h (i+1)) (uRead h i)
+             , \v -> use heap'' >>= \h -> liftIO $ uWrite h i (v ^. low) >> uWrite h (i+1) (v ^. high))
 
 dwordAt__ :: Int -> MachinePart' Word32
 dwordAt__ i = ( (^. combine) <$> liftM2 (,) (fst $ wordAt__ $ i+2) (fst $ wordAt__ i)
@@ -291,21 +311,6 @@ hijack = do
             interrupt_ 0x08
 
 
-mkStep
-  :: Machine ()
-mkStep = do
-    md <- fetchInstr
-    _ <- clearHist
-    h <- case md of
-        Right (_, m) -> m >> clearHist
-        Left md -> do
-            m
-            config . stepsCounter %= succ
-            clearHist
-          where (ju, m) = execInstruction md
-    when (not $ null h) $ liftIO $ putStrLn h
-
-
 verboseLevel' s
     = if s ^. disassStart == 0 then 3 else if s ^. stepsCounter >= s ^. disassStart then 2 else s ^. verboseLevel
     
@@ -351,7 +356,7 @@ showCode_ = do
       var <- use $ config . videoMVar
       liftIO $ do
         let gs = 0xa0000
-        putMVar var $ \x y -> U.read v (gs + 320 * y + x)
+        putMVar var $ \x y -> uRead v (gs + 320 * y + x)
         print ns
     showCode
 
@@ -360,18 +365,82 @@ showCode_ = do
 immLens :: a -> Lens' b a
 immLens c = lens (const c) $ \_ _ -> error "can't update immediate value"
 
-
-fetchInstr :: Machine (Either Metadata (String, Machine ()))
-fetchInstr = do
-    cs_ <- use cs
-    ip_ <- use ip
-    case M.lookup (cs_, ip_) origInterrupt of
-      Just (i, m) -> return $ Right ("interrupt " ++ showHex' 2 i ++ "h", m)
-      Nothing -> do
-        ips <- use ips
+mkStep :: Machine ()
+mkStep = do
+    h <- use heap''
+    ips <- use ips
+    info <- readInfo ips
+    case info of
+      Builtin -> do
+        cs_ <- use cs
+        ip_ <- use ip
+        case M.lookup (cs_, ip_) origInterrupt of
+          Just (i, m) -> do
+            m -- return $ Right ("interrupt " ++ showHex' 2 i ++ "h", m)
+            showHist
+      OneByte key -> do
+        Just m <- use $ cache . _1 . at key
+        evalExp m
+        config . stepsCounter %= succ
+        showHist
+      _ -> do
         Just (md, _) <- disassembleOne disasmConfig . BS.pack <$> fst (bytesAt__ ips maxInstLength)
+        let m = execInstruction' md
+            ch = Edsl.modify IP (Add $ C $ fromIntegral $ mdLength md) >> m
+        case cacheable md of
+          Just (hash, vs) -> do
+            liftIO $ zipWithM_ (uWriteInfo h) [ips..] vs
+            cache . _1 %= IM.insert hash ch
+          Nothing -> return ()
         ip %= (+ fromIntegral (mdLength md))
-        return $ Left md
+--        _ <- clearHist
+        evalExp m
+        config . stepsCounter %= succ
+        showHist
+
+showHist = do
+    hist <- clearHist
+    when (not $ null hist) $ liftIO $ putStrLn hist
+
+data Info
+    = Builtin
+    | OneByte Int
+    | NoInfo
+
+readInfo :: Int -> Machine Info
+readInfo i = do
+    h <- use heap''
+    info <- liftIO $ uReadInfo h i
+    case info of
+      0xff -> return Builtin
+      0x01 -> dc 1
+      0x09 -> dc 2
+      0x11 -> dc 3
+      0x19 -> dc 4
+      _ -> return NoInfo
+  where
+    dc n = do
+        v <- fst $ bytesAt__ i n
+        return $ OneByte $ bytesToInt v
+
+
+bytesToInt :: [Word8] -> Int
+bytesToInt = foldl (\s b -> fromIntegral b .|. (s `shiftL` 8)) 0
+intToBytes :: Int -> Int -> [Word8]
+intToBytes 0 0 = []
+intToBytes n i = (fromIntegral $ i .&. 0xff): intToBytes (n-1) (i `shiftR` 8)
+
+cacheable :: Metadata -> Maybe (Int, [Word8])
+cacheable Metadata{..}
+    | mdLength <= 4 = Just (bytesToInt $ BS.unpack mdBytes, sig)
+    | otherwise = Nothing
+  where
+    sig = case mdLength of
+        1 -> [0x01]
+        2 -> [0x09,2]
+        3 -> [0x11,2,3]
+        4 -> [0x19,2,3,4]
+
 
 getDef ( a: as) = a: getDef as
 getDef _ = []
@@ -380,8 +449,8 @@ maxInstLength = 7
 
 disasmConfig = Config Intel Mode16 SyntaxIntel 0
 
-execInstruction :: Metadata -> (Bool, Machine ())
-execInstruction m = (True, evalExp $ execInstruction' m)
+execInstruction :: Metadata -> Machine ()
+execInstruction m = evalExp $ execInstruction' m
 
 type MachinePart' a = (Machine a, a -> Machine ())
 
@@ -975,7 +1044,12 @@ loadExe loadSegment gameExe = do
     di .=  0x1f40 -- why?
     labels .= mempty
 
-    mapM_ inter [(fromIntegral a, b) | (b, (a, _)) <- M.toList origInterrupt]
+    forM_ [(fromIntegral a, b) | (b, (a, _)) <- M.toList origInterrupt] $ \(i, (hi, lo)) -> do
+        snd (wordAt__ $ 4*i) $ "interrupt lo" @: lo
+        snd (wordAt__ $ 4*i + 2) $ "interrupt hi" @: hi
+        h <- use heap''
+        liftIO $ uWriteInfo h (segAddr hi lo) 0xff
+
 
     snd (wordAt__ 0x410) $ "equipment word" @: 0xd426 --- 0x4463   --- ???
     snd (byteAt__ 0x417) $ "keyboard shift flag 1" @: 0x20
@@ -998,10 +1072,6 @@ loadExe loadSegment gameExe = do
         ]
 
     psp' = programSegmentPrefix' (length prelude' ^. from paragraph) endseg ""
-
-    inter (i, (hi, lo)) = do
-        snd (wordAt__ $ 4*i) $ "interrupt lo" @: lo
-        snd (wordAt__ $ 4*i + 2) $ "interrupt hi" @: hi
 
     reladd = loadSegment ^. paragraph
 
