@@ -346,12 +346,10 @@ mkStep = do
         let mkInst ip' inst = do
                 let ips = segAddr cs_ ip'
                 Just (md, _) <- disassembleOne disasmConfig . BS.pack <$> fst (bytesAt__ ips maxInstLength)
-                let ch = mconcat
-                      [ Mod IP (Add $ C $ fromIntegral $ mdLength md)
-                      , execInstruction' md
-                      , CheckInterrupt 1
-                      ]
-                    ch' = inst `mappend` ch
+                let ch = Mod IP (Add $ C $ fromIntegral $ mdLength md)
+                      <> execInstruction' md
+                      <> CheckInterrupt 1
+                    ch' = inst <> ch
                 case nextAddr ch ip' of
                     Just ip_' | ip_' > ip' -> mkInst ip_' ch'
                     _ -> return (ips + fromIntegral (mdLength md) - 1, ch')

@@ -38,7 +38,7 @@ import Prelude hiding ((>>), return)
 
 infixr 1 >>
 (>>) :: ExpM () -> ExpM () -> ExpM ()
-(>>) = mappend
+(>>) = (<>)
 
 return :: () -> ExpM ()
 return () = mempty
@@ -75,7 +75,7 @@ data Part a where
     Immed :: Exp a -> Part a  -- TODO: elim this
 
 data ExpM a where
-    Seq :: ExpM b -> ExpM a -> ExpM a
+    Seq :: ExpM () -> ExpM () -> ExpM ()
 
     IfM :: Exp Bool -> ExpM () -> ExpM () -> ExpM ()
     QuotRem :: Integral a => Exp a -> Exp a -> ExpM () -> ((Exp a, Exp a) -> ExpM ()) -> ExpM ()
@@ -141,10 +141,19 @@ instance Integral Bool where
 
 --------------------------------------------------------------------------------
 
-reorderExp :: ExpM a -> ExpM a
-reorderExp = id
+reorderExp :: ExpM () -> ExpM ()
+reorderExp =  groupInterrupts 0
 
-nextAddr :: ExpM a -> Word16 -> Maybe Word16
+groupInterrupts n = \case
+    Seq (CheckInterrupt n') b -> groupInterrupts (n + n') b
+    Seq a b -> Seq a $ groupInterrupts n b
+    CheckInterrupt n' -> CheckInterrupt $ n + n'
+    e -> e <> checkInterrupt n
+
+checkInterrupt 0 = Nop
+checkInterrupt n = CheckInterrupt n
+
+nextAddr :: ExpM () -> Word16 -> Maybe Word16
 nextAddr e = case e of
     LetM e f -> nextAddr (f e)
     Seq a b -> nextAddr a >=> nextAddr b
