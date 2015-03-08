@@ -122,6 +122,7 @@ main = do
     args <- getArgs
     pmvar <- newMVar defaultPalette
     kvar <- newMVar 0
+    ivar <- newMVar Nothing
 
 --    l <- getLabels
     is <- {- take 100 . -} read <$> readFile "interrupts.txt"
@@ -130,6 +131,7 @@ main = do
                 $ config . termLength .~ 10000 $ steps .~ 20000000
                 $ config . palette .~ pmvar
                 $ config . keyDown .~ kvar
+                $ config . interruptRequest .~ ivar
                 $ (config . counter' .~ (is {- ++ tail (iterate (+5000) (last is))-})) $ emptyState
 
     game <- BS.readFile "../restunts/stunts/game.exe"
@@ -138,7 +140,7 @@ main = do
     forkIO $ void $ flip evalStateT x $ runExceptT $ do
         loadExe loadSegment game
         showCode
-    drawWithFrameBuffer kvar pmvar (takeMVar vid) $ return ()
+    drawWithFrameBuffer ivar kvar pmvar (takeMVar vid) $ return ()
 
   where
     f [i] = read i

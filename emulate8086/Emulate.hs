@@ -334,7 +334,9 @@ immLens c = lens (const c) $ \_ _ -> error "can't update immediate value"
 
 showCode = catchError (forever mkStep) $ \case
     Interr -> showCode
-    e -> throwError e
+    e -> do
+        liftIO $ print e
+        throwError e
 
 mkStep :: Machine ()
 mkStep = do
@@ -476,6 +478,15 @@ evalExpM = \case
     Error h -> throwError h
     Interrupt e -> evalExp e >>= evalExpM . interrupt >> throwError Interr
     CheckInterrupt n -> do
+      ivar <- use $ config . interruptRequest
+      int <- liftIO $ readMVar ivar
+      case int of
+       Just int -> do
+        mask <- use intMask
+        when (not (mask ^. bit 0)) $ do
+          liftIO $ modifyMVar_ ivar $ const $ return Nothing
+          interrupt_ int
+       Nothing -> do
         ns <- use $ config . stepsCounter
         let ns' = ns + n
         config . stepsCounter .= ns'
@@ -486,7 +497,7 @@ evalExpM = \case
           var <- use $ config . videoMVar
           liftIO $ do
             let gs = 0xa0000
-            putMVar var $ \x y -> uRead v (gs + 320 * y + x)
+            putMVar var $ \x y -> uRead v $ (gs + 320 * y + x) `mod` 0x100000
             print ns
         mask <- use intMask
         when (not (mask ^. bit 0)) $ do
@@ -885,12 +896,50 @@ origInterrupt = M.fromList
             case s of
               Just (f, s) -> do
                 trace_ $ "found: " ++ show f
+{-
                 snd (bytesAt__ 0 0x1a) $ map (error' . ("undefined byte " ++) . showHex' 2) [0..]
                 snd (byteAt__ 0x00) $ "attribute of serach" @: fromIntegral attribute_used_during_search
                 snd (byteAt__ 0x01) $ "disk used during search" @: 2  -- C:
                 snd (bytesAt__ 0x02 11) $ pad 0 11 fname
+-}
+                snd (bytesAt__ (ad + 0x02) 13 {- !!! -}) $ pad 0 13 (map (fromIntegral . ord) (strip $ takeFileName f_) ++ [0])
+                snd (byteAt__ $ ad + 0x15) $ "attribute of matching file" @: fromIntegral attribute_used_during_search
+                snd (wordAt__ $ ad + 0x16) $ "file time" @: 0 -- TODO
+                snd (wordAt__ $ ad + 0x18) $ "file date" @: 0 -- TODO
                 snd (dwordAt__ $ ad + 0x1a) $ fromIntegral (BS.length s)
-                snd (bytesAt__ (ad + 0x1e) 13) $ pad 0 13 (map (fromIntegral . ord) (takeFileName f) ++ [0])
+                snd (bytesAt__ (ad + 0x1e) 13) $ pad 0 13 (map (fromIntegral . ord) (strip $ takeFileName f) ++ [0])
+                snd (byteAt__ $ ad + 0x00) 1
+                ax .= 0 -- ?
+                carryF .=  False
+              Nothing -> do
+                trace_ $ "not found"
+                ax .= 02  -- File not found
+                carryF .=  True
+
+        0x4f -> do
+            ad <- use dta
+            fname <- fst $ bytesAt__ (ad + 0x02) 13
+            -- addr <- addressOf Nothing $ memIndex RDX
+            -- fname' <- fst $ bytesAt__ addr 20  -- wrong
+            let f_ = map (chr . fromIntegral) $ takeWhile (/=0) fname
+            trace_ $ "Find next matching file " ++ show f_
+            n <- fst (byteAt__ $ ad + 0x00)
+            s <- do
+                    b <- liftIO $ globDir1 (compile $ map toUpper f_) "../original"
+                    case drop (fromIntegral n) b of
+                        filenames@(f:_) -> do
+                            trace_ $ "alternatives: " ++ show filenames
+                            Just . (,) f <$> liftIO (BS.readFile f)
+                        _ -> return Nothing
+            case s of
+              Just (f, s) -> do
+                trace_ $ "found: " ++ show f
+--                snd (byteAt__ $ ad + 0x15) $ "attribute of matching file" @: fromIntegral attribute_used_during_search
+                snd (wordAt__ $ ad + 0x16) $ "file time" @: 0 -- TODO
+                snd (wordAt__ $ ad + 0x18) $ "file date" @: 0 -- TODO
+                snd (dwordAt__ $ ad + 0x1a) $ fromIntegral (BS.length s)
+                snd (bytesAt__ (ad + 0x1e) 13) $ pad 0 13 (map (fromIntegral . ord) (strip $ takeFileName f) ++ [0])
+                snd (byteAt__ $ ad + 0x00) $ n+1
                 ax .= 0 -- ?
                 carryF .=  False
               Nothing -> do
@@ -940,6 +989,7 @@ origInterrupt = M.fromList
     item :: Word8 -> (Word16, Word16) -> Machine () -> ((Word16, Word16), (Word8, Machine ()))
     item a k m = (k, (a, m >> evalExpM iret))
 
+strip = reverse . dropWhile (==' ') . reverse . dropWhile (==' ')
 
 ----------------------------------------------
 

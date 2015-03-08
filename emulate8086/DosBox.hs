@@ -15,14 +15,20 @@ import Graphics.Rendering.OpenGL.Raw.Core32
 import Graphics.Rendering.OpenGL.Raw.ARB.Compatibility
 import "GLFW-b" Graphics.UI.GLFW as GLFW
 
-drawWithFrameBuffer :: MVar Word16 -> MVar (Vec.Vector Word32) -> IO (Int -> Int -> IO Word8) -> IO () -> IO ()
-drawWithFrameBuffer keyboard palette framebuffer draw = do
+dof = 320 * 200
+
+drawWithFrameBuffer :: MVar (Maybe Word8) -> MVar Word16 -> MVar (Vec.Vector Word32) -> IO (Int -> Int -> IO Word8) -> IO () -> IO ()
+drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
     GLFW.init
+    ovar <- newMVar 0
     Just window <- GLFW.createWindow 640 400 "Haskell 8086 emulator" Nothing Nothing
     GLFW.makeContextCurrent $ Just window
     GLFW.setKeyCallback window $ Just $ \window key scancode action mods -> do
-        modifyMVar_ keyboard $ const $ return $ case action of
-            GLFW.KeyState'Pressed -> fst $ case key of
+        modifyMVar_ keyboard $ const $ return $ (case action of
+            GLFW.KeyState'Pressed -> fst
+            GLFW.KeyState'Released -> snd
+            _ -> fst
+            ) $ case key of
                 Key'Escape -> (0x01, 0x81)
                 Key'Space -> (0x39, 0xb9)
                 Key'Enter -> (0xe01c, 0x9c)
@@ -30,8 +36,27 @@ drawWithFrameBuffer keyboard palette framebuffer draw = do
                 Key'Right -> (0xe04d, 0xcd)
                 Key'Up -> (0xe048, 0xc8)
                 Key'Down -> (0xe050, 0xd0)
-            _ -> 0
-        putStrLn $ "scancode: " Prelude.++ show scancode
+                _ -> (0,0)
+        case action of
+            KeyState'Repeating -> return ()
+            _ -> do
+                c <- readMVar keyboard
+                putStrLn $ "scancode: " Prelude.++ show c
+                modifyMVar_ interrupt $ const $ return $ Just 0x09
+        when (key == GLFW.Key'R && action == GLFW.KeyState'Pressed) $
+            modifyMVar_ ovar $ return . (const 0)
+        when (key == GLFW.Key'A && action == GLFW.KeyState'Pressed) $
+            modifyMVar_ ovar $ return . (+ dof)
+        when (key == GLFW.Key'S && action == GLFW.KeyState'Pressed) $
+            modifyMVar_ ovar $ return . (+ (-dof))
+        when (key == GLFW.Key'X && action == GLFW.KeyState'Pressed) $
+            modifyMVar_ ovar $ return . (+ 320)
+        when (key == GLFW.Key'Y && action == GLFW.KeyState'Pressed) $
+            modifyMVar_ ovar $ return . (+ (-320))
+        when (key == GLFW.Key'C && action == GLFW.KeyState'Pressed) $
+            modifyMVar_ ovar $ return . (+ 8)
+        when (key == GLFW.Key'V && action == GLFW.KeyState'Pressed) $
+            modifyMVar_ ovar $ return . (+ (-8))
         when (key == GLFW.Key'Q && action == GLFW.KeyState'Pressed) $
             GLFW.setWindowShouldClose window True
     let
@@ -41,9 +66,10 @@ drawWithFrameBuffer keyboard palette framebuffer draw = do
                 draw
                 f <- framebuffer
                 p <- readMVar palette
+                offs <- readMVar ovar
                 vec2 <- SVec.generateM (640*400) $ \i -> do
                         let (y,x) = i `divMod` 640
-                        a <- f (x `shiftR` 1) (199 - y `shiftR` 1)
+                        a <- f ((x + (max 0 $ min 0xa0000 $ offs) `shiftR` 1) (199 - y `shiftR` 1)
                         return $ p Vec.! fromIntegral a
                 SVec.unsafeWith vec2 $ glDrawPixels 640 400 gl_RGBA gl_UNSIGNED_INT_8_8_8_8
                 GLFW.swapBuffers window
