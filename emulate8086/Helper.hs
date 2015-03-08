@@ -212,6 +212,7 @@ fSplit x f = (a, x - measure a, b) where (a, b) = F.split (> Sum x) f
 
 data Halt
     = CleanHalt
+    | Interr
     | Err String
   deriving Show
 

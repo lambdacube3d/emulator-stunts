@@ -126,7 +126,7 @@ data Regs = Regs { _ax_,_dx_,_bx_,_cx_, _si_,_di_, _cs_,_ss_,_ds_,_es_, _ip_,_sp
 $(makeLenses ''Regs)
 
 type UVec = U.IOVector Word16
-type Cache = (IM.IntMap (Exp ()), IM.IntMap (Machine ()))
+type Cache = IM.IntMap (Int, ExpM ())
 
 data MachineState = MachineState
     { _flags_   :: Flags
@@ -152,7 +152,7 @@ emptyState = MachineState
 
     , _traceQ   = []
     , _config   = defConfig
-    , _cache    = (IM.empty, IM.empty)
+    , _cache    = IM.empty
     , _labels   = IM.empty
     , _files    = IM.empty
     , _dta      = 0
@@ -186,33 +186,46 @@ uRead, uReadInfo :: UVec -> Int -> IO Word8
 uRead h i = (^. low) <$> U.read h i
 uReadInfo h i = (^. high) <$> U.read h i
 
-uWrite, uWriteInfo :: UVec -> Int -> Word8 -> IO ()
+uWrite, uWriteInfo :: UVec -> Int -> Word8 -> Machine ()
 uWrite h i v = do
-    x <- U.read h i
-    U.write h i $ (0, v) ^. combine
+    x <- liftIO $ U.read h i
+    liftIO $ U.write h i $ (0, v) ^. combine
     let info = x ^. high :: Word8
-        xh = info .&. 7
-        i' = i - fromIntegral xh + 1
-    when (xh > 1) $ do
+        n = info .&. 0x7f
+    when (info /= 0) $ do
+        liftIO $ putStr "#"
+        when (n > 1) $ liftIO $ putStr $ show info
         when (info == 0xff) $ error "system area written"
-        uWriteInfo h i' 0
-uWriteInfo h i v = do
+        ch <- use cache
+        let (ch', beg, end) = f n ch i i $ fst $ IM.split (i+1) ch
+            f :: Word8 -> Cache -> Int -> Int -> Cache -> (Cache, Int, Int)
+            f 0 ch beg end _ = (ch, beg, end)
+            f n ch beg end ch' = f (n-1) (IM.delete i' ch) (min beg i') (max end $ e) (IM.delete i' ch')
+              where
+                (i', (e,_)) = IM.findMax ch'
+        zipWithM_ (uWriteInfo h) [beg..end] [0,0..]
+        cache .= ch'
+uWriteInfo h i v = liftIO $ do
     x <- U.read h i
     U.write h i $ high .~ v $ x
+uModInfo :: UVec -> Int -> (Word8 -> Word8) -> Machine ()
+uModInfo h i f = liftIO $ do
+    x <- U.read h i
+    U.write h i $ high %~ f $ x
 
 bytesAt__ :: Int -> Int -> MachinePart' [Word8]
 bytesAt__ i' j' = (get, set)
   where
-    set ws = use heap'' >>= \h -> liftIO $ zipWithM_ (uWrite h) [i'..]
+    set ws = use heap'' >>= \h -> zipWithM_ (uWrite h) [i'..]
         $ (pad (error "pad") j' . take j') ws
     get = use heap'' >>= \h -> liftIO $ mapM (uRead h) [i'..i'+j'-1]
 
 byteAt__ :: Int -> MachinePart' Word8
-byteAt__ i = (use heap'' >>= \h -> liftIO $ uRead h i, \v -> use heap'' >>= \h -> liftIO $ uWrite h i v)
+byteAt__ i = (use heap'' >>= \h -> liftIO $ uRead h i, \v -> use heap'' >>= \h -> uWrite h i v)
 
 wordAt__ :: Int -> MachinePart' Word16
 wordAt__ i = ( use heap'' >>= \h -> liftIO $ (^. combine) <$> liftM2 (,) (uRead h (i+1)) (uRead h i)
-             , \v -> use heap'' >>= \h -> liftIO $ uWrite h i (v ^. low) >> uWrite h (i+1) (v ^. high))
+             , \v -> use heap'' >>= \h -> uWrite h i (v ^. low) >> uWrite h (i+1) (v ^. high))
 
 dwordAt__ :: Int -> MachinePart' Word32
 dwordAt__ i = ( (^. combine) <$> liftM2 (,) (fst $ wordAt__ $ i+2) (fst $ wordAt__ i)
@@ -301,16 +314,6 @@ askCounter = do
           else do
             return False
 
-hijack :: Machine ()
-hijack = do
-    mask <- use intMask
-    when (not (mask ^. bit 0)) $ do
-        cc <- askCounter
-        when cc $ do
-            trace_ "timer"
-            interrupt_ 0x08
-
-
 verboseLevel' s
     = if s ^. disassStart == 0 then 3 else if s ^. stepsCounter >= s ^. disassStart then 2 else s ^. verboseLevel
     
@@ -338,18 +341,19 @@ cachedStep = do
         cache %= IM.insert ips m
 -}
 
-showCode = hijack >> showCodeH
-
-showCodeH :: Machine () -- State -> [String]
-showCodeH = showCode_
-
 showErr e = show e: []
 
+immLens :: a -> Lens' b a
+immLens c = lens (const c) $ \_ _ -> error "can't update immediate value"
 
-showCode_ :: Machine ()
-showCode_ = do
+showCode = catchError showCode' $ \case
+    Interr -> showCode
+    e -> throwError e
+
+showCode' :: Machine ()
+showCode' = do
     mkStep
-    ns <- use $ config . stepsCounter
+    ns <- use $ config . stepsCounter   -- TODO
     ips <- use $ config . instPerSec
     when (ns `mod` (ips `div` 25) == 0) $ do
       v <- use heap''
@@ -358,44 +362,41 @@ showCode_ = do
         let gs = 0xa0000
         putMVar var $ \x y -> uRead v (gs + 320 * y + x)
         print ns
-    showCode
-
-
-
-immLens :: a -> Lens' b a
-immLens c = lens (const c) $ \_ _ -> error "can't update immediate value"
+    showCode'
 
 mkStep :: Machine ()
 mkStep = do
-    h <- use heap''
-    ips <- use ips
+    ip_ <- use ip
+    cs_ <- use cs
+    let ips = segAddr cs_ ip_
     info <- readInfo ips
     case info of
       Builtin -> do
-        cs_ <- use cs
-        ip_ <- use ip
         case M.lookup (cs_, ip_) origInterrupt of
           Just (i, m) -> do
             m -- return $ Right ("interrupt " ++ showHex' 2 i ++ "h", m)
             showHist
-      OneByte key -> do
-        Just m <- use $ cache . _1 . at key
-        evalExp m
-        config . stepsCounter %= succ
+      OneByte -> do
+        Just (_, m) <- use $ cache . at ips
+        evalExpM m
         showHist
       _ -> do
-        Just (md, _) <- disassembleOne disasmConfig . BS.pack <$> fst (bytesAt__ ips maxInstLength)
-        let m = execInstruction' md
-            ch = Edsl.modify IP (Add $ C $ fromIntegral $ mdLength md) >> m
-        case cacheable md of
-          Just (hash, vs) -> do
-            liftIO $ zipWithM_ (uWriteInfo h) [ips..] vs
-            cache . _1 %= IM.insert hash ch
-          Nothing -> return ()
-        ip %= (+ fromIntegral (mdLength md))
---        _ <- clearHist
-        evalExp m
-        config . stepsCounter %= succ
+        let mkInst ip' inst = do
+                let ips = segAddr cs_ ip'
+                Just (md, _) <- disassembleOne disasmConfig . BS.pack <$> fst (bytesAt__ ips maxInstLength)
+                let ch = do
+                        Mod IP $ Add $ C $ fromIntegral $ mdLength md
+                        execInstruction' md
+                        CheckInterrupt
+                    ch' = inst >> ch
+                case nextAddr ch ip' of
+                    Just ip_' | ip_' > ip' && ip_' - ip_ < 120   -> mkInst ip_' ch'
+                    _ -> return (ips + fromIntegral (mdLength md) - 1, ch')
+        (end, ch) <- mkInst ip_ $ return ()
+        h <- use heap''
+        zipWithM_ (uModInfo h) [ips..] $ map mergeInfo $ 0x81: replicate (end-ips) 1
+        cache %= IM.insert ips (end, ch)
+        evalExpM ch
         showHist
 
 showHist = do
@@ -404,8 +405,11 @@ showHist = do
 
 data Info
     = Builtin
-    | OneByte Int
+    | OneByte
     | NoInfo
+
+mergeInfo :: Word8 -> Word8 -> Word8
+mergeInfo a b = (a + b) .|. (a .&. 0x80) .|. (b .&. 0x80)
 
 readInfo :: Int -> Machine Info
 readInfo i = do
@@ -413,33 +417,14 @@ readInfo i = do
     info <- liftIO $ uReadInfo h i
     case info of
       0xff -> return Builtin
-      0x01 -> dc 1
-      0x09 -> dc 2
-      0x11 -> dc 3
-      0x19 -> dc 4
+      _ | testBit info 7 -> return OneByte
       _ -> return NoInfo
-  where
-    dc n = do
-        v <- fst $ bytesAt__ i n
-        return $ OneByte $ bytesToInt v
-
 
 bytesToInt :: [Word8] -> Int
 bytesToInt = foldl (\s b -> fromIntegral b .|. (s `shiftL` 8)) 0
 intToBytes :: Int -> Int -> [Word8]
 intToBytes 0 0 = []
 intToBytes n i = (fromIntegral $ i .&. 0xff): intToBytes (n-1) (i `shiftR` 8)
-
-cacheable :: Metadata -> Maybe (Int, [Word8])
-cacheable Metadata{..}
-    | mdLength <= 4 = Just (bytesToInt $ BS.unpack mdBytes, sig)
-    | otherwise = Nothing
-  where
-    sig = case mdLength of
-        1 -> [0x01]
-        2 -> [0x09,2]
-        3 -> [0x11,2,3]
-        4 -> [0x19,2,3,4]
 
 
 getDef ( a: as) = a: getDef as
@@ -450,7 +435,7 @@ maxInstLength = 7
 disasmConfig = Config Intel Mode16 SyntaxIntel 0
 
 execInstruction :: Metadata -> Machine ()
-execInstruction m = evalExp $ execInstruction' m
+execInstruction m = evalExpM $ execInstruction' m
 
 type MachinePart' a = (Machine a, a -> Machine ())
 
@@ -494,12 +479,47 @@ evalPart_ = \case
     DXAX -> uComb dx ax . combine
     XX -> xx
 
+evalExpM :: ExpM a -> Machine a
+evalExpM = \case
+    Ret a -> evalExp a
+
+    Set p e -> evalPart p $ \(_, k) -> k =<< evalExp e
+    Mod p f -> evalPart p $ \(g, s) -> g >>= evalExp . f . C >>= s
+
+    IfM b x y -> evalExp b >>= \b -> evalExpM $ if b then x else y
+
+    QuotRem a b c f -> do
+        x <- evalExp a
+        y <- evalExp b
+        case quotRemSafe x y of
+            Nothing -> evalExpM c
+            Just (z,v) -> evalExpM $ f (C z, C v)
+
+    LetM e f -> evalExp e >>= evalExpM . f . C
+    Seq a b -> evalExpM a >> evalExpM b
+
+    Replicate n e -> evalExp n >>= \i -> replicateM_ i $ evalExpM e
+    Input a f -> evalExp a >>= input >>= evalExpM . f . C
+    Output a b -> evalExp a >>= \x -> evalExp b >>= \y -> output' x y
+
+    Error h -> throwError h
+    Interrupt e -> evalExp e >>= evalExpM . interrupt >> throwError Interr
+    CheckInterrupt -> do
+        config . stepsCounter %= succ
+        mask <- use intMask
+        when (not (mask ^. bit 0)) $ do
+            cc <- askCounter
+            when cc $ do
+                trace_ "timer"
+                interrupt_ 0x08
+
+    Trace a -> trace_ a
+
 evalExp :: Exp a -> Machine a
 evalExp = \case
     C a -> return a
 
     Get p -> evalPart p $ \(k, _) -> k
-    Set p e -> evalPart p $ \(_, k) -> k =<< evalExp e
 
     If b x y -> evalExp b >>= \b -> evalExp $ if b then x else y
     Eq x y -> liftM2 (==) (evalExp x) (evalExp y)
@@ -516,13 +536,6 @@ evalExp = \case
     Or  a b -> liftM2 (.|.) (evalExp a) (evalExp b)
     Xor a b -> liftM2 xor (evalExp a) (evalExp b)
 
-    QuotRem a b c f -> do
-        x <- evalExp a
-        y <- evalExp b
-        case quotRemSafe x y of
-            Nothing -> evalExp c
-            Just (z,v) -> evalExp $ f (C z, C v)
-
     Bit i e -> (^. bit i) <$> evalExp e
     SetBit i e f -> liftM2 (\a b -> b & bit i .~ a) (evalExp e) (evalExp f)
     HighBit e -> (^. highBit) <$> evalExp e
@@ -535,22 +548,14 @@ evalExp = \case
     Convert e -> fromIntegral <$> evalExp e    
 
     Let e f -> evalExp e >>= evalExp . f . C
-    Seq a b -> evalExp a >> evalExp b
     Tuple a b -> liftM2 (,) (evalExp a) (evalExp b)
     Fst p -> fst <$> evalExp p
     Snd p -> snd <$> evalExp p
 
     Iterate n f a -> evalExp n >>= \i -> evalExp $ iterate f a !! i
-    Replicate n e -> evalExp n >>= \i -> replicateM_ i $ evalExp e
-    Input a -> evalExp a >>= input
-    Output a b -> evalExp a >>= \x -> evalExp b >>= \y -> output' x y
 
-    Error h -> throwError h
-    Interrupt e -> evalExp e >>= evalExp . interrupt
 
-    Trace a -> trace_ a
-
-execInstructionBody m = (True {-TODO-}, evalExp $ compileInst m)
+execInstructionBody m = (True {-TODO-}, evalExpM $ compileInst m)
 
 
 input :: Word16 -> Machine (Word16)
@@ -610,7 +615,7 @@ imMax m | IM.null m = 0
 interrupt_ :: Word8 -> Machine ()
 interrupt_ n = do
     i <- use interruptF
-    if i then evalExp (interrupt n)
+    if i then evalExpM (interrupt n) >> throwError Interr
          else trace_ $ "interrupt cancelled " ++ showHex' 2 n
 
 origInterrupt :: M.Map (Word16, Word16) (Word8, Machine ())
@@ -935,7 +940,7 @@ origInterrupt = M.fromList
   ]
   where 
     item :: Word8 -> (Word16, Word16) -> Machine () -> ((Word16, Word16), (Word8, Machine ()))
-    item a k m = (k, (a, m >> evalExp iret))
+    item a k m = (k, (a, m >> evalExpM iret))
 
 
 ----------------------------------------------
@@ -1048,7 +1053,7 @@ loadExe loadSegment gameExe = do
         snd (wordAt__ $ 4*i) $ "interrupt lo" @: lo
         snd (wordAt__ $ 4*i + 2) $ "interrupt hi" @: hi
         h <- use heap''
-        liftIO $ uWriteInfo h (segAddr hi lo) 0xff
+        uWriteInfo h (segAddr hi lo) 0xff
 
 
     snd (wordAt__ 0x410) $ "equipment word" @: 0xd426 --- 0x4463   --- ???
