@@ -5,26 +5,60 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE RebindableSyntax #-}
 module Edsl
-    {-( compileInst
-    , Part (..), Exp (..)
-    )-} where
+    ( compileInst, execInstruction'
+    , nextAddr
+    , reorderExp
+    , iret
+    , interrupt
+    , Part (..), Exp (..), ExpM (..)
+    , memIndex
+    , addressOf, addressOf'
+    ) where
 
 import Data.List
 import Data.Maybe
 import Data.Int
 import Data.Word
 import Data.Bits
+import Data.Monoid
 import Control.Applicative
-import Control.Monad
+import Control.Monad ((>=>))
 import Control.Lens
 
 import Hdis86 hiding (wordSize)
 import Hdis86.Incremental
 
 import Helper
+import Prelude hiding ((>>), return)
 
 ----------------------------------------
+
+infixr 1 >>
+(>>) :: ExpM () -> ExpM () -> ExpM ()
+(>>) = mappend
+
+return :: () -> ExpM ()
+return () = mempty
+
+when :: Bool -> ExpM () -> ExpM ()
+when b x = if b then x else mempty
+
+when' :: Exp Bool -> ExpM () -> ExpM ()
+when' b x = IfM b x mempty
+
+ifThenElse :: Bool -> a -> a -> a
+ifThenElse True a _ = a
+ifThenElse _ _ b = b
+
+instance Monoid (ExpM ()) where
+    Nop `mappend` e   = e
+    e   `mappend` Nop = e
+    Seq a b `mappend` e  = Seq a (b `mappend` e)
+    e1      `mappend` e2 = Seq e1 e2
+    mempty = Nop
 
 data Part a where
     IP :: Part Word16
@@ -41,21 +75,22 @@ data Part a where
     Immed :: Exp a -> Part a  -- TODO: elim this
 
 data ExpM a where
-    Ret :: Exp a -> ExpM a
-    LetM :: Exp a -> (Exp a -> ExpM b) -> ExpM b
     Seq :: ExpM b -> ExpM a -> ExpM a
+
+    IfM :: Exp Bool -> ExpM () -> ExpM () -> ExpM ()
+    QuotRem :: Integral a => Exp a -> Exp a -> ExpM () -> ((Exp a, Exp a) -> ExpM ()) -> ExpM ()
+
+    LetM :: Exp a -> (Exp a -> ExpM ()) -> ExpM ()
     Replicate :: Exp Int -> ExpM () -> ExpM ()
-    IfM :: Exp Bool -> ExpM a -> ExpM a -> ExpM a
+
+    Nop :: ExpM ()
     Error :: Halt -> ExpM ()
     Trace :: String -> ExpM ()
-    QuotRem :: Integral a => Exp a -> Exp a -> ExpM b -> ((Exp a, Exp a) -> ExpM b) -> ExpM b
-
     Set :: Part a -> Exp a -> ExpM ()
     Mod :: Part a -> (Exp a -> Exp a) -> ExpM ()
-
-    Input :: Exp Word16 -> (Exp Word16 -> ExpM a) -> ExpM a
+    Input :: Exp Word16 -> (Exp Word16 -> ExpM ()) -> ExpM ()
     Output :: Exp Word16 -> Exp Word16 -> ExpM ()
-    CheckInterrupt :: ExpM ()
+    CheckInterrupt :: Int -> ExpM ()
     Interrupt :: Exp Word8 -> ExpM ()
 
 data Exp a where
@@ -104,19 +139,10 @@ instance Integral Bool where
     a `quotRem` 1 = (a, 0)
     a `quotRem` 0 = error $ "quotRem " ++ show a ++ " 0 :: Bool"
 
-instance Functor ExpM where
-    fmap = undefined
-instance Applicative ExpM where
-    (<*>) = undefined
-    pure = Ret . C
-instance Monad ExpM where
-    (>>=) = undefined
-    Ret (C _) >> e = e
-    (Seq a b) >> e = Seq a (b >> e)
-    e1 >> e2 = Seq e1 e2
-    return = pure
-
 --------------------------------------------------------------------------------
+
+reorderExp :: ExpM a -> ExpM a
+reorderExp = id
 
 nextAddr :: ExpM a -> Word16 -> Maybe Word16
 nextAddr e = case e of
@@ -124,9 +150,9 @@ nextAddr e = case e of
     Seq a b -> nextAddr a >=> nextAddr b
     Replicate (C n) e -> iterate (>=> nextAddr e) Just !! n
     IfM (C c) a b -> nextAddr $ if c then a else b
-    Ret _ -> Just
+    Nop -> Just
     Trace _ -> Just
-    CheckInterrupt -> Just  -- !
+    CheckInterrupt _ -> Just  -- !
     Output _ _ -> Just
 
 --    Set IP (C i) -> Just . const i
@@ -238,7 +264,7 @@ push x = do
     Mod SP $ Add $ C $ -2
     Set stackTop x
 
-pop :: (Exp Word16 -> ExpM a) -> ExpM a
+pop :: (Exp Word16 -> ExpM ()) -> ExpM ()
 pop cont = LetM (Get stackTop) $ \x -> do
     Mod SP $ Add $ C 2
     cont x
@@ -264,10 +290,10 @@ execInstruction' mdat@Metadata{mdInst = i@Inst{..}}
 
     cycle :: Exp Bool -> ExpM ()
     cycle cond = do
-        IfM (Eq (C 0) $ Get CX) (return ()) $ do
+        when' (Not $ Eq (C 0) $ Get CX) $ do
             body
             Mod CX $ Add $ C $ -1
-            IfM cond (cycle cond) (return ())
+            when' cond $ cycle cond
 
     rep p = p `elem` [Rep, RepE, RepNE]
 
@@ -307,10 +333,9 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
         when (inOpcode `elem` [Iretf, Iiretw]) $ pop $ Set Cs
         when (inOpcode == Iiretw) $ pop $ Set Flags
         when (length inOperands == 1) $ Mod SP $ Add (Get op1w)
-        return ()
 
     Iint  -> Interrupt $ Get $ byteOperand segmentPrefix op1
-    Iinto -> IfM (Get OF) (Interrupt $ C 4) (return ())
+    Iinto -> when' (Get OF) $ Interrupt $ C 4
 
     Ihlt  -> Error CleanHalt
 
@@ -339,8 +364,8 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
 
     Ipush   -> push $ Get op1w
     Ipop    -> pop $ Set op1w
-    Ipusha  -> sequence_ [push $ Get r | r <- [AX,CX,DX,BX,SP,BP,SI,DI]]
-    Ipopa   -> sequence_ [pop $ Set r | r <- [DI,SI,BP,XX,BX,DX,CX,AX]]
+    Ipusha  -> mconcat [push $ Get r | r <- [AX,CX,DX,BX,SP,BP,SI,DI]]
+    Ipopa   -> mconcat [pop $ Set r | r <- [DI,SI,BP,XX,BX,DX,CX,AX]]
     Ipushfw -> push $ Get Flags
     Ipopfw  -> pop $ Set Flags
     Isahf -> Set (Low  AX) $ Get $ Low Flags
@@ -354,7 +379,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
     Icli  -> Set IF $ C False
     Isti  -> Set IF $ C True
 
-    Inop  -> return ()
+    Inop  -> Nop
 
     Ixlatb -> Set (Low AX) $ Get $ Heap8 $ segAddr_ (maybe Ds (reg . RegSeg) segmentPrefix) $ Add (Convert $ Get $ Low AX) (Get BX)
 
@@ -457,7 +482,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
         shiftOp :: (forall b . (AsSigned b) => Exp Bool -> Exp b -> (Exp Bool, Exp b)) -> ExpM ()
         shiftOp op = do
             LetM (And (C 0x1f) $ Get $ byteOperand segmentPrefix op2) $ \n -> do
-            IfM (Eq (C 0) n) (return ()) $ LetM (Iterate (Convert n) (uncurry Tuple . uncurry op . unTup) $ Tuple (Get CF) op1v) $ \t -> do
+            when' (Not $ Eq (C 0) n) $ LetM (Iterate (Convert n) (uncurry Tuple . uncurry op . unTup) $ Tuple (Get CF) op1v) $ \t -> do
                 let r = Snd t
                 Set CF $ Fst t
                 Set op1' r
@@ -500,7 +525,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
         condJump $ And (Not $ Eq (C 0) (Get CX)) cond
 
     condJump :: Exp Bool -> ExpM ()
-    condJump b = IfM b (Set IP $ Get op1w) (return ())
+    condJump b = when' b (Set IP $ Get op1w)
 
     sizeByte :: Word16
     sizeByte = fromIntegral $ sizeByte_ i

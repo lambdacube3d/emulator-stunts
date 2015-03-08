@@ -53,7 +53,7 @@ import Hdis86 hiding (wordSize)
 import Hdis86.Incremental
 
 import Helper
-import Edsl hiding (Flags, trace_, ips, sps, segAddr_, addressOf, addressOf', byteOperand, wordOperand)
+import Edsl hiding (Flags, trace_, ips, sps, segAddr_, addressOf, addressOf', byteOperand, wordOperand, (>>))
 import qualified Edsl
 
 ---------------------------------------------- memory allocation
@@ -292,7 +292,7 @@ mkSteps s = either (\x -> (x, s')) (const $ either (\x -> (x, s')) (const $ mkSt
 addressOf a b = evalExp $ Edsl.addressOf a b
 addressOf' a = evalExp $ Edsl.addressOf' a
 
-askCounter = do
+askCounter n = do
     c <- use $ config . counter'
     case c of
       [] -> do
@@ -304,7 +304,7 @@ askCounter = do
             --setCounter
             return True
           else do
-            config . counter %= fmap (+(-1)) --pred
+            config . counter %= fmap (+(-n))
             return False
       (c:cc) -> do
         ns <- use $ config . stepsCounter
@@ -317,52 +317,14 @@ askCounter = do
 verboseLevel' s
     = if s ^. disassStart == 0 then 3 else if s ^. stepsCounter >= s ^. disassStart then 2 else s ^. verboseLevel
     
-{-
-cachedStep :: Machine ()
-cachedStep = do
-    ips <- use ips
-    c <- use cache
-    case IM.lookup ips c of
-      Just m -> m
-      _ -> do
-        let collect = do
-                md <- fetchInstr
-                ip' <- use ip
-                let (jump, m_) = case md of
-                        Left md -> execInstruction md
-                        Right (_, m) -> (True, m)
-                    m = ip .= ip' >> m_
-                m_
-                (m >>) <$> if jump
-                  then return (return ())
-                  else collect
-
-        m <- collect
-        cache %= IM.insert ips m
--}
-
 showErr e = show e: []
 
 immLens :: a -> Lens' b a
 immLens c = lens (const c) $ \_ _ -> error "can't update immediate value"
 
-showCode = catchError showCode' $ \case
+showCode = catchError (forever mkStep) $ \case
     Interr -> showCode
     e -> throwError e
-
-showCode' :: Machine ()
-showCode' = do
-    mkStep
-    ns <- use $ config . stepsCounter   -- TODO
-    ips <- use $ config . instPerSec
-    when (ns `mod` (ips `div` 25) == 0) $ do
-      v <- use heap''
-      var <- use $ config . videoMVar
-      liftIO $ do
-        let gs = 0xa0000
-        putMVar var $ \x y -> uRead v (gs + 320 * y + x)
-        print ns
-    showCode'
 
 mkStep :: Machine ()
 mkStep = do
@@ -384,15 +346,16 @@ mkStep = do
         let mkInst ip' inst = do
                 let ips = segAddr cs_ ip'
                 Just (md, _) <- disassembleOne disasmConfig . BS.pack <$> fst (bytesAt__ ips maxInstLength)
-                let ch = do
-                        Mod IP $ Add $ C $ fromIntegral $ mdLength md
-                        execInstruction' md
-                        CheckInterrupt
-                    ch' = inst >> ch
+                let ch = mconcat
+                      [ Mod IP (Add $ C $ fromIntegral $ mdLength md)
+                      , execInstruction' md
+                      , CheckInterrupt 1
+                      ]
+                    ch' = inst `mappend` ch
                 case nextAddr ch ip' of
-                    Just ip_' | ip_' > ip' && ip_' - ip_ < 120   -> mkInst ip_' ch'
+                    Just ip_' | ip_' > ip' -> mkInst ip_' ch'
                     _ -> return (ips + fromIntegral (mdLength md) - 1, ch')
-        (end, ch) <- mkInst ip_ $ return ()
+        (end, reorderExp -> ch) <- mkInst ip_ mempty
         h <- use heap''
         zipWithM_ (uModInfo h) [ips..] $ map mergeInfo $ 0x81: replicate (end-ips) 1
         cache %= IM.insert ips (end, ch)
@@ -481,7 +444,7 @@ evalPart_ = \case
 
 evalExpM :: ExpM a -> Machine a
 evalExpM = \case
-    Ret a -> evalExp a
+    Nop -> return ()
 
     Set p e -> evalPart p $ \(_, k) -> k =<< evalExp e
     Mod p f -> evalPart p $ \(g, s) -> g >>= evalExp . f . C >>= s
@@ -504,11 +467,22 @@ evalExpM = \case
 
     Error h -> throwError h
     Interrupt e -> evalExp e >>= evalExpM . interrupt >> throwError Interr
-    CheckInterrupt -> do
-        config . stepsCounter %= succ
+    CheckInterrupt n -> do
+        ns <- use $ config . stepsCounter
+        let ns' = ns + n
+        config . stepsCounter .= ns'
+        ips <- use $ config . instPerSec
+        let ips' = ips `div` 25
+        when (ns' `div` ips' > ns `div` ips') $ do
+          v <- use heap''
+          var <- use $ config . videoMVar
+          liftIO $ do
+            let gs = 0xa0000
+            putMVar var $ \x y -> uRead v (gs + 320 * y + x)
+            print ns
         mask <- use intMask
         when (not (mask ^. bit 0)) $ do
-            cc <- askCounter
+            cc <- askCounter n
             when cc $ do
                 trace_ "timer"
                 interrupt_ 0x08
