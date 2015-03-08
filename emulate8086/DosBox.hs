@@ -69,7 +69,7 @@ drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
                 offs <- readMVar ovar
                 vec2 <- SVec.generateM (640*400) $ \i -> do
                         let (y,x) = i `divMod` 640
-                        a <- f ((x + (max 0 $ min 0xa0000 $ offs) `shiftR` 1) (199 - y `shiftR` 1)
+                        a <- f ((x + (max 0 $ min 0xa0000 $ offs)) `shiftR` 1) (199 - y `shiftR` 1)
                         return $ p Vec.! fromIntegral a
                 SVec.unsafeWith vec2 $ glDrawPixels 640 400 gl_RGBA gl_UNSIGNED_INT_8_8_8_8
                 GLFW.swapBuffers window
