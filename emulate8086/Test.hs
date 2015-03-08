@@ -120,26 +120,25 @@ main = do
     vid <- newEmptyMVar
     hSetBuffering stdout NoBuffering
     args <- getArgs
+    pmvar <- newMVar defaultPalette
+    kvar <- newMVar 0
 
 --    l <- getLabels
     is <- {- take 100 . -} read <$> readFile "interrupts.txt"
-    let initState = (config . counter' .~ (is {- ++ tail (iterate (+5000) (last is))-})) $ emptyState
+    let x = config . videoMVar .~ vid 
+                $ config . disassStart .~ f args $ config . verboseLevel .~ 1 
+                $ config . termLength .~ 10000 $ steps .~ 20000000
+                $ config . palette .~ pmvar
+                $ config . keyDown .~ kvar
+                $ (config . counter' .~ (is {- ++ tail (iterate (+5000) (last is))-})) $ emptyState
 
     game <- BS.readFile "../restunts/stunts/game.exe"
 
---    print $ length $ IM.elems $ initState ^. heap'
-    forkIO $ do
-{-
-            writeIORef st $ flip execState x $ runExceptT $ do
-                replicateM_ 10000 $ cachedStep
-                clearHist
--}
---            putStrLn "."
-        let x = config . videoMVar .~ vid $ config . disassStart .~ f args $ config . verboseLevel .~ 1 $ config . termLength .~ 10000 $ steps .~ 20000000 $ initState
-        void $ flip evalStateT x $ runExceptT $ do
-            loadExe loadSegment game
-            showCode
-    drawWithFrameBuffer (takeMVar vid) $ return ()
+
+    forkIO $ void $ flip evalStateT x $ runExceptT $ do
+        loadExe loadSegment game
+        showCode
+    drawWithFrameBuffer kvar pmvar (takeMVar vid) $ return ()
 
   where
     f [i] = read i

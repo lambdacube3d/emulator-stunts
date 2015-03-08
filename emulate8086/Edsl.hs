@@ -36,7 +36,7 @@ import Prelude hiding ((>>), return)
 
 ----------------------------------------
 
-infixr 1 >>
+infixr 1 >>, `Seq`
 (>>) :: ExpM () -> ExpM () -> ExpM ()
 (>>) = (<>)
 
@@ -61,16 +61,19 @@ instance Monoid (ExpM ()) where
     mempty = Nop
 
 data Part a where
+    Heap8  :: Exp Int -> Part Word8
+    Heap16 :: Exp Int -> Part Word16
+
     IP :: Part Word16
     AX, BX, CX, DX, SI, DI, BP, SP :: Part Word16
     Es, Ds, Ss, Cs :: Part Word16
-    Heap8  :: Exp Int -> Part Word8
-    Heap16 :: Exp Int -> Part Word16
-    Low, High :: Part Word16 -> Part Word8
     CF, PF, AF, ZF, SF, IF, DF, OF :: Part Bool
-    Flags :: Part Word16
 
+    Flags :: Part Word16
     DXAX :: Part Word32
+
+    Low, High :: Part Word16 -> Part Word8
+
     XX :: Part Word16   -- TODO: elim this
     Immed :: Exp a -> Part a  -- TODO: elim this
 
@@ -141,14 +144,55 @@ instance Integral Bool where
 
 --------------------------------------------------------------------------------
 
+-- get / set / mod / neutral / Interrupt
+
+--data
+
 reorderExp :: ExpM () -> ExpM ()
-reorderExp =  groupInterrupts 0
+reorderExp = -- snd . foldrExp f (AGet, Nop) . 
+    groupInterrupts 0
+{-
+  where
+
+        
+    IfM :: Exp Bool -> ExpM () -> ExpM () -> ExpM ()
+    QuotRem :: Integral a => Exp a -> Exp a -> ExpM () -> ((Exp a, Exp a) -> ExpM ()) -> ExpM ()
+
+    LetM :: Exp a -> (Exp a -> ExpM ()) -> ExpM ()
+    Replicate :: Exp Int -> ExpM () -> ExpM ()
+
+    Set :: Part a -> Exp a -> ExpM ()
+    Mod :: Part a -> (Exp a -> Exp a) -> ExpM ()
+
+    CheckInterrupt :: Int -> ExpM ()
+    Interrupt :: Exp Word8 -> ExpM ()
+        
+
+    f (Mod IP f) (AGet, b) = (AMod f, b)
+    f (Set IP v) (AGet, b) = (ASet v, b)
+    f a (AGet, b) | isInterr a =
+    f a (AGet, b) | hasGet a = (AGet, a `Seq` b)  --
+    f (Mod IP _) (ASet v, b) = (ASet v, b)
+    f (Set IP _) (ASet v, b) = (ASet v, b)
+    f a (ASet v, b) | isInterr a =
+    f a (ASet v, b) | hasGet a =
+    f (Mod IP g) (AMod f, b) = (AMod $ f . g, b)
+    f (Set IP v) (AMod f, b) = (ASet $ f v, b)
+    f a (AMod f, b) | isInterr a =
+    f a (AMod f, b) | hasGet a =
+
+    f a (st, b) = (st, a `Seq` b)
+-}
+foldrExp :: (ExpM () -> a -> a) -> a -> ExpM () -> a
+foldrExp f x (Seq a b) = f a (foldrExp f x b)
+foldrExp f x y = f y x
 
 groupInterrupts n = \case
     Seq (CheckInterrupt n') b -> groupInterrupts (n + n') b
-    Seq a b -> Seq a $ groupInterrupts n b
+    Seq i@(Interrupt _) e -> checkInterrupt n `Seq` i `Seq` groupInterrupts 0 e
+    Seq a b -> a `Seq` groupInterrupts n b
     CheckInterrupt n' -> CheckInterrupt $ n + n'
-    e -> e <> checkInterrupt n
+    e -> e `Seq` checkInterrupt n
 
 checkInterrupt 0 = Nop
 checkInterrupt n = CheckInterrupt n

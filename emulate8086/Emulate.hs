@@ -58,6 +58,9 @@ import qualified Edsl
 
 ---------------------------------------------- memory allocation
 
+takeEvery n [] = []
+takeEvery n xs = take n xs: takeEvery n (drop n xs)
+
 type Region = (Int, Int)
 type MemPiece = ([Region], Int)
 
@@ -102,6 +105,9 @@ data Config_ = Config_
     , _counter          :: Maybe Int -- counter to count down
     , _counter'         :: [Int]
     , _speaker          :: Word8     -- 0x61 port
+    , _palette          :: MVar (V.Vector Word32)
+    , _keyDown          :: MVar Word16
+    , _interruptRequest :: MVar (Maybe Word8)
     }
 
 $(makeLenses ''Config_)
@@ -111,7 +117,7 @@ defConfig = Config_
     , _disassStart  = 0
     , _verboseLevel = 2
     , _termLength   = 149
-    , _instPerSec   = 710000
+    , _instPerSec   = 71000 -- 710000
     , _videoMVar    = undefined --return $ \_ _ -> 0
 
     , _stepsCounter = 0
@@ -119,6 +125,9 @@ defConfig = Config_
     , _counter = Nothing
     , _counter' = []
     , _speaker = 0x30 -- ??
+    , _palette = undefined
+    , _keyDown = undefined
+    , _interruptRequest = undefined
     }
 
 data Regs = Regs { _ax_,_dx_,_bx_,_cx_, _si_,_di_, _cs_,_ss_,_ds_,_es_, _ip_,_sp_,_bp_ :: Word16 }
@@ -240,6 +249,7 @@ setCounter = do
     v <- use $ config . instPerSec
     config . counter .= Just (v `div` 24)
 
+-- TODO
 getRetrace = do
     x <- head <$> use retrace
     retrace %= tail
@@ -470,7 +480,7 @@ evalExpM = \case
         let ns' = ns + n
         config . stepsCounter .= ns'
         ips <- use $ config . instPerSec
-        let ips' = ips `div` 25
+        let ips' = ips `div` 5
         when (ns' `div` ips' > ns `div` ips') $ do
           v <- use heap''
           var <- use $ config . videoMVar
@@ -538,8 +548,10 @@ input v = do
             trace_ $ "get interrupt mask " ++ showHex' 2 x
             return $ "???" @: fromIntegral x
         0x60 -> do
-            trace_ "keyboard"
-            return $ "???" @: 0
+            kvar <- use $ config . keyDown
+            k <- liftIO $ readMVar kvar
+            trace_ $ "keyboard scan code: " ++ showHex' 4 k
+            return $ "???" @: k
         0x61 -> do
             x <- use $ config . speaker
             trace_ $ "get internal speaker: " ++ showHex' 2 x
@@ -557,6 +569,7 @@ output' v x = do
             trace_ $ "int resume " ++ showHex' 2 x  -- ?
             case x of
               0x20 -> setCounter
+--              v -> trace_ "int resume " ++ show
         0x21 -> do
             trace_ $ "set interrupt mask " ++ showHex' 2 x  -- ?
             intMask .= fromIntegral x
@@ -588,7 +601,9 @@ interrupt_ :: Word8 -> Machine ()
 interrupt_ n = do
     i <- use interruptF
     if i then evalExpM (interrupt n) >> throwError Interr
-         else trace_ $ "interrupt cancelled " ++ showHex' 2 n
+         else do
+            trace_ $ "interrupt cancelled " ++ showHex' 2 n
+            when (n == 0x08) $ config . counter .= Just 0
 
 origInterrupt :: M.Map (Word16, Word16) (Word8, Machine ())
 origInterrupt = M.fromList
@@ -639,6 +654,17 @@ origInterrupt = M.fromList
             case f of
               0x12 -> do
                 trace_ "set block of DAC color registers"
+                first_DAC_register <- use bx -- (0-00ffH)
+                number_of_registers <- use cx -- (0-00ffH)
+                -- ES:DX addr of a table of R,G,B values (it will be CX*3 bytes long)
+                addr <- addressOf (Just ES) $ memIndex RDX
+                colors <- fst $ bytesAt__ addr $ 3 * fromIntegral number_of_registers
+                pmvar <- use $ config . palette
+                liftIO $ modifyMVar_ pmvar $ \cs -> return $ cs V.//
+                    zip [fromIntegral first_DAC_register .. fromIntegral (first_DAC_register + number_of_registers - 1)]
+                        -- shift 2 more positions because there are 64 intesity levels
+                        [ fromIntegral r `shiftL` 26 .|. fromIntegral g `shiftL` 18 .|. fromIntegral b `shiftL` 10
+                        | [r, g, b] <- takeEvery 3 $ colors]
 
               v -> haltWith $ "interrupt #10,#10,#" ++ showHex' 2 f
 
