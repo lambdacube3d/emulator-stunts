@@ -102,7 +102,7 @@ sp = regs . sp_
 bp = regs . bp_
 
 uRead :: UVec -> Int -> IO Word8
-uRead h i = (^. low) <$> U.read h i
+uRead h i = fromIntegral <$> U.read h i
 
 uWrite, uWriteInfo :: UVec -> Int -> Word8 -> Machine ()
 uWrite h i v = do
@@ -143,11 +143,11 @@ byteAt__ i = (use heap'' >>= \h -> liftIO $ uRead h i, \v -> use heap'' >>= \h -
 
 wordAt__ :: Int -> MachinePart' Word16
 wordAt__ i = ( use heap'' >>= \h -> liftIO $ (^. combine) <$> liftM2 (,) (uRead h (i+1)) (uRead h i)
-             , \v -> use heap'' >>= \h -> uWrite h i (v ^. low) >> uWrite h (i+1) (v ^. high))
+             , \v -> use heap'' >>= \h -> uWrite h i (fromIntegral v) >> uWrite h (i+1) (v ^. high))
 
 dwordAt__ :: Int -> MachinePart' Word32
 dwordAt__ i = ( (^. combine) <$> liftM2 (,) (fst $ wordAt__ $ i+2) (fst $ wordAt__ i)
-             , \v -> snd (wordAt__ i) (v ^. low) >> snd (wordAt__ $ i+2) (v ^. high))
+             , \v -> snd (wordAt__ i) (fromIntegral v) >> snd (wordAt__ $ i+2) (v ^. high))
 
 
 flags :: MachinePart Word16
