@@ -101,9 +101,8 @@ ip = regs . ip_
 sp = regs . sp_
 bp = regs . bp_
 
-uRead, uReadInfo :: UVec -> Int -> IO Word8
+uRead :: UVec -> Int -> IO Word8
 uRead h i = (^. low) <$> U.read h i
-uReadInfo h i = (^. high) <$> U.read h i
 
 uWrite, uWriteInfo :: UVec -> Int -> Word8 -> Machine ()
 uWrite h i v = do
@@ -265,7 +264,7 @@ mkStep = do
         let mkInst ip' inst = do
                 let ips = segAddr cs_ ip'
                 Just (md, _) <- disassembleOne disasmConfig . BS.pack <$> fst (bytesAt__ ips maxInstLength)
-                let ch = Mod IP (Add $ C $ fromIntegral $ mdLength md)
+                let ch = Set IP (Add (C $ fromIntegral $ mdLength md) (Get IP))
                       <> execInstruction' md
                       <> CheckInterrupt 1
                     ch' = inst <> ch
@@ -295,10 +294,10 @@ mergeInfo a b = (a + b) .|. (a .&. 0x80) .|. (b .&. 0x80)
 readInfo :: Int -> Machine Info
 readInfo i = do
     h <- use heap''
-    info <- liftIO $ uReadInfo h i
+    info <- liftIO $ U.read h i
     case info of
-      0xff -> return Builtin
-      _ | testBit info 7 -> return OneByte
+      0xff00 -> return Builtin
+      _ | testBit info 15 -> return OneByte
       _ -> return NoInfo
 
 bytesToInt :: [Word8] -> Int
@@ -357,7 +356,7 @@ evalExpM = \case
     LetM e f -> evalExp e >>= evalExpM . f . C
 
     Set p e -> evalPart p $ \(_, k) -> k =<< evalExp e
-    Mod p f -> evalPart p $ \(g, s) -> g >>= evalExp . f . C >>= s
+--    Mod p f -> evalPart p $ \(g, s) -> g >>= evalExp . f . C >>= s
     Nop -> return ()
 
     IfM b x y -> evalExp b >>= \b -> evalExpM $ if b then x else y

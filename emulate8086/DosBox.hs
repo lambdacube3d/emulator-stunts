@@ -71,13 +71,17 @@ drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
                 p <- readMVar palette
                 offs <- readMVar ovar
                 let gs = 0xa0000 + offs
-                forM_ [0..199] $ \y -> forM_ [0..319] $ \x -> do
-                    a <- U.read fb $ (gs + 320 * (199 - y) + x) .&. 0xfffff
+                forM_ [0..199] $ \y -> do
+                  let y_ = gs + 320 * (199 - y)
+                      y' = 1280 * y
+                  forM_ [0..319] $ \x -> do
+                    a <- U.unsafeRead fb $ (y_ + x) .&. 0xfffff
                     let v = p Vec.! fromIntegral (a .&. 0xff)
-                    U.write vec2 (1280 * y + 2 * x) v
-                    U.write vec2 (1280 * y + 2 * x + 1) v
-                    U.write vec2 (1280 * y + 2 * x + 640) v
-                    U.write vec2 (1280 * y + 2 * x + 641) v
+                        z = y' + 2 * x
+                    U.unsafeWrite vec2 (z) v
+                    U.unsafeWrite vec2 (z + 1) v
+                    U.unsafeWrite vec2 (z + 640) v
+                    U.unsafeWrite vec2 (z + 641) v
                 U.unsafeWith vec2 $ glDrawPixels 640 400 gl_RGBA gl_UNSIGNED_INT_8_8_8_8
                 GLFW.swapBuffers window
                 GLFW.pollEvents

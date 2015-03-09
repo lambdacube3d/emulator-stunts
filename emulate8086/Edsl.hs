@@ -87,11 +87,12 @@ data ExpM a where
     Error :: Halt -> ExpM ()
     Trace :: String -> ExpM ()
     Set :: Part a -> Exp a -> ExpM ()
-    Mod :: Part a -> (Exp a -> Exp a) -> ExpM ()
     Input :: Exp Word16 -> (Exp Word16 -> ExpM ()) -> ExpM ()
     Output :: Exp Word16 -> Exp Word16 -> ExpM ()
     CheckInterrupt :: Int -> ExpM ()
     Interrupt :: Exp Word8 -> ExpM ()
+
+modif p f = Set p $ f $ Get p
 
 data Exp a where
     C :: a -> Exp a
@@ -120,7 +121,8 @@ data Exp a where
     SegAddr :: Exp Word16 -> Exp Word16 -> Exp Int
 
 trace_ = Trace
-undefBool = C False
+
+uSet f = Nop --Set f $ C False
 unTup x = (Fst x, Snd x)
 
 instance Num Bool where
@@ -169,43 +171,94 @@ when' b x = ifM b x mempty
 
 -- get / set / mod / neutral / Interrupt
 
---data
+data AState
+    = AMod [Exp Word16]
+    | ASet [Exp Word16]
+    | AGet
+
+mparts :: (forall a . Exp a -> Bool) -> ExpM b -> Bool
+mparts p = \case
+    Seq a b -> mparts p a || mparts p b
+    IfM e a b -> p e || mparts p a || mparts p b
+--    QuotRem{} -> True
+    LetM e f -> mparts p $ f e
+    Replicate e x -> p e || mparts p x
+--    Input{} -> True
+--    Output{} -> True -- e f -> p e || p f
+    Set IP _ -> True
+    Set _ e -> p e
+    Nop -> False
+    Error{} -> False
+    Trace{} -> False
+    _ -> True
+
+
+eparts :: Exp b -> Bool
+eparts = \case
+    C{} -> False
+
+    Let e f -> eparts $ f e
+    Tuple a b -> eparts a || eparts b
+    Fst e -> eparts e
+    Snd e -> eparts e
+--    Iterate{} -> True
+    If e a b -> eparts e || eparts a || eparts b
+
+    Get IP -> True
+    Get _ -> False
+
+    Eq a b -> eparts a || eparts b
+    Sub a b -> eparts a || eparts b
+    Add a b -> eparts a || eparts b
+    Mul a b -> eparts a || eparts b
+    And a b -> eparts a || eparts b
+    Or a b -> eparts a || eparts b
+    Xor a b -> eparts a || eparts b
+    Not e -> eparts e
+    ShiftL e -> eparts e
+    ShiftR e -> eparts e
+    RotateL e -> eparts e
+    RotateR e -> eparts e
+    Bit _ e -> eparts e
+    SetBit _ e b -> eparts e || eparts b
+    HighBit e -> eparts e
+    SetHighBit a e -> eparts a || eparts e
+    EvenParity e -> eparts e
+
+    Signed e -> eparts e
+    Extend e -> eparts e
+    Convert e -> eparts e
+    SegAddr a b -> eparts a || eparts b
+    _   -> True
 
 reorderExp :: ExpM () -> ExpM ()
-reorderExp = -- snd . foldrExp f (AGet, Nop) . 
+reorderExp = -- uncurry final . foldrExp f (AGet, Nop) . 
     groupInterrupts 0
-{-
   where
+    hasGet :: ExpM () -> Bool
+    hasGet = mparts $ eparts
 
-        
-    IfM :: Exp Bool -> ExpM () -> ExpM () -> ExpM ()
-    QuotRem :: Integral a => Exp a -> Exp a -> ExpM () -> ((Exp a, Exp a) -> ExpM ()) -> ExpM ()
+    final x e = case x of
+        AMod xs -> mconcat (map (Set IP) xs) <> e
+        ASet xs -> mconcat (map (Set IP) xs) <> e
+        _ -> e
 
-    LetM :: Exp a -> (Exp a -> ExpM ()) -> ExpM ()
-    Replicate :: Exp Int -> ExpM () -> ExpM ()
+    f :: ExpM () -> (AState, ExpM ()) -> (AState, ExpM ())
+    f a (st, b) = case a of
+        Set IP v | eparts v -> case st of
+            AGet -> (AMod [v], b)
+            ASet v' -> (ASet v', b)
+            AMod vs -> (AMod $ v: vs, b)
 
-    Set :: Part a -> Exp a -> ExpM ()
-    Mod :: Part a -> (Exp a -> Exp a) -> ExpM ()
+        Set IP v -> case st of
+            AGet -> (ASet [v], b)
+            ASet v' -> (ASet v', b)
+            AMod vs -> (ASet $ v: vs, b)
 
-    CheckInterrupt :: Int -> ExpM ()
-    Interrupt :: Exp Word8 -> ExpM ()
-        
+        a | hasGet a -> (AGet, a `Seq` final st b)
 
-    f (Mod IP f) (AGet, b) = (AMod f, b)
-    f (Set IP v) (AGet, b) = (ASet v, b)
-    f a (AGet, b) | isInterr a =
-    f a (AGet, b) | hasGet a = (AGet, a `Seq` b)  --
-    f (Mod IP _) (ASet v, b) = (ASet v, b)
-    f (Set IP _) (ASet v, b) = (ASet v, b)
-    f a (ASet v, b) | isInterr a =
-    f a (ASet v, b) | hasGet a =
-    f (Mod IP g) (AMod f, b) = (AMod $ f . g, b)
-    f (Set IP v) (AMod f, b) = (ASet $ f v, b)
-    f a (AMod f, b) | isInterr a =
-    f a (AMod f, b) | hasGet a =
+        a -> (st, a `Seq` b)
 
-    f a (st, b) = (st, a `Seq` b)
--}
 foldrExp :: (ExpM () -> a -> a) -> a -> ExpM () -> a
 foldrExp f x (Seq a b) = f a (foldrExp f x b)
 foldrExp f x y = f y x
@@ -229,16 +282,13 @@ nextAddr e = case e of
     CheckInterrupt _ -> Just  -- !
     Output _ _ -> Just
 
+    Set IP (Add (C i) (Get IP)) | i >= 0 && i < 8 -> \x -> Just $ i + x
     Set IP _ -> const Nothing
     Set Cs _ -> const Nothing
     Set _ _ -> Just
-
-    Mod IP f -> \x -> case f (C x) of
-        Add (C i) (C x) | i >= 0 && i < 8 -> Just $ i + x
-        _ -> Nothing
-    Mod Cs _ -> const Nothing
+{-
     Mod _ _ -> Just
-
+-}
     _ -> const Nothing
 
 --------------------------------------------------------------------------------
@@ -349,12 +399,12 @@ stackTop = Heap16 sps
 
 push :: Exp Word16 -> ExpM ()
 push x = do
-    Mod SP $ Add $ C $ -2
+    modif SP $ Add $ C $ -2
     Set stackTop x
 
 pop :: (Exp Word16 -> ExpM ()) -> ExpM ()
 pop cont = LetM (Get stackTop) $ \x -> do
-    Mod SP $ Add $ C 2
+    modif SP $ Add $ C 2
     cont x
 
 move a b = Set a $ Get b
@@ -380,7 +430,7 @@ execInstruction' mdat@Metadata{mdInst = i@Inst{..}}
     cycle cond = do
         when' (Not $ Eq (C 0) $ Get CX) $ do
             body
-            Mod CX $ Add $ C $ -1
+            modif CX $ Add $ C $ -1
             when' cond $ cycle cond
 
     rep p = p `elem` [Rep, RepE, RepNE]
@@ -420,7 +470,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
         pop $ Set IP
         when (inOpcode `elem` [Iretf, Iiretw]) $ pop $ Set Cs
         when (inOpcode == Iiretw) $ pop $ Set Flags
-        when (length inOperands == 1) $ Mod SP $ Add (getOp1w)
+        when (length inOperands == 1) $ modif SP $ Add (getOp1w)
 
     Iint  -> Interrupt $ getByteOperand segmentPrefix op1
     Iinto -> when' (Get OF) $ Interrupt $ C 4
@@ -460,7 +510,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
     Ilahf -> Set (High AX) $ Get $ Low Flags
 
     Iclc  -> Set CF $ C False
-    Icmc  -> Mod CF Not
+    Icmc  -> modif CF Not
     Istc  -> Set CF $ C True
     Icld  -> Set DF $ C False
     Istd  -> Set DF $ C True
@@ -492,7 +542,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
         Ixchg -> LetM op1v $ \o1 -> do
             Set op1' op2v
             Set op2' o1
-        Inot  -> Mod op1' Not
+        Inot  -> modif op1' Not
 
         Isal  -> shiftOp $ \_ x -> (HighBit x, ShiftL x)
         Ishl  -> shiftOp $ \_ x -> (HighBit x, ShiftL x)
@@ -541,7 +591,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
         si'' = tr_ segmentPrefix $ Mem $ memIndex RSI
         di'' = tr_ (Just $ fromMaybe ES segmentPrefix) $ Mem $ memIndex RDI
 
-        adjustIndex i = Mod i $ \x -> If (Get DF) (Add x $ C $ -sizeByte) (Add x $ C sizeByte)
+        adjustIndex i = modif i $ \x -> If (Get DF) (Add x $ C $ -sizeByte) (Add x $ C sizeByte)
 
         op1' = tr_ segmentPrefix op1
         op2' = tr_ segmentPrefix op2
@@ -562,9 +612,9 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
                 Set axd $ Convert r
                 Set CF c
                 Set OF c
-                Set SF undefBool
-                Set PF undefBool
-                Set ZF undefBool
+                uSet SF
+                uSet PF
+                uSet ZF
 
         shiftOp :: (forall b . (AsSigned b) => Exp Bool -> Exp b -> (Exp Bool, Exp b)) -> ExpM ()
         shiftOp op = do
@@ -576,15 +626,15 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
                 when (inOpcode `elem` [Isal, Isar, Ishl, Ishr]) $ do
                     Set ZF $ Eq (C 0) r
                     Set SF $ HighBit r
-                    Set OF undefBool
+                    uSet OF
                     Set PF $ EvenParity $ Convert r
-                    Set AF undefBool
+                    uSet AF
                 when (inOpcode `elem` [Ircl, Ircr, Irol, Iror]) $ do
-                    Set ZF undefBool
-                    Set SF undefBool
-                    Set OF undefBool
-                    Set PF undefBool
-                    Set AF undefBool
+                    uSet ZF
+                    uSet SF
+                    uSet OF
+                    uSet PF
+                    uSet AF
 
         twoOp :: Bool -> (forall b . (Integral b, FiniteBits b) => Exp b -> Exp b -> Exp b) -> ExpM ()
         twoOp store op = twoOp_ store op op1' op2v
@@ -599,7 +649,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
             Set ZF $ Eq (C 0) r
             Set SF $ HighBit r
             Set PF $ EvenParity $ Convert r
-            Set AF undefBool
+            uSet AF
 
             when store $ Set op1 r
 
@@ -608,11 +658,11 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
     addr op = case op of Mem m -> addressOf segmentPrefix m
 
     loop cond = do
-        Mod CX $ Add $ C $ -1
+        modif CX $ Add $ C $ -1
         condJump $ And (Not $ Eq (C 0) (Get CX)) cond
 
     condJump :: Exp Bool -> ExpM ()
-    condJump b = when' b (Set IP $ getOp1w)
+    condJump b = when' b $ Set IP getOp1w
 
     sizeByte :: Word16
     sizeByte = fromIntegral $ sizeByte_ i
