@@ -5,6 +5,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE GADTs #-}
+--{-# LANGUAGE ExistentialTypes #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE RebindableSyntax #-}
 module Edsl
@@ -23,11 +24,13 @@ import Data.Maybe
 import Data.Int
 import Data.Word
 import Data.Bits
+import qualified Data.Set as S
 import Data.Monoid
 import Control.Applicative
 import Control.Monad ((>=>))
 import Control.Lens
 import Prelude hiding ((>>), return)
+import Unsafe.Coerce
 
 import Hdis86 hiding (wordSize)
 import Hdis86.Incremental
@@ -74,13 +77,73 @@ data Part a where
 
     Low, High :: Part Word16 -> Part Word8
 
+data Part'
+    = {-Heap8' Int
+    | -}IP' | AL' | BL' | CL' | DL' | AH' | BH' | CH' | DH' 
+    | SI' | DI' | BP' | SP' | Es' | Ds' | Ss' | Cs' | CF' | PF' | AF' | ZF' | SF' | IF' | DF' | OF'
+    deriving (Eq, Ord)
+
+data Eqq a b where
+    Eqq :: (a ~ b) => Eqq a b
+    NotEq :: Eqq a b
+
+same :: Part a -> Part b -> Eqq a b
+same a b | keyOf a == keyOf b = unsafeCoerce Eqq
+         | otherwise = NotEq
+
+keyOf :: Part a -> S.Set Part'
+keyOf = \case
+    AX -> S.fromList [AL', AH']
+    BX -> S.fromList [BL', BH']
+    CX -> S.fromList [CL', CH']
+    DX -> S.fromList [DL', DH']
+    SI -> S.singleton SI'
+    DI -> S.singleton DI'
+    BP -> S.singleton BP'
+    SP -> S.singleton SP'
+    Es -> S.singleton Es'
+    Ds -> S.singleton Ds'
+    Cs -> S.singleton Cs'
+    Ss -> S.singleton Ss'
+    CF -> S.singleton CF'
+    PF -> S.singleton PF'
+    AF -> S.singleton AF'
+    ZF -> S.singleton ZF'
+    SF -> S.singleton SF'
+    IF -> S.singleton IF'
+    DF -> S.singleton DF'
+    OF -> S.singleton OF'
+    Flags -> S.fromList [CF', PF', AF', ZF', SF', IF', DF', OF']
+    DXAX  -> S.fromList [AL', AH', DL', DH']
+    Low AX -> S.singleton AL'
+    Low BX -> S.singleton BL'
+    Low CX -> S.singleton CL'
+    Low DX -> S.singleton DL'
+    Low  a -> keyOf a
+    High AX -> S.singleton AH'
+    High BX -> S.singleton BH'
+    High CX -> S.singleton CH'
+    High DX -> S.singleton DH'
+    High a -> keyOf a
+    _ -> full --Heap8' i
+--    Heap16
+
+full :: Inf
+full = S.fromList [
+      IP', AL', BL', CL', DL', AH', BH', CH', DH', SI', DI', BP', SP', Es', Ds', Ss', Cs', CF', PF', AF', ZF', SF', IF', DF', OF'
+        ]
+
 data ExpM a where
+    Lam :: ExpM b -> ExpM (a -> b)
+    App :: Exp a -> ExpM (a -> b) -> ExpM b
+
     Seq :: ExpM () -> ExpM () -> ExpM ()
 
     IfM :: Exp Bool -> ExpM () -> ExpM () -> ExpM ()
     QuotRem :: Integral a => Exp a -> Exp a -> ExpM () -> ((Exp a, Exp a) -> ExpM ()) -> ExpM ()
 
     LetM :: Exp a -> (Exp a -> ExpM ()) -> ExpM ()
+--    LetM' :: Exp a -> (Exp a -> ExpM ()) -> ExpM ()
     Replicate :: Exp Int -> ExpM () -> ExpM ()
 
     Nop :: ExpM ()
@@ -95,6 +158,8 @@ data ExpM a where
 modif p f = Set p $ f $ Get p
 
 data Exp a where
+    Var :: Int -> Exp a
+
     C :: a -> Exp a
     Let :: Exp a -> (Exp a -> Exp b) -> Exp b
     Tuple :: Exp a -> Exp b -> Exp (a, b)
@@ -171,93 +236,172 @@ when' b x = ifM b x mempty
 
 -- get / set / mod / neutral / Interrupt
 
-data AState
-    = AMod [Exp Word16]
-    | ASet [Exp Word16]
-    | AGet
+type Inf = S.Set Part'
+type Info = (Inf, Inf)
 
-mparts :: (forall a . Exp a -> Bool) -> ExpM b -> Bool
-mparts p = \case
-    Seq a b -> mparts p a || mparts p b
-    IfM e a b -> p e || mparts p a || mparts p b
+
+mparts :: ExpM b -> Info
+mparts = \case
+    Seq a b -> mparts a |+| mparts b
+    IfM e a b -> eparts' e |+| mparts a |+| mparts b
 --    QuotRem{} -> True
-    LetM e f -> mparts p $ f e
-    Replicate e x -> p e || mparts p x
+    LetM e f -> mparts $ f e
+    Replicate e x -> eparts' e |+| mparts x
 --    Input{} -> True
 --    Output{} -> True -- e f -> p e || p f
-    Set IP _ -> True
-    Set _ e -> p e
-    Nop -> False
-    Error{} -> False
-    Trace{} -> False
-    _ -> True
+    Set x y -> (keyOf x, eparts y)
+    Nop -> mempty
+    Error{} -> mempty
+    Trace{} -> mempty
+    _ -> (full, full)
 
+eparts' = (,) mempty . eparts
 
-eparts :: Exp b -> Bool
+(a,b) |+| (c,d) = (S.union a c, S.union b d)
+(|.|) = S.union
+
+eparts :: Exp b -> S.Set Part'
 eparts = \case
-    C{} -> False
+    C{} -> mempty
 
     Let e f -> eparts $ f e
-    Tuple a b -> eparts a || eparts b
+    Tuple a b -> eparts a |.| eparts b
     Fst e -> eparts e
     Snd e -> eparts e
 --    Iterate{} -> True
-    If e a b -> eparts e || eparts a || eparts b
+    If e a b -> eparts e |.| eparts a |.| eparts b
 
-    Get IP -> True
-    Get _ -> False
+    Get x -> keyOf x
 
-    Eq a b -> eparts a || eparts b
-    Sub a b -> eparts a || eparts b
-    Add a b -> eparts a || eparts b
-    Mul a b -> eparts a || eparts b
-    And a b -> eparts a || eparts b
-    Or a b -> eparts a || eparts b
-    Xor a b -> eparts a || eparts b
+    Eq a b -> eparts a |.| eparts b
+    Sub a b -> eparts a |.| eparts b
+    Add a b -> eparts a |.| eparts b
+    Mul a b -> eparts a |.| eparts b
+    And a b -> eparts a |.| eparts b
+    Or a b -> eparts a |.| eparts b
+    Xor a b -> eparts a |.| eparts b
     Not e -> eparts e
     ShiftL e -> eparts e
     ShiftR e -> eparts e
     RotateL e -> eparts e
     RotateR e -> eparts e
     Bit _ e -> eparts e
-    SetBit _ e b -> eparts e || eparts b
+    SetBit _ e b -> eparts e |.| eparts b
     HighBit e -> eparts e
-    SetHighBit a e -> eparts a || eparts e
+    SetHighBit a e -> eparts a |.| eparts e
     EvenParity e -> eparts e
 
     Signed e -> eparts e
     Extend e -> eparts e
     Convert e -> eparts e
-    SegAddr a b -> eparts a || eparts b
-    _   -> True
+    SegAddr a b -> eparts a |.| eparts b
+    _   -> full
 
+data AState
+    = ASet Inf (ExpM ())
+    | AGet
+
+final st b = case st of
+    ASet _ xs -> xs <> b
+    AGet -> b
+
+reple :: forall a . Part a -> Exp a -> (forall b . Exp b -> Exp b)
+reple k e' = eparts where
+
+  eparts :: forall b . Exp b -> Exp b
+  eparts = \case
+
+{-
+    Let e f -> Let (eparts e) $ 
+--    Let :: Exp a -> (Exp a -> Exp b) -> Exp b
+--    Iterate :: Exp Int -> (Exp a -> Exp a) -> Exp a -> Exp a
+    --Iterate e f x -> Iterate --
+-}
+    Tuple a b -> eparts a `Tuple` eparts b
+    Fst e -> Fst $ eparts e
+    Snd e -> Snd $ eparts e
+    If e a b -> If (eparts e) (eparts a) (eparts b)
+
+    x@(Get k') -> case same k' k of
+        Eqq -> e'
+        _ -> x
+
+    Eq a b -> eparts a `Eq` eparts b
+    Sub a b -> eparts a `Sub` eparts b
+    Add a b -> eparts a `Add` eparts b
+    Mul a b -> eparts a `Mul` eparts b
+    And a b -> eparts a `And` eparts b
+    Or a b -> eparts a `Or` eparts b
+    Xor a b -> eparts a `Xor` eparts b
+    Not e -> Not $ eparts e
+    ShiftL e -> ShiftL $ eparts e
+    ShiftR e -> ShiftR $ eparts e
+    RotateL e -> RotateL $ eparts e
+    RotateR e -> RotateR $ eparts e
+    Bit i e -> Bit i $ eparts e
+    SetBit i e b -> SetBit i (eparts e) (eparts b)
+    HighBit e -> HighBit $ eparts e
+    SetHighBit a e -> eparts a `SetHighBit` eparts e
+    EvenParity e -> EvenParity $ eparts e
+
+    Signed e -> Signed $ eparts e
+    Extend e -> Extend $ eparts e
+    Convert e -> Convert $ eparts e
+    SegAddr a b -> eparts a `SegAddr` eparts b
+    e -> e
+
+
+repl :: Part a -> Exp a -> ExpM () -> ExpM ()
+repl k e = \case
+    p@(Set k' e') -> case same k k' of
+        Eqq -> Set k $ reple k e e'
+        _ -> p
+{-
+    IfM :: Exp Bool -> ExpM () -> ExpM () -> ExpM ()
+    QuotRem :: Integral a => Exp a -> Exp a -> ExpM () -> ((Exp a, Exp a) -> ExpM ()) -> ExpM ()
+
+    LetM :: Exp a -> (Exp a -> ExpM ()) -> ExpM ()
+--    LetM' :: Exp a -> (Exp a -> ExpM ()) -> ExpM ()
+    Replicate :: Exp Int -> ExpM () -> ExpM ()
+
+    _ -> e
+
+
+    Input :: Exp Word16 -> (Exp Word16 -> ExpM ()) -> ExpM ()
+    Output :: Exp Word16 -> Exp Word16 -> ExpM ()
+    CheckInterrupt :: Int -> ExpM ()
+    Interrupt :: Exp Word8 -> ExpM ()
+-}
 reorderExp :: ExpM () -> ExpM ()
-reorderExp = -- uncurry final . foldrExp f (AGet, Nop) . 
+reorderExp =  uncurry final . foldrExp f (AGet, Nop) . 
     groupInterrupts 0
+
   where
-    hasGet :: ExpM () -> Bool
-    hasGet = mparts $ eparts
-
-    final x e = case x of
-        AMod xs -> mconcat (map (Set IP) xs) <> e
-        ASet xs -> mconcat (map (Set IP) xs) <> e
-        _ -> e
-
     f :: ExpM () -> (AState, ExpM ()) -> (AState, ExpM ())
     f a (st, b) = case a of
-        Set IP v | eparts v -> case st of
-            AGet -> (AMod [v], b)
-            ASet v' -> (ASet v', b)
-            AMod vs -> (AMod $ v: vs, b)
 
         Set IP v -> case st of
-            AGet -> (ASet [v], b)
-            ASet v' -> (ASet v', b)
-            AMod vs -> (ASet $ v: vs, b)
+            AGet -> (ASet na a, b)
+            ASet i vs | i `disj` ni -> if IP' `S.notMember` i
+                then (ASet i vs, b)
+                else (ASet (na |.| i) $ a `Seq` vs, b)
+            _ -> fin
 
-        a | hasGet a -> (AGet, a `Seq` final st b)
+        _ -> case st of
+            ASet i vs | IP' `S.notMember` na && i `disj` ni -> (ASet i vs, a `Seq` b)
+            _ -> fin
 
-        a -> (st, a `Seq` b)
+      where
+        (ni, na) = mparts a
+
+        fin :: (AState, ExpM ())
+        fin = (,) AGet $ a `Seq` case st of
+            ASet _ xs -> xs <> b
+            AGet -> b
+
+
+disj a b = S.null $ S.intersection a b
+
 
 foldrExp :: (ExpM () -> a -> a) -> a -> ExpM () -> a
 foldrExp f x (Seq a b) = f a (foldrExp f x b)
@@ -466,7 +610,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
             Set IP $ getOp1w
 
     _ | inOpcode `elem` [Iret, Iretf, Iiretw] -> do
-        when (inOpcode == Iiretw) $ trace_ "iret"
+--        when (inOpcode == Iiretw) $ trace_ "iret"
         pop $ Set IP
         when (inOpcode `elem` [Iretf, Iiretw]) $ pop $ Set Cs
         when (inOpcode == Iiretw) $ pop $ Set Flags

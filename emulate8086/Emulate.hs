@@ -107,12 +107,12 @@ uRead h i = fromIntegral <$> U.read h i
 uWrite, uWriteInfo :: UVec -> Int -> Word8 -> Machine ()
 uWrite h i v = do
     x <- liftIO $ U.read h i
-    liftIO $ U.write h i $ (0, v) ^. combine
+    liftIO $ U.write h i $ fromIntegral v
     let info = x `shiftR` 8
         n = info .&. 0x7f
     when (info /= 0) $ do
         liftIO $ putStr "#"
-        when (n > 1) $ liftIO $ putStr $ show info
+        when (n > 1) $ trace_ $ show info
         when (info == 0xff) $ error "system area written"
         ch <- use cache
         let (ch', beg, end) = f n ch i i $ fst $ IM.split (i+1) ch
@@ -142,11 +142,11 @@ byteAt__ :: Int -> MachinePart' Word8
 byteAt__ i = (use heap'' >>= \h -> liftIO $ uRead h i, \v -> use heap'' >>= \h -> uWrite h i v)
 
 wordAt__ :: Int -> MachinePart' Word16
-wordAt__ i = ( use heap'' >>= \h -> liftIO $ (^. combine) <$> liftM2 (,) (uRead h (i+1)) (uRead h i)
+wordAt__ i = ( use heap'' >>= \h -> liftIO $ liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead h (i+1)) (uRead h i)
              , \v -> use heap'' >>= \h -> uWrite h i (fromIntegral v) >> uWrite h (i+1) (fromIntegral $ v `shiftR` 8))
 
 dwordAt__ :: Int -> MachinePart' Word32
-dwordAt__ i = ( (^. combine) <$> liftM2 (,) (fst $ wordAt__ $ i+2) (fst $ wordAt__ i)
+dwordAt__ i = ( liftM2 (\hi lo -> fromIntegral hi `shiftL` 16 .|. fromIntegral lo) (fst $ wordAt__ $ i+2) (fst $ wordAt__ i)
              , \v -> snd (wordAt__ i) (fromIntegral v) >> snd (wordAt__ $ i+2) (fromIntegral $ v `shiftR` 16))
 
 
@@ -176,7 +176,7 @@ clearHist = do
     return (intercalate "; " $ reverse h)
 
 [overflowF,directionF,interruptF,signF,zeroF,adjustF,parityF,carryF] =
-    [ flags . bit i  :: MachinePart (Bool)
+    [ flags_ . bit i  :: MachinePart (Bool)
     | i <- [11,10,9,7,6,4,2,0]
     ]
 
@@ -281,7 +281,7 @@ mkStep = do
 
 showHist = do
     hist <- clearHist
-    when (not $ null hist) $ liftIO $ putStrLn hist
+    when (not $ null hist) $ liftIO $ putStr $ " | " ++ hist
 
 data Info
     = Builtin
@@ -396,7 +396,7 @@ evalExpM = \case
           liftIO $ do
             let gs = 0xa0000
             putMVar var v 
-            print ns
+          trace_ $ show ns
         mask <- use intMask
         when (not (testBit mask 0)) $ do
             cc <- askCounter n
@@ -462,7 +462,7 @@ input v = do
             return $ "???" @: k
         0x61 -> do
             x <- use $ config . speaker
-            trace_ $ "get internal speaker: " ++ showHex' 2 x
+            trace_ $ "get speaker: " ++ showHex' 2 x
             return $ "???" @: fromIntegral x
         0x03da -> do
             r <- getRetrace
@@ -485,9 +485,9 @@ output' v x = do
         0x40 -> do
             trace_ $ "set timer frequency " ++ showHex' 2 x --show (1193182 / fromIntegral x) ++ " HZ"
         0x41 -> do
-            trace_ $ "timer chip 41 " ++ showHex' 2 x  -- ?
+            trace_ $ "channel #41 " ++ showHex' 2 x  -- ?
         0x42 -> do
-            trace_ $ "timer chip 42 " ++ showHex' 2 x
+            trace_ $ "channel #42 " ++ showHex' 2 x
         0x43 -> do
             trace_ $ "set timer control " ++ showHex' 2 x
             case x of
@@ -495,7 +495,7 @@ output' v x = do
                 0xb6  -> trace_ "set speaker frequency lsb+msb, square wave"
         0x61 -> do
             config . speaker .= fromIntegral x
-            trace_ $ "set internal speaker: " ++ showHex' 2 x
+            trace_ $ "set speaker: " ++ showHex' 2 x
         0xf100 -> do
             trace_ "implemented for jmpmov test"
         _ -> haltWith $ "output #" ++ showHex' 4 v ++ " 0x" ++ showHex' 4 x

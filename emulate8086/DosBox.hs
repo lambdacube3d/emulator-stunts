@@ -17,7 +17,7 @@ import Graphics.Rendering.OpenGL.Raw.Core32
 import Graphics.Rendering.OpenGL.Raw.Compatibility30
 import "GLFW-b" Graphics.UI.GLFW as GLFW
 
-dof = 2 * 320 * 200
+dof = 320 * 200
 
 drawWithFrameBuffer :: MVar (Maybe Word8) -> MVar Word16 -> MVar (Vec.Vector Word32) -> IO (U.IOVector Word16) -> IO () -> IO ()
 drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
