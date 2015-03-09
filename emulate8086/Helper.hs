@@ -26,7 +26,7 @@ import Data.List
 import Data.Maybe
 import Data.Monoid
 import Data.Functor.Compose
-import qualified Data.FingerTree as F
+--import qualified Data.FingerTree as F
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Sequence as S
@@ -42,7 +42,7 @@ import Control.Monad.Identity
 import Control.Lens as Lens
 import Control.Lens.Internal.Iso as Lens (Exchange (..))
 import Control.Lens.Internal.Indexed as Lens (Indexing (..))
-import Control.Lens.Action.Internal as Lens
+--import Control.Lens.Action.Internal as Lens
 
 --import Word1
 
@@ -169,45 +169,6 @@ segAddr s w = s ^. paragraph + w ^. convertingInt
 showAddr :: Int -> String
 showAddr x = showHex' 5 (x ^. shifting (-3)) ++ concat ["," ++ showHex' 1 y | let y = x ^. bits 0 3, y /= 0]
 
-------------------------------
-
-data Hashed a = Hashed Int a
-    deriving Show
-
-class Hash a where
-    hash :: a -> Int
-
-hashed :: Hash a => Iso' a (Hashed a)
-hashed = iso (\x -> Hashed (hash x) x) (\(Hashed _ a) -> a)
-
---------------------------
-
--- TODO: dedicated type for bitsize?
-type BitSize = Sum Int
-
-measure :: F.Measured (Sum b) a => a -> b
-measure = getSum . F.measure
-
-mapWithPositions_ :: Monoid c => (a -> c) -> (c -> c -> a -> b) -> [a] -> [b]
-mapWithPositions_ measure f xs = zipWith3 f (scanl mappend mempty is) is xs
-  where
-    is = map measure xs
-
-mapWithPositions :: (F.Measured (Sum c) a, Num c) => (c -> c -> a -> b) -> [a] -> [b]
-mapWithPositions f = mapWithPositions_ F.measure $ \i j -> f (getSum i) (getSum j)
-{-
-zipWithPositions :: F.Measured BitSize a => (Int -> Int -> a -> b -> c) -> [a] -> [b] -> [c]
-zipWithPositions f xs ys = mapWithPositions_ (measure . fst) (\off l (x, y) -> f off l x y) $ zip xs ys
--}
-
-fSplit :: (F.Measured (Sum c) a, Real c) => c -> F.FingerTree (Sum c) a -> (F.FingerTree (Sum c) a, c, F.FingerTree (Sum c) a)
-fSplit x f = (a, x - measure a, b) where (a, b) = F.split (> Sum x) f
-
--------------------
-
---wordSize :: Int
---wordSize = finiteBitSize (undefined :: Word)
-
 --------------------------
 
 data Halt
@@ -215,12 +176,5 @@ data Halt
     | Interr
     | Err String
   deriving Show
-
--- instance Except String Halt where
-
-
--- TODO: revise & generalize
-prismToIso :: b -> Prism' a b -> Iso' a b
-prismToIso x p = iso (fromMaybe x . (^? p)) (^. re p)
 
 

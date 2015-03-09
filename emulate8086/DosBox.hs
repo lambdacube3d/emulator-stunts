@@ -12,10 +12,10 @@ import Data.Vector.Storable as SVec
 import Control.Monad as Prelude
 import Control.Concurrent
 import Graphics.Rendering.OpenGL.Raw.Core32
-import Graphics.Rendering.OpenGL.Raw.ARB.Compatibility
+import Graphics.Rendering.OpenGL.Raw.Compatibility30
 import "GLFW-b" Graphics.UI.GLFW as GLFW
 
-dof = 320 * 200
+dof = 2 * 320 * 200
 
 drawWithFrameBuffer :: MVar (Maybe Word8) -> MVar Word16 -> MVar (Vec.Vector Word32) -> IO (Int -> Int -> IO Word8) -> IO () -> IO ()
 drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
@@ -50,9 +50,9 @@ drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
         when (key == GLFW.Key'S && action == GLFW.KeyState'Pressed) $
             modifyMVar_ ovar $ return . (+ (-dof))
         when (key == GLFW.Key'X && action == GLFW.KeyState'Pressed) $
-            modifyMVar_ ovar $ return . (+ 320)
+            modifyMVar_ ovar $ return . (+ 2*320)
         when (key == GLFW.Key'Y && action == GLFW.KeyState'Pressed) $
-            modifyMVar_ ovar $ return . (+ (-320))
+            modifyMVar_ ovar $ return . (+ (-2*320))
         when (key == GLFW.Key'C && action == GLFW.KeyState'Pressed) $
             modifyMVar_ ovar $ return . (+ 8)
         when (key == GLFW.Key'V && action == GLFW.KeyState'Pressed) $
@@ -69,7 +69,7 @@ drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
                 offs <- readMVar ovar
                 vec2 <- SVec.generateM (640*400) $ \i -> do
                         let (y,x) = i `divMod` 640
-                        a <- f ((x + (max 0 $ min 0xa0000 $ offs)) `shiftR` 1) (199 - y `shiftR` 1)
+                        a <- f ((x + offs) `shiftR` 1) (199 - y `shiftR` 1)
                         return $ p Vec.! fromIntegral a
                 SVec.unsafeWith vec2 $ glDrawPixels 640 400 gl_RGBA gl_UNSIGNED_INT_8_8_8_8
                 GLFW.swapBuffers window

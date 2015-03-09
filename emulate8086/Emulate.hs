@@ -26,7 +26,7 @@ import Data.Char
 import Data.List
 import Data.Maybe
 import Data.Monoid
-import qualified Data.FingerTree as F
+--import qualified Data.FingerTree as F
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Sequence as S
