@@ -108,7 +108,7 @@ uWrite, uWriteInfo :: UVec -> Int -> Word8 -> Machine ()
 uWrite h i v = do
     x <- liftIO $ U.read h i
     liftIO $ U.write h i $ (0, v) ^. combine
-    let info = x ^. high :: Word8
+    let info = x `shiftR` 8
         n = info .&. 0x7f
     when (info /= 0) $ do
         liftIO $ putStr "#"
@@ -116,7 +116,7 @@ uWrite h i v = do
         when (info == 0xff) $ error "system area written"
         ch <- use cache
         let (ch', beg, end) = f n ch i i $ fst $ IM.split (i+1) ch
-            f :: Word8 -> Cache -> Int -> Int -> Cache -> (Cache, Int, Int)
+            f :: Word16 -> Cache -> Int -> Int -> Cache -> (Cache, Int, Int)
             f 0 ch beg end _ = (ch, beg, end)
             f n ch beg end ch' = f (n-1) (IM.delete i' ch) (min beg i') (max end $ e) (IM.delete i' ch')
               where
@@ -143,11 +143,11 @@ byteAt__ i = (use heap'' >>= \h -> liftIO $ uRead h i, \v -> use heap'' >>= \h -
 
 wordAt__ :: Int -> MachinePart' Word16
 wordAt__ i = ( use heap'' >>= \h -> liftIO $ (^. combine) <$> liftM2 (,) (uRead h (i+1)) (uRead h i)
-             , \v -> use heap'' >>= \h -> uWrite h i (fromIntegral v) >> uWrite h (i+1) (v ^. high))
+             , \v -> use heap'' >>= \h -> uWrite h i (fromIntegral v) >> uWrite h (i+1) (fromIntegral $ v `shiftR` 8))
 
 dwordAt__ :: Int -> MachinePart' Word32
 dwordAt__ i = ( (^. combine) <$> liftM2 (,) (fst $ wordAt__ $ i+2) (fst $ wordAt__ i)
-             , \v -> snd (wordAt__ i) (fromIntegral v) >> snd (wordAt__ $ i+2) (v ^. high))
+             , \v -> snd (wordAt__ i) (fromIntegral v) >> snd (wordAt__ $ i+2) (fromIntegral $ v `shiftR` 16))
 
 
 flags :: MachinePart Word16
@@ -381,7 +381,7 @@ evalExpM = \case
       case int of
        Just int -> do
         mask <- use intMask
-        when (not (mask ^. bit 0)) $ do
+        when (not (testBit mask 0)) $ do
           liftIO $ modifyMVar_ ivar $ const $ return Nothing
           interrupt_ int
        Nothing -> do
@@ -398,7 +398,7 @@ evalExpM = \case
             putMVar var v 
             print ns
         mask <- use intMask
-        when (not (mask ^. bit 0)) $ do
+        when (not (testBit mask 0)) $ do
             cc <- askCounter n
             when cc $ do
                 trace_ "timer"
@@ -426,7 +426,7 @@ evalExp = \case
     Or  a b -> liftM2 (.|.) (evalExp a) (evalExp b)
     Xor a b -> liftM2 xor (evalExp a) (evalExp b)
 
-    Bit i e -> (^. bit i) <$> evalExp e
+    Bit i e -> (`testBit` i) <$> evalExp e
     SetBit i e f -> liftM2 (\a b -> b & bit i .~ a) (evalExp e) (evalExp f)
     HighBit e -> (^. highBit) <$> evalExp e
     SetHighBit e f -> liftM2 (\a b -> b & highBit .~ a) (evalExp e) (evalExp f)
@@ -481,7 +481,7 @@ output' v x = do
         0x21 -> do
             trace_ $ "set interrupt mask " ++ showHex' 2 x  -- ?
             intMask .= fromIntegral x
-            when (not $ x ^. bit 0) setCounter
+            when (not $ testBit x 0) setCounter
         0x40 -> do
             trace_ $ "set timer frequency " ++ showHex' 2 x --show (1193182 / fromIntegral x) ++ " HZ"
         0x41 -> do
