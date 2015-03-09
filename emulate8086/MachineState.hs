@@ -13,7 +13,14 @@ import Control.Monad.State
 import Control.Monad.Except
 import Control.Lens as Lens
 
-import Edsl
+--import Edsl
+
+data Halt
+    = CleanHalt
+    | Interr
+    | Err String
+  deriving Show
+
 
 type Flags = Word16
 
