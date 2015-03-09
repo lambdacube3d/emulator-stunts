@@ -23,8 +23,9 @@ import System.IO.Unsafe
 
 import Emulate
 import DosBox
-import Word1
+--import Word1
 import Helper
+import MachineState
 import Parse (getLabels)
 
 --------------------------------------------------------------------------------

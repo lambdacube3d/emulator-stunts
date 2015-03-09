@@ -6,7 +6,6 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE LambdaCase #-}
@@ -34,7 +33,7 @@ import qualified Data.Set as Set
 import qualified Data.Map as M
 import qualified Data.IntMap.Strict as IM
 import qualified Data.Vector as V
-import qualified Data.Vector.Unboxed.Mutable as U
+import qualified Data.Vector.Storable.Mutable as U
 import Control.Applicative
 import Control.Arrow
 import Control.Monad.State
@@ -53,16 +52,14 @@ import Hdis86 hiding (wordSize)
 import Hdis86.Incremental
 
 import Helper
-import Edsl hiding (Flags, trace_, ips, sps, segAddr_, addressOf, addressOf', byteOperand, wordOperand, (>>))
-import qualified Edsl
+import Edsl hiding (Flags, trace_, ips, sps, segAddr_, addressOf, addressOf', (>>))
+import qualified Edsl (addressOf, addressOf', Part(Flags))
+import MachineState
 
 ---------------------------------------------- memory allocation
 
 takeEvery n [] = []
 takeEvery n xs = take n xs: takeEvery n (drop n xs)
-
-type Region = (Int, Int)
-type MemPiece = ([Region], Int)
 
 allocateMem :: Int -> MemPiece -> (Int, MemPiece)
 allocateMem req' (alloc, end) = (r + 16, (alloc ++ [(r, r + req' + 16)], end))
@@ -86,93 +83,6 @@ modifyAllocated addr req (alloc, endf) = head $ concatMap f $ getOut $ zip alloc
 (@:) :: (WordX a) => BS.ByteString -> a ->  a
 b @: x = x
 infix 5 @:
-
-type Flags = Word16
-
-wordToFlags :: Word16 -> Flags
-wordToFlags w = fromIntegral $ (w .&. 0xed3) .|. 0x2
-
-data Config_ = Config_
-    { _numOfDisasmLines :: Int
-    , _disassStart      :: Int
-    , _verboseLevel     :: Int
-    , _termLength       :: Int  -- width of terminal
-    , _videoMVar        :: MVar (Int -> Int -> IO Word8)
-    , _instPerSec       :: Int
-
-    , _stepsCounter     :: Int
-
-    , _counter          :: Maybe Int -- counter to count down
-    , _counter'         :: [Int]
-    , _speaker          :: Word8     -- 0x61 port
-    , _palette          :: MVar (V.Vector Word32)
-    , _keyDown          :: MVar Word16
-    , _interruptRequest :: MVar (Maybe Word8)
-    }
-
-$(makeLenses ''Config_)
-
-defConfig = Config_
-    { _numOfDisasmLines = 3
-    , _disassStart  = 0
-    , _verboseLevel = 2
-    , _termLength   = 149
-    , _instPerSec   = 71000 -- 710000
-    , _videoMVar    = undefined --return $ \_ _ -> 0
-
-    , _stepsCounter = 0
-
-    , _counter = Nothing
-    , _counter' = []
-    , _speaker = 0x30 -- ??
-    , _palette = undefined
-    , _keyDown = undefined
-    , _interruptRequest = undefined
-    }
-
-data Regs = Regs { _ax_,_dx_,_bx_,_cx_, _si_,_di_, _cs_,_ss_,_ds_,_es_, _ip_,_sp_,_bp_ :: Word16 }
-
-$(makeLenses ''Regs)
-
-type UVec = U.IOVector Word16
-type Cache = IM.IntMap (Int, ExpM ())
-
-data MachineState = MachineState
-    { _flags_   :: Flags
-    , _regs     :: Regs
-    , _heap     :: MemPiece
-    , _heap''   :: UVec
-
-    , _traceQ   :: [String]
-    , _config   :: Config_
-    , _cache    :: Cache
-    , _labels   :: IM.IntMap BS.ByteString
-    , _files    :: IM.IntMap (FilePath, BS.ByteString, Int)  -- filename, file, position
-    , _dta      :: Int
-    , _retrace  :: [Word16]
-    , _intMask  :: Word8
-    }
-
-emptyState = MachineState
-    { _flags_   = wordToFlags 0xf202
-    , _regs     = Regs 0 0 0 0  0 0  0 0 0 0  0 0 0
-    , _heap     = undefined
-    , _heap''    = undefined --mempty
-
-    , _traceQ   = []
-    , _config   = defConfig
-    , _cache    = IM.empty
-    , _labels   = IM.empty
-    , _files    = IM.empty
-    , _dta      = 0
-    , _retrace  = cycle [1,9,0,8] --     [1,0,0,0,0,0,0,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0]
-    , _intMask  = 0xf8
-    }
-
-type Machine = ExceptT Halt (StateT MachineState IO)
-type MachinePart a = Lens' MachineState a
-
-$(makeLenses ''MachineState)
 
 haltWith = throwError . Err
 halt = throwError CleanHalt
@@ -497,7 +407,7 @@ evalExpM = \case
           var <- use $ config . videoMVar
           liftIO $ do
             let gs = 0xa0000
-            putMVar var $ \x y -> uRead v $ (gs + 320 * y + x) `mod` 0x100000
+            putMVar var v 
             print ns
         mask <- use intMask
         when (not (mask ^. bit 0)) $ do

@@ -6,9 +6,11 @@ module DosBox
 
 import Data.Bits
 import Data.Word
-import Data.Vector as Vec
+import qualified Data.Vector as Vec
 import Data.Vector.Mutable as MVec
-import Data.Vector.Storable as SVec
+import qualified Data.Vector.Storable.Mutable as U
+--import Data.Vector.Storable as SVec
+import Control.Applicative
 import Control.Monad as Prelude
 import Control.Concurrent
 import Graphics.Rendering.OpenGL.Raw.Core32
@@ -17,9 +19,10 @@ import "GLFW-b" Graphics.UI.GLFW as GLFW
 
 dof = 2 * 320 * 200
 
-drawWithFrameBuffer :: MVar (Maybe Word8) -> MVar Word16 -> MVar (Vec.Vector Word32) -> IO (Int -> Int -> IO Word8) -> IO () -> IO ()
+drawWithFrameBuffer :: MVar (Maybe Word8) -> MVar Word16 -> MVar (Vec.Vector Word32) -> IO (U.IOVector Word16) -> IO () -> IO ()
 drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
     GLFW.init
+    vec2 <- U.new (640*400) :: IO (U.IOVector Word32)
     ovar <- newMVar 0
     Just window <- GLFW.createWindow 640 400 "Haskell 8086 emulator" Nothing Nothing
     GLFW.makeContextCurrent $ Just window
@@ -64,14 +67,18 @@ drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
             b <- GLFW.windowShouldClose window
             unless b $ do
                 draw
-                f <- framebuffer
+                v <- framebuffer
                 p <- readMVar palette
                 offs <- readMVar ovar
-                vec2 <- SVec.generateM (640*400) $ \i -> do
-                        let (y,x) = i `divMod` 640
-                        a <- f ((x + offs) `shiftR` 1) (199 - y `shiftR` 1)
-                        return $ p Vec.! fromIntegral a
-                SVec.unsafeWith vec2 $ glDrawPixels 640 400 gl_RGBA gl_UNSIGNED_INT_8_8_8_8
+                let gs = 0xa0000 + offs
+                forM_ [0..199] $ \y -> forM_ [0..319] $ \x -> do
+                        a <- U.read v $ (gs + 320 * (199 - y) + x) .&. 0xfffff
+                        let v = p Vec.! fromIntegral (a .&. 0xff)
+                        U.write vec2 (1280 * y + 2 * x) v
+                        U.write vec2 (1280 * y + 2 * x + 1) v
+                        U.write vec2 (1280 * y + 2 * x + 640) v
+                        U.write vec2 (1280 * y + 2 * x + 641) v
+                U.unsafeWith vec2 $ glDrawPixels 640 400 gl_RGBA gl_UNSIGNED_INT_8_8_8_8
                 GLFW.swapBuffers window
                 GLFW.pollEvents
                 mainLoop

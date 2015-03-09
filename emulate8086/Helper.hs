@@ -164,17 +164,11 @@ paragraph :: Iso' Word16 Int
 paragraph = convertingInt . shifting 4 . iso id (checkAlign 4)
 
 segAddr :: Word16 -> Word16 -> Int
-segAddr s w = s ^. paragraph + w ^. convertingInt
+segAddr s w = fromIntegral s `shiftL` 4 + fromIntegral w
 
 showAddr :: Int -> String
 showAddr x = showHex' 5 (x ^. shifting (-3)) ++ concat ["," ++ showHex' 1 y | let y = x ^. bits 0 3, y /= 0]
 
 --------------------------
-
-data Halt
-    = CleanHalt
-    | Interr
-    | Err String
-  deriving Show
 
 
