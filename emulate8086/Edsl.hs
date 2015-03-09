@@ -9,7 +9,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE RebindableSyntax #-}
 module Edsl
-    ( compileInst, execInstruction'
+    {-( compileInst, execInstruction'
     , nextAddr
     , reorderExp
     , iret
@@ -17,7 +17,8 @@ module Edsl
     , Part (..), Exp (..), ExpM (..), Halt (..)
     , memIndex
     , addressOf, addressOf'
-    ) where
+    , trace
+    )-} where
 
 import Data.List
 import Data.Maybe
@@ -36,14 +37,9 @@ import Hdis86 hiding (wordSize)
 import Hdis86.Incremental
 
 import Helper
+import MachineState
 
 ----------------------------------------
-
-data Halt
-    = CleanHalt
-    | Interr
-    | Err String
-  deriving Show
 
 infixr 1 >>, `Seq`
 (>>) :: ExpM () -> ExpM () -> ExpM ()
@@ -78,8 +74,8 @@ data Part a where
     Low, High :: Part Word16 -> Part Word8
 
 data Part'
-    = {-Heap8' Int
-    | -}IP' | AL' | BL' | CL' | DL' | AH' | BH' | CH' | DH' 
+    = Heap'
+    | IP' | AL' | BL' | CL' | DL' | AH' | BH' | CH' | DH' 
     | SI' | DI' | BP' | SP' | Es' | Ds' | Ss' | Cs' | CF' | PF' | AF' | ZF' | SF' | IF' | DF' | OF'
     deriving (Eq, Ord)
 
@@ -97,6 +93,7 @@ keyOf = \case
     BX -> S.fromList [BL', BH']
     CX -> S.fromList [CL', CH']
     DX -> S.fromList [DL', DH']
+    IP -> S.singleton IP'
     SI -> S.singleton SI'
     DI -> S.singleton DI'
     BP -> S.singleton BP'
@@ -124,12 +121,14 @@ keyOf = \case
     High BX -> S.singleton BH'
     High CX -> S.singleton CH'
     High DX -> S.singleton DH'
-    High a -> keyOf a
-    _ -> full --Heap8' i
+    High a  -> keyOf a
+    Heap8 _  -> S.singleton Heap'
+    Heap16 _ -> S.singleton Heap'
+--    _ -> full --Heap8' i
 --    Heap16
 
 full :: Inf
-full = S.fromList [
+full = S.fromList [ Heap',
       IP', AL', BL', CL', DL', AH', BH', CH', DH', SI', DI', BP', SP', Es', Ds', Ss', Cs', CF', PF', AF', ZF', SF', IF', DF', OF'
         ]
 
@@ -143,7 +142,6 @@ data ExpM a where
     QuotRem :: Integral a => Exp a -> Exp a -> ExpM () -> ((Exp a, Exp a) -> ExpM ()) -> ExpM ()
 
     LetM :: Exp a -> (Exp a -> ExpM ()) -> ExpM ()
---    LetM' :: Exp a -> (Exp a -> ExpM ()) -> ExpM ()
     Replicate :: Exp Int -> ExpM () -> ExpM ()
 
     Nop :: ExpM ()
@@ -154,6 +152,10 @@ data ExpM a where
     Output :: Exp Word16 -> Exp Word16 -> ExpM ()
     CheckInterrupt :: Int -> ExpM ()
     Interrupt :: Exp Word8 -> ExpM ()
+
+
+    IOCall :: IO a -> ExpM a
+    SetMachine :: Lens' MachineState a -> Exp a -> ExpM ()
 
 modif p f = Set p $ f $ Get p
 
@@ -188,7 +190,7 @@ data Exp a where
 trace_ = Trace
 
 uSet f = Nop --Set f $ C False
-unTup x = (Fst x, Snd x)
+unTup x = (fst' x, snd' x)
 
 instance Num Bool where
     (+) = xor
@@ -214,6 +216,7 @@ letM (C c) f = f (C c)
 letM x f = LetM x f
 
 add (C c) (C c') = C $ c + c'
+add (C c) (Add (C c') v) = add (C $ c + c') v
 add a b = Add a b
 
 and' (C c) (C c') = C $ c .&. c'
@@ -225,12 +228,31 @@ not' b = Not b
 eq' (C c) (C c') = C $ c == c'
 eq' a b = Eq a b
 
+fst' (Tuple a _) = a
+fst' e = Fst e
+snd' (Tuple _ b) = b
+snd' e = Snd e
+
+convert :: (Num b, Integral a) => Exp a -> Exp b
+convert (C a) = C $ fromIntegral a
+convert e = Convert e
+
+iterate' (C 0) f e = e
+iterate' (C 1) f e = f e
+iterate' n f e = Iterate n f e
+
 when :: Bool -> ExpM () -> ExpM ()
 when b x = if b then x else mempty
 
 when' :: Exp Bool -> ExpM () -> ExpM ()
 when' b x = ifM b x mempty
 
+extend' :: Extend a => Exp a -> Exp (X2 a)
+extend' (C x) = C $ extend x
+extend' e = Extend e
+
+signed (C x) = C $ asSigned x
+signed e = Signed e
 
 --------------------------------------------------------------------------------
 
@@ -244,16 +266,17 @@ mparts :: ExpM b -> Info
 mparts = \case
     Seq a b -> mparts a |+| mparts b
     IfM e a b -> eparts' e |+| mparts a |+| mparts b
---    QuotRem{} -> True
     LetM e f -> mparts $ f e
     Replicate e x -> eparts' e |+| mparts x
---    Input{} -> True
---    Output{} -> True -- e f -> p e || p f
     Set x y -> (keyOf x, eparts y)
     Nop -> mempty
     Error{} -> mempty
     Trace{} -> mempty
+    QuotRem{} -> (full, full)
+    Input{} -> (full, full)
+    Output{} -> (full, full)
     _ -> (full, full)
+--    _ -> (full, full)
 
 eparts' = (,) mempty . eparts
 
@@ -268,7 +291,6 @@ eparts = \case
     Tuple a b -> eparts a |.| eparts b
     Fst e -> eparts e
     Snd e -> eparts e
---    Iterate{} -> True
     If e a b -> eparts e |.| eparts a |.| eparts b
 
     Get x -> keyOf x
@@ -295,6 +317,8 @@ eparts = \case
     Extend e -> eparts e
     Convert e -> eparts e
     SegAddr a b -> eparts a |.| eparts b
+
+    Iterate{}   -> full
     _   -> full
 
 data AState
@@ -351,7 +375,16 @@ reple k e' = eparts where
     e -> e
 
 
-repl :: Part a -> Exp a -> ExpM () -> ExpM ()
+repl' k e m@(Set k'' (Add v (Get k'))) = case same k k' of
+    Eqq -> Set k'' (add v e)
+    _ -> Set k e `Seq` m
+repl' k e m@(Set k'' (Add v (Get k')) `Seq` m') = case same k k' of
+    Eqq -> Set k'' (add v e) `Seq` m'
+    _ -> Set k e `Seq` m
+repl' k e m = Set k e `Seq` m
+
+
+repl, repl' :: Part a -> Exp a -> ExpM () -> ExpM ()
 repl k e = \case
     p@(Set k' e') -> case same k k' of
         Eqq -> Set k $ reple k e e'
@@ -384,7 +417,7 @@ reorderExp =  uncurry final . foldrExp f (AGet, Nop) .
             AGet -> (ASet na a, b)
             ASet i vs | i `disj` ni -> if IP' `S.notMember` i
                 then (ASet i vs, b)
-                else (ASet (na |.| i) $ a `Seq` vs, b)
+                else (ASet (na |.| i) $ repl' IP v vs, b)
             _ -> fin
 
         _ -> case st of
@@ -711,9 +744,9 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
         Iinc  -> twoOp_ True Add op1' $ C 1
 
         Idiv  -> divide id id
-        Iidiv -> divide Signed Signed
+        Iidiv -> divide signed Signed
         Imul  -> multiply id
-        Iimul -> multiply Signed
+        Iimul -> multiply signed
 
         _ | inOpcode `elem` [Icwd, Icbw] -> Set axd $ Convert $ Signed $ Get alx
           | inOpcode `elem` [Istosb, Istosw] -> move di'' alx >> adjustIndex DI
@@ -728,7 +761,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
             adjustIndex DI
 
         Iin  -> Input (getWordOperand segmentPrefix op2) $ Set op1' . Convert
-        Iout -> Output (getWordOperand segmentPrefix op1) $ Convert op2v
+        Iout -> Output (getWordOperand segmentPrefix op1) $ convert op2v
 
       where
         si'', di'' :: Part a
@@ -744,14 +777,14 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
 
         divide :: (Integral a, Integral c, Integral (X2 c)) => (Exp a -> Exp c) -> (Exp (X2 a) -> Exp (X2 c)) -> ExpM ()
         divide asSigned asSigned' =
-            QuotRem (asSigned' $ Get axd) (Convert $ asSigned op1v)
+            QuotRem (asSigned' $ Get axd) (convert $ asSigned op1v)
                 (Error $ Err $ "divide by zero interrupt is not called (not implemented)") $ \(d, m) -> do
                     Set alx $ Convert d
                     Set ahd $ Convert m
 
         multiply :: forall c . (Extend c, FiniteBits (X2 c)) => (Exp a -> Exp c) -> ExpM ()
         multiply asSigned =
-            LetM (Mul (Extend $ asSigned $ Get alx) (Extend $ asSigned op1v)) $ \r ->
+            LetM (Mul (Extend $ asSigned $ Get alx) (extend' $ asSigned op1v)) $ \r ->
             LetM (Not $ Eq r $ Extend (Convert r :: Exp c)) $ \c -> do
                 Set axd $ Convert r
                 Set CF c
@@ -763,9 +796,9 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
         shiftOp :: (forall b . (AsSigned b) => Exp Bool -> Exp b -> (Exp Bool, Exp b)) -> ExpM ()
         shiftOp op = do
             letM (and' (C 0x1f) $ getByteOperand segmentPrefix op2) $ \n -> do
-            when' (not' $ eq' (C 0) n) $ LetM (Iterate (Convert n) (uncurry Tuple . uncurry op . unTup) $ Tuple (Get CF) op1v) $ \t -> do
-                let r = Snd t
-                Set CF $ Fst t
+            when' (not' $ eq' (C 0) n) $ letM (iterate' (convert n) (uncurry Tuple . uncurry op . unTup) $ Tuple (Get CF) op1v) $ \t -> do
+                let r = snd' t
+                Set CF $ fst' t
                 Set op1' r
                 when (inOpcode `elem` [Isal, Isar, Ishl, Ishr]) $ do
                     Set ZF $ Eq (C 0) r
@@ -787,8 +820,8 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
         twoOp_ store op op1 op2 = LetM (Get op1) $ \a -> letM op2 $ \b -> letM (op a b) $ \r -> do
 
             when (inOpcode `notElem` [Idec, Iinc]) $
-                Set CF $ Not $ Eq (Convert r) $ op (Convert a :: Exp Int) (Convert b)
-            Set OF $ Not $ Eq (Convert $ Signed r) $ op (Convert $ Signed a :: Exp Int) (Convert $ Signed b)
+                Set CF $ Not $ Eq (Convert r) $ op (Convert a :: Exp Int) (convert b)
+            Set OF $ Not $ Eq (Convert $ Signed r) $ op (Convert $ Signed a :: Exp Int) (convert $ signed b)
 
             Set ZF $ Eq (C 0) r
             Set SF $ HighBit r

@@ -44,7 +44,7 @@ drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
             KeyState'Repeating -> return ()
             _ -> do
                 c <- readMVar keyboard
-                putStrLn $ "scancode: " Prelude.++ show c
+                -- putStrLn $ "scancode: " Prelude.++ show c
                 modifyMVar_ interrupt $ const $ return $ Just 0x09
         when (key == GLFW.Key'R && action == GLFW.KeyState'Pressed) $
             modifyMVar_ ovar $ return . (const 0)

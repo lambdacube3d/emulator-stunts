@@ -52,7 +52,7 @@ import Hdis86 hiding (wordSize)
 import Hdis86.Incremental
 
 import Helper
-import Edsl hiding (Flags, trace_, ips, sps, segAddr_, addressOf, addressOf', (>>))
+import Edsl hiding (Flags, trace_, ips, sps, segAddr_, addressOf, addressOf', (>>), when, return, Info)
 import qualified Edsl (addressOf, addressOf', Part(Flags))
 import MachineState
 
@@ -175,8 +175,9 @@ clearHist = do
     traceQ .= []
     return (intercalate "; " $ reverse h)
 
+
 [overflowF,directionF,interruptF,signF,zeroF,adjustF,parityF,carryF] =
-    [ flags_ . bit i  :: MachinePart (Bool)
+    [ flags_ . lens (`testBit` i) (\x b -> if b then setBit x i else clearBit x i) :: MachinePart (Bool)
     | i <- [11,10,9,7,6,4,2,0]
     ]
 
@@ -191,9 +192,6 @@ ch = cx . high:: MachinePart Word8
 
 segAddr_ :: MachinePart (Word16) -> Getter MachineState ( Word16) -> Getter MachineState (Int)
 segAddr_ seg off = to $ \s -> segAddr (s ^. seg) (s ^. off)
-
-ips = segAddr_ cs ip
-sps = segAddr_ ss sp
 
 ----------------------
 
