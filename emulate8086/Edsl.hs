@@ -49,12 +49,6 @@ infixr 1 >>, `Seq`
 return :: () -> ExpM ()
 return () = mempty
 
-when :: Bool -> ExpM () -> ExpM ()
-when b x = if b then x else mempty
-
-when' :: Exp Bool -> ExpM () -> ExpM ()
-when' b x = IfM b x mempty
-
 ifThenElse :: Bool -> a -> a -> a
 ifThenElse True a _ = a
 ifThenElse _ _ b = b
@@ -79,9 +73,6 @@ data Part a where
     DXAX :: Part Word32
 
     Low, High :: Part Word16 -> Part Word8
-
-    XX :: Part Word16   -- TODO: elim this
-    Immed :: Exp a -> Part a  -- TODO: elim this
 
 data ExpM a where
     Seq :: ExpM () -> ExpM () -> ExpM ()
@@ -148,6 +139,32 @@ instance Integral Bool where
     a `quotRem` 1 = (a, 0)
     a `quotRem` 0 = error $ "quotRem " ++ show a ++ " 0 :: Bool"
 
+
+ifM (C c) a b = if c then a else b
+ifM x a b = IfM x a b
+
+letM (C c) f = f (C c)
+letM x f = LetM x f
+
+add (C c) (C c') = C $ c + c'
+add a b = Add a b
+
+and' (C c) (C c') = C $ c .&. c'
+and' a b = And a b
+
+not' (C c) = C $ complement c
+not' b = Not b
+
+eq' (C c) (C c') = C $ c == c'
+eq' a b = Eq a b
+
+when :: Bool -> ExpM () -> ExpM ()
+when b x = if b then x else mempty
+
+when' :: Exp Bool -> ExpM () -> ExpM ()
+when' b x = ifM b x mempty
+
+
 --------------------------------------------------------------------------------
 
 -- get / set / mod / neutral / Interrupt
@@ -207,14 +224,11 @@ nextAddr :: ExpM () -> Word16 -> Maybe Word16
 nextAddr e = case e of
     LetM e f -> nextAddr (f e)
     Seq a b -> nextAddr a >=> nextAddr b
-    Replicate (C n) e -> iterate (>=> nextAddr e) Just !! n
-    IfM (C c) a b -> nextAddr $ if c then a else b
     Nop -> Just
     Trace _ -> Just
     CheckInterrupt _ -> Just  -- !
     Output _ _ -> Just
 
---    Set IP (C i) -> Just . const i
     Set IP _ -> const Nothing
     Set Cs _ -> const Nothing
     Set _ _ -> Just
@@ -272,7 +286,7 @@ reg = \case
         SS -> Ss
         CS -> Cs
     RegIP -> IP
-    RegNone -> Immed $ C 0
+--    RegNone -> Immed $ C 0
 
 segAddr_ :: Part Word16 -> Exp Word16 -> Exp Int
 segAddr_ seg off = SegAddr (Get seg) off
@@ -307,8 +321,8 @@ byteOperand segmentPrefix x = case x of
             RCX -> High CX
             RDX -> High DX
     Mem m -> Heap8 $ addressOf segmentPrefix m
-    Imm (Immediate Bits8 v) -> Immed $ C $ fromIntegral v
-    Hdis86.Const (Immediate Bits0 0) -> Immed $ C 1 -- !!!
+--    Imm (Immediate Bits8 v) -> Immed $ C $ fromIntegral v
+--    Hdis86.Const (Immediate Bits0 0) -> Immed $ C 1 -- !!!
 
 getWordOperand segmentPrefix = \case
     Imm i  -> C $ imm' i
@@ -319,8 +333,8 @@ wordOperand :: Maybe Segment -> Operand -> Part Word16
 wordOperand segmentPrefix x = case x of
     Reg r  -> reg r
     Mem m  -> Heap16 $ addressOf segmentPrefix m
-    Imm i  -> Immed $ C $ imm' i
-    Jump i -> Immed $ Add (C $ imm i) (Get IP)
+--    Imm i  -> Immed $ C $ imm' i
+--    Jump i -> Immed $ Add (C $ imm i) (Get IP)
 
 
 imm = fromIntegral . iValue
@@ -393,9 +407,9 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
             when (inOpcode == Icall) $ do
                 when far $ push $ Get Cs
                 push $ Get IP
-            LetM (addr op1) $ \ad -> do
+            letM (addr op1) $ \ad -> do
                 Set IP $ Get $ Heap16 ad
-                when far $ Set Cs $ Get $ Heap16 $ Add (C 2) ad
+                when far $ Set Cs $ Get $ Heap16 $ add (C 2) ad
         _ -> do
             when (inOpcode == Icall) $ do
                 push $ Get IP
@@ -438,8 +452,8 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
 
     Ipush   -> push $ getOp1w
     Ipop    -> pop $ setOp1w
-    Ipusha  -> mconcat [push $ Get r | r <- [AX,CX,DX,BX,SP,BP,SI,DI]]
-    Ipopa   -> mconcat [pop $ Set r | r <- [DI,SI,BP,XX,BX,DX,CX,AX]]
+    Ipusha  -> mconcat $ map (push . Get) [AX,CX,DX,BX,SP,BP,SI,DI]
+    Ipopa   -> mconcat $ map pop [Set DI,Set SI,Set BP,const Nop,Set BX,Set DX,Set CX,Set AX]
     Ipushfw -> push $ Get Flags
     Ipopfw  -> pop $ Set Flags
     Isahf -> Set (Low  AX) $ Get $ Low Flags
@@ -458,24 +472,25 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
     Ixlatb -> Set (Low AX) $ Get $ Heap8 $ segAddr_ (maybe Ds (reg . RegSeg) segmentPrefix) $ Add (Convert $ Get $ Low AX) (Get BX)
 
     Ilea -> setOp1w op2addr'
-    _ | inOpcode `elem` [Iles, Ilds] -> LetM (addr op2) $ \ad -> do
+    _ | inOpcode `elem` [Iles, Ilds] -> letM (addr op2) $ \ad -> do
         setOp1w $ Get $ Heap16 ad
-        Set (case inOpcode of Iles -> Es; Ilds -> Ds) $ Get $ Heap16 $ Add (C 2) ad
+        Set (case inOpcode of Iles -> Es; Ilds -> Ds) $ Get $ Heap16 $ add (C 2) ad
 
     _ -> case sizeByte of
-        1 -> withSize byteOperand (Low AX) (High AX) AX
-        2 -> withSize wordOperand AX DX DXAX
+        1 -> withSize getByteOperand byteOperand (Low AX) (High AX) AX
+        2 -> withSize getWordOperand wordOperand AX DX DXAX
   where
     withSize :: forall a . (AsSigned a, Extend a, Extend (Signed a), AsSigned (X2 a), X2 (Signed a) ~ Signed (X2 a))
-        => (Maybe Segment -> Operand -> Part a)
+        => (Maybe Segment -> Operand -> Exp a)
+        -> (Maybe Segment -> Operand -> Part a)
         -> Part a
         -> Part a
         -> Part (X2 a)
         -> ExpM ()
-    withSize tr_ alx ahd axd = case inOpcode of
-        Imov  -> move op1' op2'
-        Ixchg -> LetM (Get op1') $ \o1 -> do
-            move op1' op2'
+    withSize getTr tr_ alx ahd axd = case inOpcode of
+        Imov  -> Set op1' op2v
+        Ixchg -> LetM op1v $ \o1 -> do
+            Set op1' op2v
             Set op2' o1
         Inot  -> Mod op1' Not
 
@@ -530,8 +545,8 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
 
         op1' = tr_ segmentPrefix op1
         op2' = tr_ segmentPrefix op2
-        op1v = Get op1'
-        op2v = Get op2'
+        op1v = getTr segmentPrefix op1
+        op2v = getTr segmentPrefix op2
 
         divide :: (Integral a, Integral c, Integral (X2 c)) => (Exp a -> Exp c) -> (Exp (X2 a) -> Exp (X2 c)) -> ExpM ()
         divide asSigned asSigned' =
@@ -553,8 +568,8 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
 
         shiftOp :: (forall b . (AsSigned b) => Exp Bool -> Exp b -> (Exp Bool, Exp b)) -> ExpM ()
         shiftOp op = do
-            LetM (And (C 0x1f) $ getByteOperand segmentPrefix op2) $ \n -> do
-            when' (Not $ Eq (C 0) n) $ LetM (Iterate (Convert n) (uncurry Tuple . uncurry op . unTup) $ Tuple (Get CF) op1v) $ \t -> do
+            letM (and' (C 0x1f) $ getByteOperand segmentPrefix op2) $ \n -> do
+            when' (not' $ eq' (C 0) n) $ LetM (Iterate (Convert n) (uncurry Tuple . uncurry op . unTup) $ Tuple (Get CF) op1v) $ \t -> do
                 let r = Snd t
                 Set CF $ Fst t
                 Set op1' r
@@ -572,10 +587,10 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
                     Set AF undefBool
 
         twoOp :: Bool -> (forall b . (Integral b, FiniteBits b) => Exp b -> Exp b -> Exp b) -> ExpM ()
-        twoOp store op = twoOp_ store op op1' (Get op2')
+        twoOp store op = twoOp_ store op op1' op2v
 
         twoOp_ :: AsSigned a => Bool -> (forall a . (Integral a, FiniteBits a) => Exp a -> Exp a -> Exp a) -> Part a -> Exp a -> ExpM ()
-        twoOp_ store op op1 op2 = LetM (Get op1) $ \a -> LetM op2 $ \b -> LetM (op a b) $ \r -> do
+        twoOp_ store op op1 op2 = LetM (Get op1) $ \a -> letM op2 $ \b -> letM (op a b) $ \r -> do
 
             when (inOpcode `notElem` [Idec, Iinc]) $
                 Set CF $ Not $ Eq (Convert r) $ op (Convert a :: Exp Int) (Convert b)

@@ -196,9 +196,6 @@ segAddr_ seg off = to $ \s -> segAddr (s ^. seg) (s ^. off)
 ips = segAddr_ cs ip
 sps = segAddr_ ss sp
 
-xx :: MachinePart (Word16)
-xx = lens (const $ error "xx") $ \s _ -> s
-
 ----------------------
 
 ifff "" = []
@@ -262,7 +259,7 @@ mkStep = do
             showHist
       OneByte -> do
         Just (_, m) <- use $ cache . at ips
-        evalExpM m
+        m
         showHist
       _ -> do
         let mkInst ip' inst = do
@@ -278,8 +275,9 @@ mkStep = do
         (end, reorderExp -> ch) <- mkInst ip_ mempty
         h <- use heap''
         zipWithM_ (uModInfo h) [ips..] $ map mergeInfo $ 0x81: replicate (end-ips) 1
-        cache %= IM.insert ips (end, ch)
-        evalExpM ch
+        let ch_ = evalExpM ch
+        cache %= IM.insert ips (end, ch_)
+        ch_
         showHist
 
 showHist = do
@@ -317,21 +315,13 @@ maxInstLength = 7
 
 disasmConfig = Config Intel Mode16 SyntaxIntel 0
 
-execInstruction :: Metadata -> Machine ()
-execInstruction m = evalExpM $ execInstruction' m
-
 type MachinePart' a = (Machine a, a -> Machine ())
 
 evalPart :: Part a -> (MachinePart' a -> Machine e) -> Machine e
-evalPart p cont = evalPart' p $ \x -> cont $ x
-
-evalPart' :: Part a -> (MachinePart' ( a) -> Machine e) -> Machine e
-evalPart' p cont = case p of
-    Heap8 e -> evalExp e >>= \i -> cont $ byteAt__ i
-    Heap16 e -> evalExp e >>= \i -> cont $ wordAt__ i
-    Immed e -> evalExp e >>= \i -> cont $ le $ immLens $ i
-    _ -> cont $ le $ evalPart_ p
-le k = (use $ cloneLens k, (cloneLens k .=))
+evalPart p cont = case p of
+    Heap16 e -> evalExp e >>= cont . wordAt__
+    Heap8 e -> evalExp e >>= cont . byteAt__
+    _ -> cont (use $ evalPart_ p, (evalPart_ p .=))
 
 evalPart_ :: Part a -> MachinePart ( a)
 evalPart_ = \case
@@ -360,16 +350,21 @@ evalPart_ = \case
     OF -> overflowF
     Edsl.Flags -> flags
     DXAX -> uComb dx ax . combine
-    XX -> xx
 
 evalExpM :: ExpM a -> Machine a
 evalExpM = \case
-    Nop -> return ()
+    Seq a b -> evalExpM a >> evalExpM b
+    LetM e f -> evalExp e >>= evalExpM . f . C
 
     Set p e -> evalPart p $ \(_, k) -> k =<< evalExp e
     Mod p f -> evalPart p $ \(g, s) -> g >>= evalExp . f . C >>= s
+    Nop -> return ()
 
     IfM b x y -> evalExp b >>= \b -> evalExpM $ if b then x else y
+    Replicate n e -> evalExp n >>= \i -> replicateM_ i $ evalExpM e
+
+    Input a f -> evalExp a >>= input >>= evalExpM . f . C
+    Output a b -> evalExp a >>= \x -> evalExp b >>= \y -> output' x y
 
     QuotRem a b c f -> do
         x <- evalExp a
@@ -378,13 +373,7 @@ evalExpM = \case
             Nothing -> evalExpM c
             Just (z,v) -> evalExpM $ f (C z, C v)
 
-    LetM e f -> evalExp e >>= evalExpM . f . C
-    Seq a b -> evalExpM a >> evalExpM b
-
-    Replicate n e -> evalExp n >>= \i -> replicateM_ i $ evalExpM e
-    Input a f -> evalExp a >>= input >>= evalExpM . f . C
-    Output a b -> evalExp a >>= \x -> evalExp b >>= \y -> output' x y
-
+    Trace a -> trace_ a
     Error h -> throwError h
     Interrupt e -> evalExp e >>= evalExpM . interrupt >> throwError Interr
     CheckInterrupt n -> do
@@ -416,7 +405,6 @@ evalExpM = \case
                 trace_ "timer"
                 interrupt_ 0x08
 
-    Trace a -> trace_ a
 
 evalExp :: Exp a -> Machine a
 evalExp = \case

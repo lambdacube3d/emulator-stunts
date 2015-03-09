@@ -149,9 +149,14 @@ combine = iso (\(hi,lo) -> fromIntegral hi `shiftL` s .|. fromIntegral lo) (\d -
   where
     s = finiteBitSize (undefined :: a)
 
-high, low :: Extend a => Lens' (X2 a) a
-high = from combine . _1
-low  = from combine . _2
+high, low :: forall a . Extend a => Lens' (X2 a) a
+low = lens fromIntegral (\st lo -> (st `shiftR` s) `shiftL` s .|. fromIntegral lo)
+  where
+    s = finiteBitSize (undefined :: a)
+
+high = lens (fromIntegral . (`shiftR` s)) (\st hi -> fromIntegral hi `shiftL` s .|. fromIntegral (fromIntegral st :: a))
+  where
+    s = finiteBitSize (undefined :: a)
 
 -------------------
 
