@@ -59,19 +59,53 @@ instance Monoid (ExpM ()) where
     e1      `mappend` e2 = Seq e1 e2
     mempty = Nop
 
-data Part a where
-    Heap8  :: Exp Int -> Part Word8
-    Heap16 :: Exp Int -> Part Word16
+type Part = Part_ Exp
 
-    IP :: Part Word16
-    AX, BX, CX, DX, SI, DI, BP, SP :: Part Word16
-    Es, Ds, Ss, Cs :: Part Word16
-    CF, PF, AF, ZF, SF, IF, DF, OF :: Part Bool
+data Part_ e a where
+    Heap8  :: e Int -> Part_ e Word8
+    Heap16 :: e Int -> Part_ e Word16
 
-    Flags :: Part Word16
-    DXAX :: Part Word32
+    IP :: Part_ e Word16
+    AX, BX, CX, DX, SI, DI, BP, SP :: Part_ e Word16
+    Es, Ds, Ss, Cs :: Part_ e Word16
+    CF, PF, AF, ZF, SF, IF, DF, OF :: Part_ e Bool
 
-    Low, High :: Part Word16 -> Part Word8
+    Flags :: Part_ e Word16
+    DXAX :: Part_ e Word32
+
+    Low, High :: Part_ e Word16 -> Part_ e Word8
+
+mapPart :: (forall a . e a -> f a) -> Part_ e a -> Part_ f a
+mapPart f = \case
+    Heap8 a -> Heap8 (f a)
+    Heap16 a -> Heap16 (f a)
+    Low a -> Low $ mapPart f a
+    High a -> High $ mapPart f a
+    IP -> IP
+    AX -> AX
+    BX -> BX
+    CX -> CX
+    DX -> DX
+    SI -> SI
+    DI -> DI
+    BP -> BP
+    SP -> SP
+    Es -> Es
+    Ds -> Ds
+    Ss -> Ss
+    Cs -> Cs
+    CF -> CF
+    PF -> PF
+    AF -> AF
+    ZF -> ZF
+    SF -> SF
+    IF -> IF
+    DF -> DF
+    OF -> OF
+    Flags -> Flags
+    DXAX -> DXAX
+
+
 
 data Part'
     = Heap'
@@ -133,15 +167,16 @@ full = S.fromList [ Heap',
         ]
 
 data ExpM a where
-    Lam :: ExpM b -> ExpM (a -> b)
-    App :: Exp a -> ExpM (a -> b) -> ExpM b
+--    Lam :: ExpM b -> ExpM (a -> b)
+--    App :: Exp a -> ExpM (a -> b) -> ExpM b
+--    LetM' :: Exp a -> ExpM (a -> Machine b) -> ExpM b
 
-    Seq :: ExpM () -> ExpM () -> ExpM ()
+    Seq :: ExpM b -> ExpM c -> ExpM c
 
-    IfM :: Exp Bool -> ExpM () -> ExpM () -> ExpM ()
-    QuotRem :: Integral a => Exp a -> Exp a -> ExpM () -> ((Exp a, Exp a) -> ExpM ()) -> ExpM ()
+    IfM :: Exp Bool -> ExpM a -> ExpM a -> ExpM a
+    QuotRem :: Integral a => Exp a -> Exp a -> ExpM b -> ((Exp a, Exp a) -> ExpM b) -> ExpM b
 
-    LetM :: Exp a -> (Exp a -> ExpM ()) -> ExpM ()
+    LetM :: Exp a -> (Exp a -> ExpM b) -> ExpM b
     Replicate :: Exp Int -> ExpM () -> ExpM ()
 
     Nop :: ExpM ()
@@ -154,8 +189,8 @@ data ExpM a where
     Interrupt :: Exp Word8 -> ExpM ()
 
 
-    IOCall :: IO a -> ExpM a
-    SetMachine :: Lens' MachineState a -> Exp a -> ExpM ()
+--    IOCall :: IO a -> ExpM a
+--    SetMachine :: Lens' MachineState a -> Exp a -> ExpM ()
 
 modif p f = Set p $ f $ Get p
 
@@ -275,7 +310,8 @@ mparts = \case
     QuotRem{} -> (full, full)
     Input{} -> (full, full)
     Output{} -> (full, full)
-    _ -> (full, full)
+    Interrupt{} -> (full, full)
+    CheckInterrupt{} -> (full, full)
 --    _ -> (full, full)
 
 eparts' = (,) mempty . eparts
@@ -319,7 +355,7 @@ eparts = \case
     SegAddr a b -> eparts a |.| eparts b
 
     Iterate{}   -> full
-    _   -> full
+--    _   -> full
 
 data AState
     = ASet Inf (ExpM ())
@@ -410,7 +446,7 @@ reorderExp =  uncurry final . foldrExp f (AGet, Nop) .
     groupInterrupts 0
 
   where
-    f :: ExpM () -> (AState, ExpM ()) -> (AState, ExpM ())
+    f :: ExpM b -> (AState, ExpM ()) -> (AState, ExpM ())
     f a (st, b) = case a of
 
         Set IP v -> case st of
@@ -436,7 +472,7 @@ reorderExp =  uncurry final . foldrExp f (AGet, Nop) .
 disj a b = S.null $ S.intersection a b
 
 
-foldrExp :: (ExpM () -> a -> a) -> a -> ExpM () -> a
+foldrExp :: (forall b . ExpM b -> a -> a) -> a -> ExpM b -> a
 foldrExp f x (Seq a b) = f a (foldrExp f x b)
 foldrExp f x y = f y x
 
@@ -450,10 +486,16 @@ groupInterrupts n = \case
 checkInterrupt 0 = Nop
 checkInterrupt n = CheckInterrupt n
 
-nextAddr :: ExpM () -> Word16 -> Maybe Word16
+nextAddr :: ExpM a -> Word16 -> Maybe Word16
 nextAddr e = case e of
     LetM e f -> nextAddr (f e)
     Seq a b -> nextAddr a >=> nextAddr b
+{- cycle
+    IfM _ a b -> \w -> do
+        i <- nextAddr a w
+        j <- nextAddr b w
+        if (i==j) then Just i else Nothing
+-}
     Nop -> Just
     Trace _ -> Just
     CheckInterrupt _ -> Just  -- !
@@ -463,9 +505,6 @@ nextAddr e = case e of
     Set IP _ -> const Nothing
     Set Cs _ -> const Nothing
     Set _ _ -> Just
-{-
-    Mod _ _ -> Just
--}
     _ -> const Nothing
 
 --------------------------------------------------------------------------------
@@ -855,14 +894,14 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
         [] -> Nothing
 
 
-interrupt v = do
+interrupt v = LetM (Mul (C 4) $ Convert v) $ \v -> do
 --    trace_ $ "interrupt " ++ showHex' 2 v
     push $ Get Flags
     push $ Get Cs
     push $ Get IP
     Set IF $ C False
-    Set Cs $ Get $ Heap16 $ C (4*fromIntegral v + 2)
-    Set IP $ Get $ Heap16 $ C (4*fromIntegral v)
+    Set Cs $ Get $ Heap16 $ Add (C 2) v
+    Set IP $ Get $ Heap16 v
 
 iret :: ExpM ()
 iret = do

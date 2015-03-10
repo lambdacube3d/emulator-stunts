@@ -55,7 +55,7 @@ defConfig = Config_
     , _disassStart  = 0
     , _verboseLevel = 2
     , _termLength   = 149
-    , _instPerSec   = 71000 -- 710000
+    , _instPerSec   = 2 * 71000 -- 710000
     , _videoMVar    = undefined --return $ \_ _ -> 0
 
     , _stepsCounter = 0

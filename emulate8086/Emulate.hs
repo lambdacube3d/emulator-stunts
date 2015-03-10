@@ -13,6 +13,8 @@
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE LiberalTypeSynonyms #-}
 {-# LANGUAGE PackageImports #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GADTs #-}
 module Emulate where
 
 import Numeric
@@ -25,6 +27,7 @@ import Data.Char
 import Data.List
 import Data.Maybe
 import Data.Monoid
+import Data.Typeable
 --import qualified Data.FingerTree as F
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
@@ -38,6 +41,7 @@ import Control.Applicative
 import Control.Arrow
 import Control.Monad.State
 import Control.Monad.Except
+import Control.Monad.Reader
 import Control.Lens as Lens
 import Control.Concurrent.MVar
 import Control.Exception (evaluate)
@@ -46,6 +50,7 @@ import System.FilePath (takeFileName)
 import "Glob" System.FilePath.Glob
 --import Data.IORef
 
+import Unsafe.Coerce
 import Debug.Trace
 
 import Hdis86 hiding (wordSize)
@@ -53,7 +58,7 @@ import Hdis86.Incremental
 
 import Helper
 import Edsl hiding (Flags, trace_, ips, sps, segAddr_, addressOf, addressOf', (>>), when, return, Info)
-import qualified Edsl (addressOf, addressOf', Part(Flags))
+import qualified Edsl (addressOf, addressOf', Part_(Flags))
 import MachineState
 
 ---------------------------------------------- memory allocation
@@ -102,12 +107,12 @@ sp = regs . sp_
 bp = regs . bp_
 
 uRead :: UVec -> Int -> IO Word8
-uRead h i = fromIntegral <$> U.read h i
+uRead h i = fromIntegral <$> U.unsafeRead h i
 
 uWrite, uWriteInfo :: UVec -> Int -> Word8 -> Machine ()
 uWrite h i v = do
-    x <- liftIO $ U.read h i
-    liftIO $ U.write h i $ fromIntegral v
+    x <- liftIO $ U.unsafeRead h i
+    liftIO $ U.unsafeWrite h i $ fromIntegral v
     let info = x `shiftR` 8
         n = info .&. 0x7f
     when (info /= 0) $ do
@@ -124,12 +129,12 @@ uWrite h i v = do
         zipWithM_ (uWriteInfo h) [beg..end] [0,0..]
         cache .= ch'
 uWriteInfo h i v = liftIO $ do
-    x <- U.read h i
-    U.write h i $ high .~ v $ x
+    x <- U.unsafeRead h i
+    U.unsafeWrite h i $ high .~ v $ x
 uModInfo :: UVec -> Int -> (Word8 -> Word8) -> Machine ()
 uModInfo h i f = liftIO $ do
-    x <- U.read h i
-    U.write h i $ high %~ f $ x
+    x <- U.unsafeRead h i
+    U.unsafeWrite h i $ high %~ f $ x
 
 bytesAt__ :: Int -> Int -> MachinePart' [Word8]
 bytesAt__ i' j' = (get, set)
@@ -145,16 +150,18 @@ wordAt__ :: Int -> MachinePart' Word16
 wordAt__ i = ( use heap'' >>= \h -> liftIO $ liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead h (i+1)) (uRead h i)
              , \v -> use heap'' >>= \h -> uWrite h i (fromIntegral v) >> uWrite h (i+1) (fromIntegral $ v `shiftR` 8))
 
+setWordAt :: Int -> Word16 -> Machine ()
+setWordAt i v = use heap'' >>= \h -> uWrite h i (fromIntegral v) >> uWrite h (i+1) (fromIntegral $ v `shiftR` 8)
+
 dwordAt__ :: Int -> MachinePart' Word32
 dwordAt__ i = ( liftM2 (\hi lo -> fromIntegral hi `shiftL` 16 .|. fromIntegral lo) (fst $ wordAt__ $ i+2) (fst $ wordAt__ i)
-             , \v -> snd (wordAt__ i) (fromIntegral v) >> snd (wordAt__ $ i+2) (fromIntegral $ v `shiftR` 16))
+             , \v -> setWordAt (i) (fromIntegral v) >> setWordAt (i+2) (fromIntegral $ v `shiftR` 16))
 
 
 flags :: MachinePart Word16
 flags = flags_ . iso id wordToFlags
 
 setCounter = do
-    trace_ "setCounter"
     v <- use $ config . instPerSec
     config . counter .= Just (v `div` 24)
 
@@ -190,9 +197,6 @@ bh = bx . high:: MachinePart Word8
 cl = cx . low :: MachinePart Word8
 ch = cx . high:: MachinePart Word8
 
-segAddr_ :: MachinePart (Word16) -> Getter MachineState ( Word16) -> Getter MachineState (Int)
-segAddr_ seg off = to $ \s -> segAddr (s ^. seg) (s ^. off)
-
 ----------------------
 
 ifff "" = []
@@ -203,8 +207,8 @@ mkSteps s = either (\x -> (x, s')) (const $ either (\x -> (x, s')) (const $ mkSt
   where
     (ju, a, b, s') = mkStep $ hijack s
 -}
-addressOf a b = evalExp $ Edsl.addressOf a b
-addressOf' a = evalExp $ Edsl.addressOf' a
+addressOf a b = evalExp' $ Edsl.addressOf a b
+addressOf' a = evalExp' $ Edsl.addressOf' a
 
 askCounter n = do
     c <- use $ config . counter'
@@ -213,9 +217,7 @@ askCounter n = do
         cc <- use $ config . counter
         if maybe False (<=0) cc
           then do
-            trace_ "timer now"            
             config . counter .= Nothing
-            --setCounter
             return True
           else do
             config . counter %= fmap (+(-n))
@@ -249,15 +251,15 @@ mkStep = do
     let ips = segAddr cs_ ip_
     info <- readInfo ips
     case info of
-      Builtin -> do
-        case M.lookup (cs_, ip_) origInterrupt of
-          Just (i, m) -> do
-            m -- return $ Right ("interrupt " ++ showHex' 2 i ++ "h", m)
-            showHist
       OneByte -> do
         Just (_, m) <- use $ cache . at ips
         m
         showHist
+      Builtin -> do
+        case M.lookup (cs_, ip_) origInterrupt of
+          Just (i, m) -> do
+            m
+            showHist
       _ -> do
         let mkInst ip' inst = do
                 let ips = segAddr cs_ ip'
@@ -292,7 +294,7 @@ mergeInfo a b = (a + b) .|. (a .&. 0x80) .|. (b .&. 0x80)
 readInfo :: Int -> Machine Info
 readInfo i = do
     h <- use heap''
-    info <- liftIO $ U.read h i
+    info <- liftIO $ U.unsafeRead h i
     case info of
       0xff00 -> return Builtin
       _ | testBit info 15 -> return OneByte
@@ -314,13 +316,7 @@ disasmConfig = Config Intel Mode16 SyntaxIntel 0
 
 type MachinePart' a = (Machine a, a -> Machine ())
 
-evalPart :: Part a -> (MachinePart' a -> Machine e) -> Machine e
-evalPart p cont = case p of
-    Heap16 e -> evalExp e >>= cont . wordAt__
-    Heap8 e -> evalExp e >>= cont . byteAt__
-    _ -> cont (use $ evalPart_ p, (evalPart_ p .=))
-
-evalPart_ :: Part a -> MachinePart ( a)
+evalPart_ :: Part_ e a -> MachinePart a
 evalPart_ = \case
     IP -> ip
     AX -> ax
@@ -348,44 +344,269 @@ evalPart_ = \case
     Edsl.Flags -> flags
     DXAX -> uComb dx ax . combine
 
-evalExpM :: ExpM a -> Machine a
-evalExpM = \case
-    Seq a b -> evalExpM a >> evalExpM b
-    LetM e f -> evalExp e >>= evalExpM . f . C
 
-    Set p e -> evalPart p $ \(_, k) -> k =<< evalExp e
---    Mod p f -> evalPart p $ \(g, s) -> g >>= evalExp . f . C >>= s
-    Nop -> return ()
+data List a = Con a (List a) | Nil
 
-    IfM b x y -> evalExp b >>= \b -> evalExpM $ if b then x else y
-    Replicate n e -> evalExp n >>= \i -> replicateM_ i $ evalExpM e
+data Var :: List * -> * -> * where
+    VarZ :: Var (Con a e) a
+    VarS :: Var e a -> Var (Con b e) a
 
-    Input a f -> evalExp a >>= input >>= evalExpM . f . C
-    Output a b -> evalExp a >>= \x -> evalExp b >>= \y -> output' x y
+data EExp :: List * -> * -> * where
+    Var' :: Var e a -> EExp e a
 
-    QuotRem a b c f -> do
+    C' :: a -> EExp e a
+    Let' :: EExp e a -> EExp (Con a e) b -> EExp e b
+    Iterate' :: EExp e Int -> EExp (Con a e) a -> EExp e a -> EExp e a
+
+    Tuple' :: EExp e a -> EExp e b -> EExp e (a, b)
+    Fst' :: EExp e (a, b) -> EExp e a
+    Snd' :: EExp e (a, b) -> EExp e b
+    If' :: EExp e Bool -> EExp e a -> EExp e a -> EExp e a
+
+    Get' :: Part_ (EExp e) a -> EExp e a
+
+    Eq' :: Eq a => EExp e a -> EExp e a -> EExp e Bool
+    Sub', Add', Mul' :: Num a => EExp e a -> EExp e a -> EExp e a
+    And', Or', Xor' :: Bits a => EExp e a -> EExp e a -> EExp e a
+    Not', ShiftL', ShiftR', RotateL', RotateR' :: Bits a => EExp e a -> EExp e a
+    Bit' :: Bits a => Int -> EExp e a -> EExp e Bool
+    SetBit' :: Bits a => Int -> EExp e Bool -> EExp e a -> EExp e a
+    HighBit' :: FiniteBits a => EExp e a -> EExp e Bool
+    SetHighBit' :: FiniteBits a => EExp e Bool -> EExp e a -> EExp e a
+    EvenParity' :: EExp e Word8 -> EExp e Bool
+
+    Signed' :: AsSigned a => EExp e a -> EExp e (Signed a)
+    Extend' :: Extend a => EExp e a -> EExp e (X2 a)
+    Convert' :: (Integral a, Num b) => EExp e a -> EExp e b
+    SegAddr' :: EExp e Word16 -> EExp e Word16 -> EExp e Int
+
+data EExpM :: List * -> * -> * where
+    LetM' :: EExp e a -> EExpM (Con a e) b -> EExpM e b
+    QuotRem' :: Integral a => EExp e a -> EExp e a -> EExpM e b -> EExpM (Con (a,a) e) b -> EExpM e b
+    Input' :: EExp e Word16 -> EExpM (Con Word16 e) () -> EExpM e ()
+
+    Seq' :: EExpM e b -> EExpM e c -> EExpM e c
+    IfM' :: EExp e Bool -> EExpM e a -> EExpM e a -> EExpM e a
+    Replicate' :: EExp e Int -> EExpM e () -> EExpM e ()
+
+    Nop' :: EExpM e ()
+    Error' :: Halt -> EExpM e ()
+    Trace' :: String -> EExpM e ()
+    Set' :: Part_ (EExp e) a -> EExp e a -> EExpM e ()
+    Output' :: EExp e Word16 -> EExp e Word16 -> EExpM e ()
+    CheckInterrupt' :: Int -> EExpM e ()
+--    Interrupt' :: EExp e Word8 -> EExpM e ()
+
+data Env :: List * -> * where
+  Empty :: Env Nil
+  Push  :: Env env -> t -> Env (Con t env)
+
+getPushEnv :: Env (Con a e) -> Env e
+getPushEnv (Push v _) = v
+getPushVal :: Env (Con a e) -> a
+getPushVal (Push _ e) = e
+
+prj :: Var env t -> Env env -> t
+prj VarZ = getPushVal
+prj (VarS ix) = prj ix . getPushEnv
+
+data Layout :: List * -> List * -> * where
+  EmptyLayout :: Layout env Nil
+  PushLayout  :: {-Typeable t 
+              => -}Layout env env' -> Var env t -> Layout env (Con t env')
+
+size :: Layout env env' -> Int
+size EmptyLayout        = 0
+size (PushLayout lyt _) = size lyt + 1
+
+inc :: Layout env env' -> Layout (Con t env) env'
+inc EmptyLayout         = EmptyLayout
+inc (PushLayout lyt ix) = PushLayout (inc lyt) (VarS ix)
+
+prjIx :: Int -> Layout env env' -> Var env t
+prjIx _ EmptyLayout       = error "Convert.prjIx: internal error"
+prjIx 0 (PushLayout _ ix) = unsafeCoerce ix --fromJust (gcast ix)
+                              -- can't go wrong unless the library is wrong!
+prjIx n (PushLayout l _)  = prjIx (n - 1) l
+
+convExp :: Exp a -> EExp Nil a
+convExp = convExp_ EmptyLayout
+
+convExp_ :: forall a e . Layout e e -> Exp a -> EExp e a
+convExp_ lyt = g where
+      h :: forall a e . Layout e e -> Exp a -> EExp e a
+      h = convExp_
+
+      g :: forall a . Exp a -> EExp e a
+      g = \case
+        Var sz -> Var' (prjIx (size lyt - sz - 1) lyt)
+
+        C a -> C' a
+        Let e f -> Let' (g e) $ h (inc lyt `PushLayout` VarZ) $ f $ Var (size lyt)
+        Iterate n f e -> Iterate' (g n) (h (inc lyt `PushLayout` VarZ) $ f $ Var (size lyt)) (g e)
+
+        Tuple a b -> Tuple' (g a) (g b)
+        Fst a -> Fst' $ g a
+        Snd a -> Snd' $ g a
+        If a b c -> If' (g a) (g b) (g c)
+
+        Get p -> Get' (convPart lyt p)
+
+        Eq a b -> Eq' (g a) (g b)
+        Sub a b -> Sub' (g a) (g b)
+        Add a b -> Add' (g a) (g b)
+        Mul a b -> Mul' (g a) (g b)
+        And a b -> And' (g a) (g b)
+        Or a b -> Or' (g a) (g b)
+        Xor a b -> Xor' (g a) (g b)
+        SetBit i a b -> SetBit' i (g a) (g b)
+        SetHighBit a b -> SetHighBit' (g a) (g b)
+        SegAddr a b -> SegAddr' (g a) (g b)
+        Not a -> Not' (g a)
+        ShiftL a -> ShiftL' (g a)
+        ShiftR a -> ShiftR' (g a)
+        RotateL a -> RotateL' (g a)
+        RotateR a -> RotateR' (g a)
+        Bit i a -> Bit' i (g a)
+        HighBit a -> HighBit' (g a)
+        EvenParity a -> EvenParity' (g a)
+        Signed a -> Signed' (g a)
+        Extend a -> Extend' (g a)
+        Convert a -> Convert' (g a)
+
+convExpM :: ExpM a -> EExpM Nil a
+convExpM = f EmptyLayout where
+    h :: forall a e . Layout e e -> Exp a -> EExp e a
+    h = convExp_
+
+    f :: forall e a . Layout e e -> ExpM a -> EExpM e a
+    f lyt = k where
+      q :: forall a . Exp a -> EExp e a
+      q = h lyt
+
+      k :: forall a . ExpM a -> EExpM e a
+      k = \case
+        LetM e g -> LetM' (q e) $ f (inc lyt `PushLayout` VarZ) $ g $ Var (size lyt)
+        QuotRem a b x g -> QuotRem' (q a) (q b) (k x) $ f (inc lyt `PushLayout` VarZ) $ g $ unTup $ Var (size lyt)
+        Input e g -> Input' (q e) $ f (inc lyt `PushLayout` VarZ) $ g $ Var (size lyt)
+
+        Seq a b -> Seq' (k a) (k b)
+        IfM a b c -> IfM' (q a) (k b) (k c)
+        Replicate n a -> Replicate' (q n) (k a)
+        Nop -> Nop'
+        Error e -> Error' e
+        Trace s -> Trace' s
+        Set p e -> Set' (convPart lyt p) (q e)
+        Output a b -> Output' (q a) (q b)
+        CheckInterrupt i -> CheckInterrupt' i
+        Interrupt e -> k $ interrupt e
+
+convPart :: Layout e e -> Part_ Exp a -> Part_ (EExp e) a
+convPart lyt = mapPart (convExp_ lyt)
+
+type Machine' e = ReaderT (Env e) Machine
+
+iterateM 0 _ a = return a
+iterateM n f a = f a >>= iterateM (n-1) f
+
+iff x y True = x
+iff x y _ = y
+
+evalExp' :: Exp a -> Machine a
+evalExp' e = flip runReaderT Empty $ evalExp (convExp e)
+
+evalExp :: EExp e a -> Machine' e a
+evalExp = \case
+    Var' ix -> reader $ prj ix
+    Let' e f -> evalExp e >>= pushVal (evalExp f)
+    Iterate' n f a -> evalExp n >>= \i -> evalExp a >>= iterateM i (pushVal (evalExp f))
+
+    C' a -> return a
+    Get' p -> case p of
+        Heap16 e -> evalExp e >>= lift . fst . wordAt__
+        Heap8 e -> evalExp e >>= lift . fst . byteAt__
+        p -> use $ evalPart_ p
+
+    If' b x y -> evalExp b >>= iff (evalExp x) (evalExp y)
+    Eq' x y -> liftM2 (==) (evalExp x) (evalExp y)
+
+    Not' a -> complement <$> evalExp a
+    ShiftL' a -> (`shiftL` 1) <$> evalExp a
+    ShiftR' a -> (`shiftR` 1) <$> evalExp a
+    RotateL' a -> (`rotateL` 1) <$> evalExp a
+    RotateR' a -> (`rotateR` 1) <$> evalExp a
+    Sub' a b -> liftM2 (-) (evalExp a) (evalExp b)
+    Add' a b -> liftM2 (+) (evalExp a) (evalExp b)
+    Mul' a b -> liftM2 (*) (evalExp a) (evalExp b)
+    And' a b -> liftM2 (.&.) (evalExp a) (evalExp b)
+    Or'  a b -> liftM2 (.|.) (evalExp a) (evalExp b)
+    Xor' a b -> liftM2 xor (evalExp a) (evalExp b)
+
+    Bit' i e -> (`testBit` i) <$> evalExp e
+    SetBit' i e f -> liftM2 (bit i .~) (evalExp e) (evalExp f)
+    HighBit' e -> (^. highBit) <$> evalExp e
+    SetHighBit' e f -> liftM2 (highBit .~) (evalExp e) (evalExp f)
+    EvenParity' e -> even . popCount <$> evalExp e
+
+    Signed' e -> asSigned <$> evalExp e    
+    Extend' e -> extend <$> evalExp e    
+    SegAddr' e f -> liftM2 segAddr (evalExp e) (evalExp f)
+    Convert' e -> fromIntegral <$> evalExp e    
+
+    Tuple' a b -> liftM2 (,) (evalExp a) (evalExp b)
+    Fst' p -> fst <$> evalExp p
+    Snd' p -> snd <$> evalExp p
+
+evalEExpM :: EExpM e a -> Machine' e a
+evalEExpM = evalExpM where
+
+  evalExpM :: EExpM e a -> Machine' e a
+  evalExpM = \case
+    LetM' e f -> evalExp e >>= pushVal (evalEExpM f)
+    Input' a f -> evalExp a >>= lift . input >>= pushVal (evalEExpM f)
+    QuotRem' a b c f -> do
         x <- evalExp a
         y <- evalExp b
         case quotRemSafe x y of
             Nothing -> evalExpM c
-            Just (z,v) -> evalExpM $ f (C z, C v)
+            Just (z,v) -> pushVal (evalEExpM f) (z, v)
 
-    Trace a -> trace_ a
-    Error h -> throwError h
-    Interrupt e -> evalExp e >>= evalExpM . interrupt >> throwError Interr
-    CheckInterrupt n -> do
-      ivar <- use $ config . interruptRequest
-      int <- liftIO $ readMVar ivar
-      case int of
-       Just int -> do
+
+    Seq' a b -> evalExpM a >> evalExpM b
+    Set' p e' -> case p of 
+        Heap16 e -> evalExp e >>= \i -> evalExp e' >>= lift . setWordAt i
+        Heap8 e -> evalExp e >>= \i -> evalExp e' >>= lift . snd (byteAt__ i)
+        p -> evalExp e' >>= (evalPart_ p .=)
+    Nop' -> return ()
+
+    IfM' b x y -> evalExp b >>= \b -> if b then evalExpM x else evalExpM y
+    Replicate' n e -> evalExp n >>= \i -> replicateM_ i $ evalExpM e
+
+    Output' a b -> evalExp a >>= \x -> evalExp b >>= \y -> lift $ output' x y
+
+    Trace' a -> lift $ trace_ a
+    Error' h -> throwError h
+    CheckInterrupt' n -> lift $ checkInt n
+
+pushVal :: Machine' (Con b e) a -> b -> Machine' e a
+pushVal m v = ReaderT $ \env -> runReaderT m $ Push env v
+
+evalExpM :: ExpM a -> Machine a
+evalExpM = flip runReaderT Empty . evalEExpM . convExpM
+
+checkInt n = do
+    ns <- use $ config . stepsCounter
+    let ns' = ns + n
+    config . stepsCounter .= ns'
+    ivar <- use $ config . interruptRequest
+    int <- liftIO $ readMVar ivar
+    case int of
+      Just int -> do
         mask <- use intMask
         when (not (testBit mask 0)) $ do
           liftIO $ modifyMVar_ ivar $ const $ return Nothing
           interrupt_ int
-       Nothing -> do
-        ns <- use $ config . stepsCounter
-        let ns' = ns + n
-        config . stepsCounter .= ns'
+      Nothing -> do
         ips <- use $ config . instPerSec
         let ips' = ips `div` 5
         when (ns' `div` ips' > ns `div` ips') $ do
@@ -403,49 +624,6 @@ evalExpM = \case
                 interrupt_ 0x08
 
 
-evalExp :: Exp a -> Machine a
-evalExp = \case
-    C a -> return a
-
-    Get p -> evalPart p $ \(k, _) -> k
-
-    If b x y -> evalExp b >>= \b -> evalExp $ if b then x else y
-    Eq x y -> liftM2 (==) (evalExp x) (evalExp y)
-
-    Not a -> complement <$> evalExp a
-    ShiftL a -> (`shiftL` 1) <$> evalExp a
-    ShiftR a -> (`shiftR` 1) <$> evalExp a
-    RotateL a -> (`rotateL` 1) <$> evalExp a
-    RotateR a -> (`rotateR` 1) <$> evalExp a
-    Sub a b -> liftM2 (-) (evalExp a) (evalExp b)
-    Add a b -> liftM2 (+) (evalExp a) (evalExp b)
-    Mul a b -> liftM2 (*) (evalExp a) (evalExp b)
-    And a b -> liftM2 (.&.) (evalExp a) (evalExp b)
-    Or  a b -> liftM2 (.|.) (evalExp a) (evalExp b)
-    Xor a b -> liftM2 xor (evalExp a) (evalExp b)
-
-    Bit i e -> (`testBit` i) <$> evalExp e
-    SetBit i e f -> liftM2 (\a b -> b & bit i .~ a) (evalExp e) (evalExp f)
-    HighBit e -> (^. highBit) <$> evalExp e
-    SetHighBit e f -> liftM2 (\a b -> b & highBit .~ a) (evalExp e) (evalExp f)
-    EvenParity e -> even . popCount <$> evalExp e
-
-    Signed e -> asSigned <$> evalExp e    
-    Extend e -> extend <$> evalExp e    
-    SegAddr e f -> liftM2 segAddr (evalExp e) (evalExp f)
-    Convert e -> fromIntegral <$> evalExp e    
-
-    Let e f -> evalExp e >>= evalExp . f . C
-    Tuple a b -> liftM2 (,) (evalExp a) (evalExp b)
-    Fst p -> fst <$> evalExp p
-    Snd p -> snd <$> evalExp p
-
-    Iterate n f a -> evalExp n >>= \i -> evalExp $ iterate f a !! i
-
-
-execInstructionBody m = (True {-TODO-}, evalExpM $ compileInst m)
-
-
 input :: Word16 -> Machine (Word16)
 input v = do
     case v of
@@ -460,7 +638,7 @@ input v = do
             return $ "???" @: k
         0x61 -> do
             x <- use $ config . speaker
-            trace_ $ "get speaker: " ++ showHex' 2 x
+            trace_ $ "speaker -> " ++ showHex' 2 x
             return $ "???" @: fromIntegral x
         0x03da -> do
             r <- getRetrace
@@ -483,9 +661,9 @@ output' v x = do
         0x40 -> do
             trace_ $ "set timer frequency " ++ showHex' 2 x --show (1193182 / fromIntegral x) ++ " HZ"
         0x41 -> do
-            trace_ $ "channel #41 " ++ showHex' 2 x  -- ?
+            trace_ $ "ch #41 " ++ showHex' 2 x  -- ?
         0x42 -> do
-            trace_ $ "channel #42 " ++ showHex' 2 x
+            trace_ $ "ch #42 " ++ showHex' 2 x
         0x43 -> do
             trace_ $ "set timer control " ++ showHex' 2 x
             case x of
@@ -493,7 +671,7 @@ output' v x = do
                 0xb6  -> trace_ "set speaker frequency lsb+msb, square wave"
         0x61 -> do
             config . speaker .= fromIntegral x
-            trace_ $ "set speaker: " ++ showHex' 2 x
+            trace_ $ "speaker <- " ++ showHex' 2 x
         0xf100 -> do
             trace_ "implemented for jmpmov test"
         _ -> haltWith $ "output #" ++ showHex' 4 v ++ " 0x" ++ showHex' 4 x
@@ -506,7 +684,7 @@ imMax m | IM.null m = 0
 interrupt_ :: Word8 -> Machine ()
 interrupt_ n = do
     i <- use interruptF
-    if i then evalExpM (interrupt n) >> throwError Interr
+    if i then evalExpM (interrupt $ C n) >> throwError Interr
          else do
             trace_ $ "interrupt cancelled " ++ showHex' 2 n
             when (n == 0x08) $ config . counter .= Just 0
@@ -519,11 +697,11 @@ origInterrupt = M.fromList
     haltWith $ "int 00"
 
   , item 0x08 (0xf000,0xfea5) $ do     -- 
-    trace_ "timer interrupt again"
+    trace_ "orig timer"
     output' 0x20 0x20
 
   , item 0x09 (0xf000,0xe987) $ do     -- 09
-    trace_ "keyboard interrupt again"
+    trace_ "orig keyboard interrupt"
     haltWith $ "int 09"
 
   , item 0x10 (0xf000,0x1320) $ do     -- 10h
@@ -628,8 +806,8 @@ origInterrupt = M.fromList
         0x25 -> do
             v <- fromIntegral <$> use al     -- interrupt vector number
             trace_ $ "Set Interrupt Vector " ++ showHex' 2 v
-            use dx >>= (snd $ wordAt__ (4*v))     -- DS:DX = pointer to interrupt handler
-            use ds >>= (snd $ wordAt__ (4*v + 2))
+            use dx >>= setWordAt (4*v)     -- DS:DX = pointer to interrupt handler
+            use ds >>= setWordAt (4*v + 2)
 
         0x30 -> do
             trace_ "Get DOS version"
@@ -799,8 +977,8 @@ origInterrupt = M.fromList
 -}
                 snd (bytesAt__ (ad + 0x02) 13 {- !!! -}) $ pad 0 13 (map (fromIntegral . ord) (strip $ takeFileName f_) ++ [0])
                 snd (byteAt__ $ ad + 0x15) $ "attribute of matching file" @: fromIntegral attribute_used_during_search
-                snd (wordAt__ $ ad + 0x16) $ "file time" @: 0 -- TODO
-                snd (wordAt__ $ ad + 0x18) $ "file date" @: 0 -- TODO
+                setWordAt (ad + 0x16) $ "file time" @: 0 -- TODO
+                setWordAt (ad + 0x18) $ "file date" @: 0 -- TODO
                 snd (dwordAt__ $ ad + 0x1a) $ fromIntegral (BS.length s)
                 snd (bytesAt__ (ad + 0x1e) 13) $ pad 0 13 (map (fromIntegral . ord) (strip $ takeFileName f) ++ [0])
                 snd (byteAt__ $ ad + 0x00) 1
@@ -830,8 +1008,8 @@ origInterrupt = M.fromList
               Just (f, s) -> do
                 trace_ $ "found: " ++ show f
 --                snd (byteAt__ $ ad + 0x15) $ "attribute of matching file" @: fromIntegral attribute_used_during_search
-                snd (wordAt__ $ ad + 0x16) $ "file time" @: 0 -- TODO
-                snd (wordAt__ $ ad + 0x18) $ "file date" @: 0 -- TODO
+                setWordAt (ad + 0x16) $ "file time" @: 0 -- TODO
+                setWordAt (ad + 0x18) $ "file date" @: 0 -- TODO
                 snd (dwordAt__ $ ad + 0x1a) $ fromIntegral (BS.length s)
                 snd (bytesAt__ (ad + 0x1e) 13) $ pad 0 13 (map (fromIntegral . ord) (strip $ takeFileName f) ++ [0])
                 snd (byteAt__ $ ad + 0x00) $ n+1
@@ -993,14 +1171,14 @@ loadExe loadSegment gameExe = do
     labels .= mempty
 
     forM_ [(fromIntegral a, b) | (b, (a, _)) <- M.toList origInterrupt] $ \(i, (hi, lo)) -> do
-        snd (wordAt__ $ 4*i) $ "interrupt lo" @: lo
-        snd (wordAt__ $ 4*i + 2) $ "interrupt hi" @: hi
+        setWordAt (4*i) $ "interrupt lo" @: lo
+        setWordAt (4*i + 2) $ "interrupt hi" @: hi
         h <- use heap''
         uWriteInfo h (segAddr hi lo) 0xff
 
 
-    snd (wordAt__ 0x410) $ "equipment word" @: 0xd426 --- 0x4463   --- ???
-    snd (byteAt__ 0x417) $ "keyboard shift flag 1" @: 0x20
+    setWordAt (0x410) $ "equipment word" @: 0xd426 --- 0x4463   --- ???
+    snd (byteAt__ $ 0x417) $ "keyboard shift flag 1" @: 0x20
 
     void $ clearHist
   where
