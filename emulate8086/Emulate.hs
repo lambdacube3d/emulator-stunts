@@ -57,8 +57,8 @@ import Hdis86 hiding (wordSize)
 import Hdis86.Incremental
 
 import Helper
-import Edsl hiding (Flags, trace_, ips, sps, segAddr_, addressOf, addressOf', (>>), when, return, Info)
-import qualified Edsl (addressOf, addressOf', Part_(Flags))
+import Edsl hiding (Flags, trace_, ips, sps, segAddr_, addressOf, (>>), when, return, Info)
+import qualified Edsl (addressOf, Part_(Flags))
 import MachineState
 
 ---------------------------------------------- memory allocation
@@ -146,9 +146,16 @@ bytesAt__ i' j' = (get, set)
 byteAt__ :: Int -> MachinePart' Word8
 byteAt__ i = (use heap'' >>= \h -> liftIO $ uRead h i, \v -> use heap'' >>= \h -> uWrite h i v)
 
+getByteAt i = use heap'' >>= \h -> liftIO $ uRead h i
+
+setByteAt :: Int -> Word8 -> Machine ()
+setByteAt i v = use heap'' >>= \h -> uWrite h i v
+
 wordAt__ :: Int -> MachinePart' Word16
 wordAt__ i = ( use heap'' >>= \h -> liftIO $ liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead h (i+1)) (uRead h i)
              , \v -> use heap'' >>= \h -> uWrite h i (fromIntegral v) >> uWrite h (i+1) (fromIntegral $ v `shiftR` 8))
+
+getWordAt i = use heap'' >>= \h -> liftIO $ liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead h $ i+1) (uRead h i)
 
 setWordAt :: Int -> Word16 -> Machine ()
 setWordAt i v = use heap'' >>= \h -> uWrite h i (fromIntegral v) >> uWrite h (i+1) (fromIntegral $ v `shiftR` 8)
@@ -201,14 +208,8 @@ ch = cx . high:: MachinePart Word8
 
 ifff "" = []
 ifff x = [x]
-{-
-mkSteps :: MachineState -> (Halt, MachineState)
-mkSteps s = either (\x -> (x, s')) (const $ either (\x -> (x, s')) (const $ mkSteps s') b) a
-  where
-    (ju, a, b, s') = mkStep $ hijack s
--}
+
 addressOf a b = evalExp' $ Edsl.addressOf a b
-addressOf' a = evalExp' $ Edsl.addressOf' a
 
 askCounter n = do
     c <- use $ config . counter'
@@ -429,6 +430,12 @@ prjIx 0 (PushLayout _ ix) = unsafeCoerce ix --fromJust (gcast ix)
                               -- can't go wrong unless the library is wrong!
 prjIx n (PushLayout l _)  = prjIx (n - 1) l
 
+interrupt'' n = flip runReaderT (Push Empty n) $ evalEExpM int
+   where
+    int :: EExpM (Con Word8 Nil) ()
+    int = case convExpM $ LetM (C (0 :: Word8)) interrupt of
+        LetM' _ i -> unsafeCoerce i
+
 convExp :: Exp a -> EExp Nil a
 convExp = convExp_ EmptyLayout
 
@@ -523,8 +530,8 @@ evalExp = \case
 
     C' a -> return a
     Get' p -> case p of
-        Heap16 e -> evalExp e >>= lift . fst . wordAt__
-        Heap8 e -> evalExp e >>= lift . fst . byteAt__
+        Heap16 e -> evalExp e >>= getWordAt
+        Heap8 e -> evalExp e >>= getByteAt
         p -> use $ evalPart_ p
 
     If' b x y -> evalExp b >>= iff (evalExp x) (evalExp y)
@@ -563,6 +570,15 @@ evalEExpM = evalExpM where
   evalExpM :: EExpM e a -> Machine' e a
   evalExpM = \case
     LetM' e f -> evalExp e >>= pushVal (evalEExpM f)
+    Seq' a b -> evalExpM a >> evalExpM b
+    Set' p e' -> case p of 
+        Heap16 e -> join $ lift <$> liftM2 setWordAt (evalExp e) (evalExp e')
+        Heap8 e -> join $ lift <$> liftM2 setByteAt (evalExp e) (evalExp e')
+        p -> evalExp e' >>= (evalPart_ p .=)
+    Nop' -> return ()
+
+    IfM' b x y -> evalExp b >>= iff (evalExpM x) (evalExpM y)
+
     Input' a f -> evalExp a >>= lift . input >>= pushVal (evalEExpM f)
     QuotRem' a b c f -> do
         x <- evalExp a
@@ -572,32 +588,27 @@ evalEExpM = evalExpM where
             Just (z,v) -> pushVal (evalEExpM f) (z, v)
 
 
-    Seq' a b -> evalExpM a >> evalExpM b
-    Set' p e' -> case p of 
-        Heap16 e -> evalExp e >>= \i -> evalExp e' >>= lift . setWordAt i
-        Heap8 e -> evalExp e >>= \i -> evalExp e' >>= lift . snd (byteAt__ i)
-        p -> evalExp e' >>= (evalPart_ p .=)
-    Nop' -> return ()
+    Replicate' n e -> join $ liftM2 replicateM_ (evalExp n) (return $ evalExpM e)
 
-    IfM' b x y -> evalExp b >>= \b -> if b then evalExpM x else evalExpM y
-    Replicate' n e -> evalExp n >>= \i -> replicateM_ i $ evalExpM e
-
-    Output' a b -> evalExp a >>= \x -> evalExp b >>= \y -> lift $ output' x y
+    Output' a b -> join $ lift <$> liftM2 output' (evalExp a) (evalExp b)
 
     Trace' a -> lift $ trace_ a
     Error' h -> throwError h
     CheckInterrupt' n -> lift $ checkInt n
 
 pushVal :: Machine' (Con b e) a -> b -> Machine' e a
-pushVal m v = ReaderT $ \env -> runReaderT m $ Push env v
+pushVal m v = ReaderT $ runReaderT m . (`Push` v)
 
 evalExpM :: ExpM a -> Machine a
-evalExpM = flip runReaderT Empty . evalEExpM . convExpM
+evalExpM e = flip runReaderT Empty $ evalEExpM (convExpM e)
 
 checkInt n = do
-    ns <- use $ config . stepsCounter
-    let ns' = ns + n
-    config . stepsCounter .= ns'
+  ns <- use $ config . stepsCounter
+  let ns' = ns + n
+  config . stepsCounter .= ns'
+--  let ma = complement 0x3f
+--  when (ns' .&. ma /= ns .&. ma) $ do
+  do
     ivar <- use $ config . interruptRequest
     int <- liftIO $ readMVar ivar
     case int of
@@ -684,7 +695,7 @@ imMax m | IM.null m = 0
 interrupt_ :: Word8 -> Machine ()
 interrupt_ n = do
     i <- use interruptF
-    if i then evalExpM (interrupt $ C n) >> throwError Interr
+    if i then interrupt'' n >> throwError Interr
          else do
             trace_ $ "interrupt cancelled " ++ showHex' 2 n
             when (n == 0x08) $ config . counter .= Just 0
@@ -976,12 +987,12 @@ origInterrupt = M.fromList
                 snd (bytesAt__ 0x02 11) $ pad 0 11 fname
 -}
                 snd (bytesAt__ (ad + 0x02) 13 {- !!! -}) $ pad 0 13 (map (fromIntegral . ord) (strip $ takeFileName f_) ++ [0])
-                snd (byteAt__ $ ad + 0x15) $ "attribute of matching file" @: fromIntegral attribute_used_during_search
+                setByteAt (ad + 0x15) $ "attribute of matching file" @: fromIntegral attribute_used_during_search
                 setWordAt (ad + 0x16) $ "file time" @: 0 -- TODO
                 setWordAt (ad + 0x18) $ "file date" @: 0 -- TODO
                 snd (dwordAt__ $ ad + 0x1a) $ fromIntegral (BS.length s)
                 snd (bytesAt__ (ad + 0x1e) 13) $ pad 0 13 (map (fromIntegral . ord) (strip $ takeFileName f) ++ [0])
-                snd (byteAt__ $ ad + 0x00) 1
+                setByteAt (ad + 0x00) 1
                 ax .= 0 -- ?
                 carryF .=  False
               Nothing -> do
@@ -1007,12 +1018,12 @@ origInterrupt = M.fromList
             case s of
               Just (f, s) -> do
                 trace_ $ "found: " ++ show f
---                snd (byteAt__ $ ad + 0x15) $ "attribute of matching file" @: fromIntegral attribute_used_during_search
+--                setByteAt (ad + 0x15) $ "attribute of matching file" @: fromIntegral attribute_used_during_search
                 setWordAt (ad + 0x16) $ "file time" @: 0 -- TODO
                 setWordAt (ad + 0x18) $ "file date" @: 0 -- TODO
                 snd (dwordAt__ $ ad + 0x1a) $ fromIntegral (BS.length s)
                 snd (bytesAt__ (ad + 0x1e) 13) $ pad 0 13 (map (fromIntegral . ord) (strip $ takeFileName f) ++ [0])
-                snd (byteAt__ $ ad + 0x00) $ n+1
+                setByteAt (ad + 0x00) $ n+1
                 ax .= 0 -- ?
                 carryF .=  False
               Nothing -> do
@@ -1060,8 +1071,8 @@ origInterrupt = M.fromList
   ]
   where 
     item :: Word8 -> (Word16, Word16) -> Machine () -> ((Word16, Word16), (Word8, Machine ()))
-    item a k m = (k, (a, m >> evalExpM iret))
-
+    item a k m = (k, (a, m >> iret'))
+    iret' = evalExpM iret
 strip = reverse . dropWhile (==' ') . reverse . dropWhile (==' ')
 
 ----------------------------------------------
@@ -1178,7 +1189,7 @@ loadExe loadSegment gameExe = do
 
 
     setWordAt (0x410) $ "equipment word" @: 0xd426 --- 0x4463   --- ???
-    snd (byteAt__ $ 0x417) $ "keyboard shift flag 1" @: 0x20
+    setByteAt (0x417) $ "keyboard shift flag 1" @: 0x20
 
     void $ clearHist
   where

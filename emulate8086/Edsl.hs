@@ -254,6 +254,9 @@ add (C c) (C c') = C $ c + c'
 add (C c) (Add (C c') v) = add (C $ c + c') v
 add a b = Add a b
 
+mul (C c) (C c') = C $ c * c'
+mul a b = Mul a b
+
 and' (C c) (C c') = C $ c .&. c'
 and' a b = And a b
 
@@ -478,7 +481,6 @@ foldrExp f x y = f y x
 
 groupInterrupts n = \case
     Seq (CheckInterrupt n') b -> groupInterrupts (n + n') b
-    Seq i@(Interrupt _) e -> checkInterrupt n `Seq` i `Seq` groupInterrupts 0 e
     Seq a b -> a `Seq` groupInterrupts n b
     CheckInterrupt n' -> CheckInterrupt $ n + n'
     e -> e `Seq` checkInterrupt n
@@ -506,6 +508,13 @@ nextAddr e = case e of
     Set Cs _ -> const Nothing
     Set _ _ -> Just
     _ -> const Nothing
+
+--    QuotRem :: Integral a => Exp a -> Exp a -> ExpM b -> ((Exp a, Exp a) -> ExpM b) -> ExpM b
+--    Replicate :: Exp Int -> ExpM () -> ExpM ()
+--    Error :: Halt -> ExpM ()
+--    Input :: Exp Word16 -> (Exp Word16 -> ExpM ()) -> ExpM ()
+--    Interrupt :: Exp Word8 -> ExpM ()
+
 
 --------------------------------------------------------------------------------
 
@@ -893,14 +902,14 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
         [Seg s] -> Just s
         [] -> Nothing
 
-
-interrupt v = LetM (Mul (C 4) $ Convert v) $ \v -> do
+interrupt :: Exp Word8 -> ExpM ()
+interrupt v = letM (mul (C 4) $ convert v) $ \v -> do
 --    trace_ $ "interrupt " ++ showHex' 2 v
     push $ Get Flags
     push $ Get Cs
     push $ Get IP
     Set IF $ C False
-    Set Cs $ Get $ Heap16 $ Add (C 2) v
+    Set Cs $ Get $ Heap16 $ add (C 2) v
     Set IP $ Get $ Heap16 v
 
 iret :: ExpM ()
