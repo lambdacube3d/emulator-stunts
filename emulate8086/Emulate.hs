@@ -396,7 +396,6 @@ data EExpM :: List * -> * -> * where
     Set' :: Part_ (EExp e) a -> EExp e a -> EExpM e ()
     Output' :: EExp e Word16 -> EExp e Word16 -> EExpM e ()
     CheckInterrupt' :: Int -> EExpM e ()
---    Interrupt' :: EExp e Word8 -> EExpM e ()
 
 data Env :: List * -> * where
   Empty :: Env Nil
@@ -506,7 +505,6 @@ convExpM = f EmptyLayout where
         Set p e -> Set' (convPart lyt p) (q e)
         Output a b -> Output' (q a) (q b)
         CheckInterrupt i -> CheckInterrupt' i
-        Interrupt e -> k $ interrupt e
 
 convPart :: Layout e e -> Part_ Exp a -> Part_ (EExp e) a
 convPart lyt = mapPart (convExp_ lyt)

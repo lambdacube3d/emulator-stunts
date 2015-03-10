@@ -186,7 +186,6 @@ data ExpM a where
     Input :: Exp Word16 -> (Exp Word16 -> ExpM ()) -> ExpM ()
     Output :: Exp Word16 -> Exp Word16 -> ExpM ()
     CheckInterrupt :: Int -> ExpM ()
-    Interrupt :: Exp Word8 -> ExpM ()
 
 
 --    IOCall :: IO a -> ExpM a
@@ -313,7 +312,6 @@ mparts = \case
     QuotRem{} -> (full, full)
     Input{} -> (full, full)
     Output{} -> (full, full)
-    Interrupt{} -> (full, full)
     CheckInterrupt{} -> (full, full)
 --    _ -> (full, full)
 
@@ -442,8 +440,9 @@ repl k e = \case
     Input :: Exp Word16 -> (Exp Word16 -> ExpM ()) -> ExpM ()
     Output :: Exp Word16 -> Exp Word16 -> ExpM ()
     CheckInterrupt :: Int -> ExpM ()
-    Interrupt :: Exp Word8 -> ExpM ()
 -}
+
+
 reorderExp :: ExpM () -> ExpM ()
 reorderExp =  uncurry final . foldrExp f (AGet, Nop) . 
     groupInterrupts 0
@@ -513,7 +512,6 @@ nextAddr e = case e of
 --    Replicate :: Exp Int -> ExpM () -> ExpM ()
 --    Error :: Halt -> ExpM ()
 --    Input :: Exp Word16 -> (Exp Word16 -> ExpM ()) -> ExpM ()
---    Interrupt :: Exp Word8 -> ExpM ()
 
 
 --------------------------------------------------------------------------------
@@ -697,8 +695,8 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
         when (inOpcode == Iiretw) $ pop $ Set Flags
         when (length inOperands == 1) $ modif SP $ Add (getOp1w)
 
-    Iint  -> Interrupt $ getByteOperand segmentPrefix op1
-    Iinto -> when' (Get OF) $ Interrupt $ C 4
+    Iint  -> interrupt $ getByteOperand segmentPrefix op1
+    Iinto -> when' (Get OF) $ interrupt $ C 4
 
     Ihlt  -> Error CleanHalt
 
