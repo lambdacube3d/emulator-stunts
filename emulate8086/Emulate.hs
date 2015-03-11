@@ -608,13 +608,11 @@ checkInt n = do
 --  when (ns' .&. ma /= ns .&. ma) $ do
   do
     ivar <- use $ config . interruptRequest
-    int <- liftIO $ readMVar ivar
+    int <- liftIO $ takeMVar ivar
     case int of
-      Just r -> case r of
-       AskKeyInterrupt scancode -> do
-        mask <- use intMask
-        when (not (testBit mask 0)) $ do
-          liftIO $ modifyMVar_ ivar $ const $ return Nothing
+      (r:rs) -> case r of
+       AskKeyInterrupt scancode -> checkMask (liftIO $ putMVar ivar (r:rs)) $ do
+          liftIO $ putMVar ivar rs
           config . keyDown .= scancode
           interrupt_ 0x09
        PrintFreqTable wait -> do
@@ -628,13 +626,18 @@ checkInt n = do
 --            putStrLn t
 --            threadDelay 1000000
             putMVar wait ()
-      Nothing -> do
-        mask <- use intMask
-        when (not (testBit mask 0)) $ do
+      [] -> do
+        liftIO $ putMVar ivar []
+        checkMask (return ()) $ do
             cc <- askCounter n
             when cc $ do
                 trace_ "int08"
                 interrupt_ 0x08
+  where
+    checkMask fail ok = do
+      mask <- use intMask
+      if testBit mask 0 then fail else ok
+
 
 
 input :: Word16 -> Machine (Word16)

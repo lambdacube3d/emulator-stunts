@@ -22,30 +22,32 @@ import MachineState
 
 dof = 320 * 200
 
-drawWithFrameBuffer :: MVar (Maybe Request) -> MVar (Vec.Vector Word32) -> U.IOVector Word16 -> IO () -> IO ()
+drawWithFrameBuffer :: (Request -> IO ()) -> MVar (Vec.Vector Word32) -> U.IOVector Word16 -> IO () -> IO ()
 drawWithFrameBuffer interrupt palette framebuffer draw = do
     GLFW.init
     vec2 <- U.new (320*200) :: IO (U.IOVector Word32)
     ovar <- newMVar 0
     let winW = 960
         winH = 600
+
     Just window <- GLFW.createWindow winW winH "Haskell Stunts" Nothing Nothing
     GLFW.makeContextCurrent $ Just window
     GLFW.setKeyCallback window $ Just $ \window key scancode action mods -> do
-        modifyMVar_ interrupt $ const $ return $ (case action of
-            GLFW.KeyState'Pressed -> Just . AskKeyInterrupt . fst
-            GLFW.KeyState'Released -> Just . AskKeyInterrupt . snd
-            _ -> const Nothing
-            ) $ case key of
-                Key'Escape -> (0x01, 0x81)
-                Key'Space -> (0x39, 0xb9)
-                Key'Enter -> (0xe01c, 0x9c)
-                Key'C -> (0x2e, 0xae)
-                Key'Left -> (0xe04b, 0xcb)
-                Key'Right -> (0xe04d, 0xcd)
-                Key'Up -> (0xe048, 0xc8)
-                Key'Down -> (0xe050, 0xd0)
-                _ -> (0,0)
+        let send (press, release) = case action of
+                GLFW.KeyState'Pressed  -> interrupt $ AskKeyInterrupt press
+                GLFW.KeyState'Released -> interrupt $ AskKeyInterrupt release
+                _ -> return ()
+
+        when (action /= GLFW.KeyState'Repeating) $ case key of
+            Key'Escape  -> send (0x01, 0x81)
+            Key'Space   -> send (0x39, 0xb9)
+            Key'Enter   -> send (0xe01c, 0x9c)
+            Key'C       -> send (0x2e, 0xae)
+            Key'Left    -> send (0xe04b, 0xcb)
+            Key'Right   -> send (0xe04d, 0xcd)
+            Key'Up      -> send (0xe048, 0xc8)
+            Key'Down    -> send (0xe050, 0xd0)
+            _ -> return ()
         when (action /= GLFW.KeyState'Released) $ case key of
             Key'R -> modifyMVar_ ovar $ return . (const 0)
             Key'A -> modifyMVar_ ovar $ return . (+ dof)
@@ -88,7 +90,7 @@ drawWithFrameBuffer interrupt palette framebuffer draw = do
                 mainLoop
     mainLoop
     wait <- newEmptyMVar
-    modifyMVar_ interrupt $ const $ return $ Just $ PrintFreqTable wait
+    interrupt $ PrintFreqTable wait
     _ <- takeMVar wait
 
     -- free back buffer

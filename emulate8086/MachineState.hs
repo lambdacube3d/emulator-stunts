@@ -41,7 +41,7 @@ data Config_ = Config_
     , _speaker          :: Word8     -- 0x61 port
     , _palette          :: MVar (V.Vector Word32)
     , _keyDown          :: Word16
-    , _interruptRequest :: MVar (Maybe Request)
+    , _interruptRequest :: MVar [Request]
     }
 
 $(makeLenses ''Config_)
