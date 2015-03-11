@@ -611,11 +611,12 @@ checkInt n = do
     int <- liftIO $ readMVar ivar
     case int of
       Just r -> case r of
-       AskInterrupt int -> do
+       AskKeyInterrupt scancode -> do
         mask <- use intMask
         when (not (testBit mask 0)) $ do
           liftIO $ modifyMVar_ ivar $ const $ return Nothing
-          interrupt_ int
+          config . keyDown .= scancode
+          interrupt_ 0x09
        PrintFreqTable wait -> do
         (c1, c2) <- use cache
         let f (k, (x, y)) = showHex' 5 k ++ "   " ++ pad ' ' 20 (maybe "" (\(a,b,_)->pad ' ' 10 (show a) ++ pad ' ' 10 (show $ b - k + 1)) x) ++ pad ' ' 10 (maybe "" show y)
@@ -644,8 +645,7 @@ input v = do
             trace_ $ "get interrupt mask " ++ showHex' 2 x
             return $ "???" @: fromIntegral x
         0x60 -> do
-            kvar <- use $ config . keyDown
-            k <- liftIO $ readMVar kvar
+            k <- use $ config . keyDown
             trace_ $ "keyboard scan code: " ++ showHex' 4 k
             return $ "???" @: k
         0x61 -> do

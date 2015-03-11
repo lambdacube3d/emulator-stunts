@@ -22,7 +22,7 @@ data Halt
   deriving Show
 
 data Request
-    = AskInterrupt Word8
+    = AskKeyInterrupt Word16
     | PrintFreqTable (MVar ())
 
 type Flags = Word16
@@ -40,7 +40,7 @@ data Config_ = Config_
     , _counter          :: Maybe Int -- counter to count down
     , _speaker          :: Word8     -- 0x61 port
     , _palette          :: MVar (V.Vector Word32)
-    , _keyDown          :: MVar Word16
+    , _keyDown          :: Word16
     , _interruptRequest :: MVar (Maybe Request)
     }
 
@@ -53,7 +53,7 @@ defConfig = Config_
     , _counter = Nothing
     , _speaker = 0x30 -- ??
     , _palette = undefined
-    , _keyDown = undefined
+    , _keyDown = 0x00
     , _interruptRequest = undefined
     }
 

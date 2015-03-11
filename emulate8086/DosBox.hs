@@ -22,8 +22,8 @@ import MachineState
 
 dof = 320 * 200
 
-drawWithFrameBuffer :: MVar (Maybe Request) -> MVar Word16 -> MVar (Vec.Vector Word32) -> U.IOVector Word16 -> IO () -> IO ()
-drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
+drawWithFrameBuffer :: MVar (Maybe Request) -> MVar (Vec.Vector Word32) -> U.IOVector Word16 -> IO () -> IO ()
+drawWithFrameBuffer interrupt palette framebuffer draw = do
     GLFW.init
     vec2 <- U.new (320*200) :: IO (U.IOVector Word32)
     ovar <- newMVar 0
@@ -32,10 +32,10 @@ drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
     Just window <- GLFW.createWindow winW winH "Haskell Stunts" Nothing Nothing
     GLFW.makeContextCurrent $ Just window
     GLFW.setKeyCallback window $ Just $ \window key scancode action mods -> do
-        modifyMVar_ keyboard $ const $ return $ (case action of
-            GLFW.KeyState'Pressed -> fst
-            GLFW.KeyState'Released -> snd
-            _ -> fst
+        modifyMVar_ interrupt $ const $ return $ (case action of
+            GLFW.KeyState'Pressed -> Just . AskKeyInterrupt . fst
+            GLFW.KeyState'Released -> Just . AskKeyInterrupt . snd
+            _ -> const Nothing
             ) $ case key of
                 Key'Escape -> (0x01, 0x81)
                 Key'Space -> (0x39, 0xb9)
@@ -46,11 +46,6 @@ drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
                 Key'Up -> (0xe048, 0xc8)
                 Key'Down -> (0xe050, 0xd0)
                 _ -> (0,0)
-        case action of
-            KeyState'Repeating -> return ()
-            _ -> do
-                c <- readMVar keyboard
-                modifyMVar_ interrupt $ const $ return $ Just $ AskInterrupt 0x09
         when (action /= GLFW.KeyState'Released) $ case key of
             Key'R -> modifyMVar_ ovar $ return . (const 0)
             Key'A -> modifyMVar_ ovar $ return . (+ dof)
@@ -84,10 +79,8 @@ drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
                       y' = 320 * y
                   forM_ [0..319] $ \x -> do
                     a <- U.unsafeRead fb $ (y_ + x) .&. 0xfffff
-                    let v = p Vec.! fromIntegral (a .&. 0xff)
-                        z = y' + x
-                    U.unsafeWrite vec2 (z) v
-
+                    v <- Vec.unsafeIndexM p $ fromIntegral a .&. 0xff
+                    U.unsafeWrite vec2 (y' + x) v
                 U.unsafeWith vec2 $ glTexSubImage2D gl_TEXTURE_2D 0 0 0 320 200 gl_RGBA gl_UNSIGNED_INT_8_8_8_8
                 glBlitFramebuffer 0 0 320 200 0 0 (fromIntegral winW) (fromIntegral winH) gl_COLOR_BUFFER_BIT gl_NEAREST
                 GLFW.swapBuffers window

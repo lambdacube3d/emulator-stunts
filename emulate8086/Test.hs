@@ -123,13 +123,11 @@ main = do
     hSetBuffering stdout NoBuffering
 --    args <- getArgs
     pmvar <- newMVar defaultPalette
-    kvar <- newMVar 0
     ivar <- newMVar Nothing
 
 --    l <- getLabels
     let x =       config . verboseLevel .~ 1 
                 $ config . palette .~ pmvar
-                $ config . keyDown .~ kvar
                 $ config . interruptRequest .~ ivar
                 $ emptyState heap
 
@@ -139,7 +137,7 @@ main = do
     forkIO $ void $ flip evalStateT x $ runExceptT $ do
         loadExe loadSegment game
         showCode
-    drawWithFrameBuffer ivar kvar pmvar heap $ return ()
+    drawWithFrameBuffer ivar pmvar heap $ return ()
 
   where
     f [i] = read i
