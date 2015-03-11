@@ -26,7 +26,7 @@ drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
     GLFW.init
     vec2 <- U.new (320*200) :: IO (U.IOVector Word32)
     ovar <- newMVar 0
-    Just window <- GLFW.createWindow 320 200 "Haskell Stunts" Nothing Nothing
+    Just window <- GLFW.createWindow 960 600 "Haskell Stunts" Nothing Nothing
     GLFW.makeContextCurrent $ Just window
     GLFW.setKeyCallback window $ Just $ \window key scancode action mods -> do
         modifyMVar_ keyboard $ const $ return $ (case action of
@@ -81,7 +81,12 @@ drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
                     let v = p Vec.! fromIntegral (a .&. 0xff)
                         z = y' + x
                     U.unsafeWrite vec2 (z) v
+                glDrawBuffer gl_FRONT
                 U.unsafeWith vec2 $ glDrawPixels 320 200 gl_RGBA gl_UNSIGNED_INT_8_8_8_8
+                glReadBuffer gl_FRONT
+                glDrawBuffer gl_BACK
+                glClear gl_COLOR_BUFFER_BIT
+                glBlitFramebuffer 0 0 320 200 0 0 960 600 (fromIntegral gl_COLOR_BUFFER_BIT) gl_NEAREST
                 GLFW.swapBuffers window
                 GLFW.pollEvents
                 mainLoop
