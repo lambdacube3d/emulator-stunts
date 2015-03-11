@@ -843,21 +843,27 @@ origInterrupt = M.fromList
             let f = map (toUpper . chr . fromIntegral) $ takeWhile (/=0) fname
             trace_ $ "Create File " ++ f
             let fn = "../original/" ++ f
-            liftIO $ writeFile fn ""
-            s <- liftIO $ do
-                    b <- doesFileExist fn
-                    if b then Just <$> BS.readFile fn else return Nothing
-            case s of
-              Nothing -> do
-                trace_ $ "Access denied"
-                ax .= "Acces denied" @: 0x05
+            b <- liftIO $ doesFileExist fn
+            if b then do
+                trace_ $ "File already exists"
+                ax .= "File already exists" @: 0x50
                 carryF .= True
-              Just s -> do
-                handle <- max 5 . imMax <$> use files
-                trace_ $ "handle " ++ showHex' 4 handle
-                files %= IM.insert handle (fn, s, 0)
-                ax .= "file handle" @: fromIntegral handle
-                carryF .=  False
+              else do
+                liftIO $ writeFile fn ""
+                s <- liftIO $ do
+                        b <- doesFileExist fn
+                        if b then Just <$> BS.readFile fn else return Nothing
+                case s of
+                  Nothing -> do
+                    trace_ $ "Access denied"
+                    ax .= "Acces denied" @: 0x05
+                    carryF .= True
+                  Just s -> do
+                    handle <- max 5 . imMax <$> use files
+                    trace_ $ "handle " ++ showHex' 4 handle
+                    files %= IM.insert handle (fn, s, 0)
+                    ax .= "file handle" @: fromIntegral handle
+                    carryF .=  False
 
         0x3d -> do
             trace_ "Open File Using Handle"
@@ -920,6 +926,16 @@ origInterrupt = M.fromList
               2 -> trace_ . ("STDERR: " ++) . map (chr . fromIntegral) =<< fst (bytesAt__ loc num)
               _ -> return ()
             carryF .=  False
+
+        0x41 -> do
+            addr <- addressOf Nothing $ memIndex RDX
+            fname <- fst $ bytesAt__ addr 40
+            let f = map (toUpper . chr . fromIntegral) $ takeWhile (/=0) fname
+            trace_ $ "Delete File " ++ f
+            let fn = "../original/" ++ f
+            checkExists fn $ do
+                liftIO $ removeFile fn
+                carryF .=  False
 
         0x42 -> do
             handle <- fromIntegral <$> use bx
@@ -1050,10 +1066,7 @@ origInterrupt = M.fromList
                 setByteAt (ad + 0x00) $ n+1
                 ax .= 0 -- ?
                 carryF .=  False
-              Nothing -> do
-                trace_ $ "not found"
-                ax .= 02  -- File not found
-                carryF .=  True
+              Nothing -> dosFail 0x02
 
         0x62 -> do
             trace_ "Get PSP address (DOS 3.x)"
@@ -1097,6 +1110,30 @@ origInterrupt = M.fromList
     item :: Word8 -> (Word16, Word16) -> Machine () -> ((Word16, Word16), (Word8, Machine ()))
     item a k m = (k, (a, m >> iret'))
     iret' = evalExpM iret
+
+    checkExists fn cont = do
+        b <- liftIO $ doesFileExist fn
+        if b then cont else dosFail 0x02
+
+    dosFail errcode = do
+        trace_ $ showerr errcode
+        ax .= errcode
+        carryF .= True
+      where 
+        showerr = \case
+            0x01  -> "Invalid function number"
+            0x02  -> "File not found"
+            0x03  -> "Path not found"
+            0x04  -> "Too many open files (no handles left)"
+            0x05  -> "Access denied"
+            0x06  -> "Invalid handle"
+            0x07  -> "Memory control blocks destroyed"
+            0x08  -> "Insufficient memory"
+            0x09  -> "Invalid memory block address"
+            0x0A  -> "Invalid environment"
+            0x0B  -> "Invalid format"
+            0x0C  -> "Invalid access mode (open mode is invalid)"
+
 strip = reverse . dropWhile (==' ') . reverse . dropWhile (==' ')
 
 ----------------------------------------------
