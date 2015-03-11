@@ -844,10 +844,20 @@ origInterrupt = M.fromList
             trace_ $ "Create File " ++ f
             let fn = "../original/" ++ f
             liftIO $ writeFile fn ""
-            handle <- max 5 . imMax <$> use files
-            trace_ $ "handle " ++ showHex' 4 handle
-            ax .= fromIntegral handle
-            carryF .=  False
+            s <- liftIO $ do
+                    b <- doesFileExist fn
+                    if b then Just <$> BS.readFile fn else return Nothing
+            case s of
+              Nothing -> do
+                trace_ $ "Access denied"
+                ax .= "Acces denied" @: 0x05
+                carryF .= True
+              Just s -> do
+                handle <- max 5 . imMax <$> use files
+                trace_ $ "handle " ++ showHex' 4 handle
+                files %= IM.insert handle (fn, s, 0)
+                ax .= "file handle" @: fromIntegral handle
+                carryF .=  False
 
         0x3d -> do
             trace_ "Open File Using Handle"
