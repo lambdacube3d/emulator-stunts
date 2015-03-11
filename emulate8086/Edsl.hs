@@ -827,7 +827,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
                 Set OF c
                 uSet SF
                 uSet PF
-                uSet ZF
+                Set ZF $ C False    -- needed for Stunts
 
         shiftOp :: (forall b . (AsSigned b) => Exp Bool -> Exp b -> (Exp Bool, Exp b)) -> ExpM ()
         shiftOp op = do
