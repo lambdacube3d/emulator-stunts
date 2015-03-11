@@ -16,6 +16,7 @@ import Control.Concurrent
 import Graphics.Rendering.OpenGL.Raw.Core32
 import Graphics.Rendering.OpenGL.Raw.Compatibility30
 import "GLFW-b" Graphics.UI.GLFW as GLFW
+import Foreign
 
 import MachineState
 
@@ -26,7 +27,9 @@ drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
     GLFW.init
     vec2 <- U.new (320*200) :: IO (U.IOVector Word32)
     ovar <- newMVar 0
-    Just window <- GLFW.createWindow 960 600 "Haskell Stunts" Nothing Nothing
+    let winW = 960
+        winH = 600
+    Just window <- GLFW.createWindow winW winH "Haskell Stunts" Nothing Nothing
     GLFW.makeContextCurrent $ Just window
     GLFW.setKeyCallback window $ Just $ \window key scancode action mods -> do
         modifyMVar_ keyboard $ const $ return $ (case action of
@@ -59,6 +62,9 @@ drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
             Key'Q -> GLFW.setWindowShouldClose window True
             _ -> return ()
 
+    -- create back buffer
+    (tex,fbo) <- mkBackBuffer
+
     tv <- newEmptyMVar
     forkIO $ forever $ do
         threadDelay $ 1000000 `div` 20
@@ -81,12 +87,9 @@ drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
                     let v = p Vec.! fromIntegral (a .&. 0xff)
                         z = y' + x
                     U.unsafeWrite vec2 (z) v
-                glDrawBuffer gl_FRONT
-                U.unsafeWith vec2 $ glDrawPixels 320 200 gl_RGBA gl_UNSIGNED_INT_8_8_8_8
-                glReadBuffer gl_FRONT
-                glDrawBuffer gl_BACK
-                glClear gl_COLOR_BUFFER_BIT
-                glBlitFramebuffer 0 0 320 200 0 0 960 600 (fromIntegral gl_COLOR_BUFFER_BIT) gl_NEAREST
+
+                U.unsafeWith vec2 $ glTexSubImage2D gl_TEXTURE_2D 0 0 0 320 200 gl_RGBA gl_UNSIGNED_INT_8_8_8_8
+                glBlitFramebuffer 0 0 320 200 0 0 (fromIntegral winW) (fromIntegral winH) gl_COLOR_BUFFER_BIT gl_NEAREST
                 GLFW.swapBuffers window
                 GLFW.pollEvents
                 mainLoop
@@ -94,8 +97,31 @@ drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
     wait <- newEmptyMVar
     modifyMVar_ interrupt $ const $ return $ Just $ PrintFreqTable wait
     _ <- takeMVar wait
+
+    -- free back buffer
+    Foreign.with fbo $ glDeleteFramebuffers 1
+    Foreign.with tex $ glDeleteTextures 1
+
     GLFW.destroyWindow window
     GLFW.terminate
+
+mkBackBuffer = do
+  fbo <- alloca $! \pbo -> glGenFramebuffers 1 pbo >> peek pbo
+  glBindFramebuffer gl_DRAW_FRAMEBUFFER fbo
+  tex <- alloca $! \pto -> glGenTextures 1 pto >> peek pto
+  glBindTexture gl_TEXTURE_2D tex
+  glTexParameteri gl_TEXTURE_2D gl_TEXTURE_MAG_FILTER $ fromIntegral gl_NEAREST
+  glTexParameteri gl_TEXTURE_2D gl_TEXTURE_MIN_FILTER $ fromIntegral gl_NEAREST
+  glTexImage2D gl_TEXTURE_2D 0 (fromIntegral gl_RGBA) 320 200 0 (fromIntegral gl_RGBA) gl_UNSIGNED_BYTE nullPtr
+  glFramebufferTexture2D gl_DRAW_FRAMEBUFFER gl_COLOR_ATTACHMENT0 gl_TEXTURE_2D tex 0
+  status <- glCheckFramebufferStatus gl_FRAMEBUFFER
+  if (status /= gl_FRAMEBUFFER_COMPLETE)
+    then do
+      putStrLn $ "incomplete framebuffer: " ++ show status
+    else do
+      glBindFramebuffer gl_READ_FRAMEBUFFER fbo
+      glBindFramebuffer gl_DRAW_FRAMEBUFFER 0
+  return (tex,fbo)
 
 defaultPalette :: Vec.Vector Word32
 defaultPalette = Vec.fromList $ Prelude.map (`shiftL` 8)
