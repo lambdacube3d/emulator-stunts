@@ -836,6 +836,19 @@ origInterrupt = M.fromList
             fst (wordAt__ (4*v)) >>= (bx .=)
             fst (wordAt__ (4*v + 2)) >>= (es .=)   -- ES:BX = pointer to interrupt handler
 
+        0x3c -> do
+            attributes <- use cx
+            addr <- addressOf Nothing $ memIndex RDX
+            fname <- fst $ bytesAt__ addr 40
+            let f = map (toUpper . chr . fromIntegral) $ takeWhile (/=0) fname
+            trace_ $ "Create File " ++ f
+            let fn = "../original/" ++ f
+            liftIO $ writeFile fn ""
+            handle <- max 5 . imMax <$> use files
+            trace_ $ "handle " ++ showHex' 4 handle
+            ax .= fromIntegral handle
+            carryF .=  False
+
         0x3d -> do
             trace_ "Open File Using Handle"
             open_access_mode <- use al
