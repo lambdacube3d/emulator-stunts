@@ -708,15 +708,15 @@ origInterrupt = M.fromList
     trace_ "divison by zero interrupt"
     haltWith $ "int 00"
 
-  , item 0x08 (0xf000,0xfea5) $ do     -- 
+  , item 0x08 (0xf000,0xfea5) $ do
     trace_ "orig timer"
     output' 0x20 0x20
 
-  , item 0x09 (0xf000,0xe987) $ do     -- 09
+  , item 0x09 (0xf000,0xe987) $ do
     trace_ "orig keyboard interrupt"
     haltWith $ "int 09"
 
-  , item 0x10 (0xf000,0x1320) $ do     -- 10h
+  , item 0x10 (0xf000,0x1320) $ do
     trace_ "Video Services"
     v <- use ah
     case v of
@@ -780,7 +780,7 @@ origInterrupt = M.fromList
             trace_ "Reset Pointing device"
             ah .= 0 -- ?
             bl .= 0xaa -- ?
-            carryF .= False
+            returnOK
       v  -> haltWith $ "interrupt #15,#" ++ showHex' 2 v
 
   , item 0x16 (0xf000,0x1200) $ do     -- 16h
@@ -831,66 +831,31 @@ origInterrupt = M.fromList
                 cx .= "OEM serial number (low bits)" @: 0
 
         0x35 -> do
-            v <- fromIntegral <$> use al     -- interrupt vector number
+            v <- fromIntegral <$> use al
             trace_ $ "Get Interrupt Vector " ++ showHex' 2 v
             fst (wordAt__ (4*v)) >>= (bx .=)
             fst (wordAt__ (4*v + 2)) >>= (es .=)   -- ES:BX = pointer to interrupt handler
 
         0x3c -> do
+            trace_ "Create File"
+            (f, fn) <- getFileName
             attributes <- use cx
-            addr <- addressOf Nothing $ memIndex RDX
-            fname <- fst $ bytesAt__ addr 40
-            let f = map (toUpper . chr . fromIntegral) $ takeWhile (/=0) fname
-            trace_ $ "Create File " ++ f
-            let fn = "../original/" ++ f
             b <- liftIO $ doesFileExist fn
-            if b then do
-                trace_ $ "File already exists"
-                ax .= "File already exists" @: 0x50
-                carryF .= True
+            if b then dosFail 0x05 -- access denied
               else do
                 liftIO $ writeFile fn ""
-                s <- liftIO $ do
-                        b <- doesFileExist fn
-                        if b then Just <$> BS.readFile fn else return Nothing
-                case s of
-                  Nothing -> do
-                    trace_ $ "Access denied"
-                    ax .= "Acces denied" @: 0x05
-                    carryF .= True
-                  Just s -> do
-                    handle <- max 5 . imMax <$> use files
-                    trace_ $ "handle " ++ showHex' 4 handle
-                    files %= IM.insert handle (fn, s, 0)
-                    ax .= "file handle" @: fromIntegral handle
-                    carryF .=  False
-
+                checkExists fn $ do
+                    s <- liftIO $ BS.readFile fn
+                    newHandle fn s
         0x3d -> do
             trace_ "Open File Using Handle"
             open_access_mode <- use al
---            v <- use dx
             case open_access_mode of
               0 -> do   -- read mode
-                addr <- addressOf Nothing $ memIndex RDX
-                fname <- fst $ bytesAt__ addr 20
-                let f = map (toUpper . chr . fromIntegral) $ takeWhile (/=0) fname
-                trace_ $ "File: " ++ show f
-                let fn = "../original/" ++ f
-                s <- liftIO $ do
-                        b <- doesFileExist fn
-                        if b then Just <$> BS.readFile fn else return Nothing
-                case s of
-                  Nothing -> do
-                    trace_ $ "not found"
-                    ax .= "File not found" @: 0x02
-                    carryF .= True
-                  Just s -> do
-        --            ax .= 02  -- File not found
-                    handle <- max 5 . imMax <$> use files
-                    trace_ $ "handle " ++ showHex' 4 handle
-                    files %= IM.insert handle (fn, s, 0)
-                    ax .= "file handle" @: fromIntegral handle
-                    carryF .=  False
+                (f,fn) <- getFileName
+                checkExists fn $ do
+                    s <- liftIO $ BS.readFile fn
+                    newHandle fn s
 
         0x3e -> do
             trace_ "Close file"
@@ -901,7 +866,7 @@ origInterrupt = M.fromList
               Just (fn, _, _) -> do
                 trace_ $ "file: " ++ fn
                 files %= IM.delete handle
-                carryF .=  False
+                returnOK
 
         0x3f -> do
             handle <- fromIntegral <$> use bx
@@ -914,7 +879,7 @@ origInterrupt = M.fromList
             files %= flip IM.adjust handle (\(fn, s, p) -> (fn, s, p+len))
             snd (bytesAt__ loc len) (BS.unpack s)
             ax .= "length" @: fromIntegral len
-            carryF .=  False
+            returnOK
 
         0x40 -> do
             handle <- fromIntegral <$> use bx
@@ -925,17 +890,14 @@ origInterrupt = M.fromList
               1 -> trace_ . ("STDOUT: " ++) . map (chr . fromIntegral) =<< fst (bytesAt__ loc num)
               2 -> trace_ . ("STDERR: " ++) . map (chr . fromIntegral) =<< fst (bytesAt__ loc num)
               _ -> return ()
-            carryF .=  False
+            returnOK
 
         0x41 -> do
-            addr <- addressOf Nothing $ memIndex RDX
-            fname <- fst $ bytesAt__ addr 40
-            let f = map (toUpper . chr . fromIntegral) $ takeWhile (/=0) fname
-            trace_ $ "Delete File " ++ f
-            let fn = "../original/" ++ f
+            trace_ "Delete File"
+            (f,fn) <- getFileName
             checkExists fn $ do
                 liftIO $ removeFile fn
-                carryF .=  False
+                returnOK
 
         0x42 -> do
             handle <- fromIntegral <$> use bx
@@ -950,7 +912,7 @@ origInterrupt = M.fromList
                 )
             pos' <- (^. _3) . (IM.! handle) <$> use files
             (uComb dx ax . combine) .= fromIntegral pos'
-            carryF .=  False
+            returnOK
 
         0x44 -> do
             trace_ "I/O Control for Devices (IOCTL)"
@@ -974,14 +936,14 @@ origInterrupt = M.fromList
                       0 -> 0x80D3        --  0010 1000 00 000011    default drive
                 dx .= v
                 ax .= v
-            carryF .=  False
+            returnOK
 
         0x48 -> do
             memory_paragraphs_requested <- use bx
             trace_ $ "Allocate Memory " ++ showHex' 5 (memory_paragraphs_requested ^. paragraph)
             x <- zoom heap $ state $ allocateMem (memory_paragraphs_requested ^. paragraph)
             ax .= "segment address of allocated memory block" @: (x ^. from paragraph) -- (MCB + 1para)
-            carryF .=  False
+            returnOK
 
         0x4a -> do
             new_requested_block_size_in_paragraphs <- use bx
@@ -990,15 +952,14 @@ origInterrupt = M.fromList
             h <- use heap
             case modifyAllocated (segment_of_the_block ^. paragraph) (new_requested_block_size_in_paragraphs ^. paragraph) h of
               Left x -> do
-                ax .= "Insufficient memory error" @: 8
                 bx .= "maximum block size possible" @: (x ^. from paragraph)
                 trace_ $ "insufficient, max possible: " ++ showHex' 4 (x ^. from paragraph)
-                carryF .=  True
+                dosFail 0x08 -- insufficient memory
               Right h -> do
                 ds <- use ds
                 ax .= ds  -- why???
                 heap .= h
-                carryF .=  False
+                returnOK
 
         0x4c -> do
             code <- use al
@@ -1006,11 +967,9 @@ origInterrupt = M.fromList
             halt
 
         0x4e -> do
+            trace_ $ "Find file"
+            (f_,_) <- getFileName
             attribute_used_during_search <- use cx
-            addr <- addressOf Nothing $ memIndex RDX
-            fname <- fst $ bytesAt__ addr 20
-            let f_ = map (chr . fromIntegral) $ takeWhile (/=0) fname
-            trace_ $ "Find file " ++ show f_
             ad <- use dta
             s <- liftIO $ do
                     b <- globDir1 (compile $ map toUpper f_) "../original"
@@ -1020,12 +979,6 @@ origInterrupt = M.fromList
             case s of
               Just (f, s) -> do
                 trace_ $ "found: " ++ show f
-{-
-                snd (bytesAt__ 0 0x1a) $ map (error' . ("undefined byte " ++) . showHex' 2) [0..]
-                snd (byteAt__ 0x00) $ "attribute of serach" @: fromIntegral attribute_used_during_search
-                snd (byteAt__ 0x01) $ "disk used during search" @: 2  -- C:
-                snd (bytesAt__ 0x02 11) $ pad 0 11 fname
--}
                 snd (bytesAt__ (ad + 0x02) 13 {- !!! -}) $ pad 0 13 (map (fromIntegral . ord) (strip $ takeFileName f_) ++ [0])
                 setByteAt (ad + 0x15) $ "attribute of matching file" @: fromIntegral attribute_used_during_search
                 setWordAt (ad + 0x16) $ "file time" @: 0 -- TODO
@@ -1034,17 +987,12 @@ origInterrupt = M.fromList
                 snd (bytesAt__ (ad + 0x1e) 13) $ pad 0 13 (map (fromIntegral . ord) (strip $ takeFileName f) ++ [0])
                 setByteAt (ad + 0x00) 1
                 ax .= 0 -- ?
-                carryF .=  False
-              Nothing -> do
-                trace_ $ "not found"
-                ax .= 02  -- File not found
-                carryF .=  True
+                returnOK
+              Nothing -> dosFail 0x02  -- File not found
 
         0x4f -> do
             ad <- use dta
             fname <- fst $ bytesAt__ (ad + 0x02) 13
-            -- addr <- addressOf Nothing $ memIndex RDX
-            -- fname' <- fst $ bytesAt__ addr 20  -- wrong
             let f_ = map (chr . fromIntegral) $ takeWhile (/=0) fname
             trace_ $ "Find next matching file " ++ show f_
             n <- fst (byteAt__ $ ad + 0x00)
@@ -1058,20 +1006,19 @@ origInterrupt = M.fromList
             case s of
               Just (f, s) -> do
                 trace_ $ "found: " ++ show f
---                setByteAt (ad + 0x15) $ "attribute of matching file" @: fromIntegral attribute_used_during_search
                 setWordAt (ad + 0x16) $ "file time" @: 0 -- TODO
                 setWordAt (ad + 0x18) $ "file date" @: 0 -- TODO
                 snd (dwordAt__ $ ad + 0x1a) $ fromIntegral (BS.length s)
                 snd (bytesAt__ (ad + 0x1e) 13) $ pad 0 13 (map (fromIntegral . ord) (strip $ takeFileName f) ++ [0])
                 setByteAt (ad + 0x00) $ n+1
                 ax .= 0 -- ?
-                carryF .=  False
+                returnOK
               Nothing -> dosFail 0x02
 
         0x62 -> do
             trace_ "Get PSP address (DOS 3.x)"
             bx .= "segment address of current process" @: 0x1fe  -- hack!!!  !!!
-            carryF .=  False
+            returnOK
 
         _    -> haltWith $ "dos function #" ++ showHex' 2 v
 
@@ -1111,15 +1058,32 @@ origInterrupt = M.fromList
     item a k m = (k, (a, m >> iret'))
     iret' = evalExpM iret
 
+    newHandle fn s = do
+        handle <- max 5 . imMax <$> use files
+        files %= IM.insert handle (fn, s, 0)
+        trace_ $ "handle " ++ showHex' 4 handle
+        ax .= "file handle" @: fromIntegral handle
+        returnOK
+
+    getFileName = do
+        addr <- addressOf Nothing $ memIndex RDX
+        fname <- fst $ bytesAt__ addr 40
+        let f = map (toUpper . chr . fromIntegral) $ takeWhile (/=0) fname
+        trace_ f
+        let fn = "../original/" ++ f
+        return (f, fn)
+
     checkExists fn cont = do
         b <- liftIO $ doesFileExist fn
         if b then cont else dosFail 0x02
+
+    returnOK = carryF .= False
 
     dosFail errcode = do
         trace_ $ showerr errcode
         ax .= errcode
         carryF .= True
-      where 
+      where
         showerr = \case
             0x01  -> "Invalid function number"
             0x02  -> "File not found"
