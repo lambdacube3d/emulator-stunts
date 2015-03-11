@@ -37,6 +37,7 @@ drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
                 Key'Escape -> (0x01, 0x81)
                 Key'Space -> (0x39, 0xb9)
                 Key'Enter -> (0xe01c, 0x9c)
+                Key'C -> (0x2e, 0xae)
                 Key'Left -> (0xe04b, 0xcb)
                 Key'Right -> (0xe04d, 0xcd)
                 Key'Up -> (0xe048, 0xc8)
@@ -53,7 +54,7 @@ drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
             Key'S -> modifyMVar_ ovar $ return . (+ (-dof))
             Key'X -> modifyMVar_ ovar $ return . (+ 2*320)
             Key'Y -> modifyMVar_ ovar $ return . (+ (-2*320))
-            Key'C -> modifyMVar_ ovar $ return . (+ 4)
+            Key'B -> modifyMVar_ ovar $ return . (+ 4)
             Key'V -> modifyMVar_ ovar $ return . (+ (-4))
             Key'Q -> GLFW.setWindowShouldClose window True
             _ -> return ()
