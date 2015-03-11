@@ -21,6 +21,9 @@ data Halt
     | Err String
   deriving Show
 
+data Request
+    = AskInterrupt Word8
+    | PrintFreqTable (MVar ())
 
 type Flags = Word16
 
@@ -31,37 +34,23 @@ type Region = (Int, Int)
 type MemPiece = ([Region], Int)
 
 data Config_ = Config_
-    { _numOfDisasmLines :: Int
-    , _disassStart      :: Int
-    , _verboseLevel     :: Int
-    , _termLength       :: Int  -- width of terminal
-    , _videoMVar        :: MVar (U.IOVector Word16)
+    { _verboseLevel     :: Int
     , _instPerSec       :: Int
-
     , _stepsCounter     :: Int
-
     , _counter          :: Maybe Int -- counter to count down
-    , _counter'         :: [Int]
     , _speaker          :: Word8     -- 0x61 port
     , _palette          :: MVar (V.Vector Word32)
     , _keyDown          :: MVar Word16
-    , _interruptRequest :: MVar (Maybe Word8)
+    , _interruptRequest :: MVar (Maybe Request)
     }
 
 $(makeLenses ''Config_)
 
 defConfig = Config_
-    { _numOfDisasmLines = 3
-    , _disassStart  = 0
-    , _verboseLevel = 2
-    , _termLength   = 149
+    { _verboseLevel = 2
     , _instPerSec   = 3 * 71000 -- 710000
-    , _videoMVar    = undefined --return $ \_ _ -> 0
-
     , _stepsCounter = 0
-
     , _counter = Nothing
-    , _counter' = []
     , _speaker = 0x30 -- ??
     , _palette = undefined
     , _keyDown = undefined
@@ -73,7 +62,8 @@ data Regs = Regs { _ax_,_dx_,_bx_,_cx_, _si_,_di_, _cs_,_ss_,_ds_,_es_, _ip_,_sp
 $(makeLenses ''Regs)
 
 type UVec = U.IOVector Word16
-type Cache = IM.IntMap (Int, Machine ())
+type Cache1 = IM.IntMap (Int, Int, Machine ())
+type Cache = (Cache1, IM.IntMap Int)
 
 data MachineState = MachineState
     { _flags_   :: Flags
@@ -91,15 +81,15 @@ data MachineState = MachineState
     , _intMask  :: Word8
     }
 
-emptyState = MachineState
+emptyState heap = MachineState
     { _flags_   = wordToFlags 0xf202
     , _regs     = Regs 0 0 0 0  0 0  0 0 0 0  0 0 0
     , _heap     = undefined
-    , _heap''    = undefined --mempty
+    , _heap''    = heap
 
     , _traceQ   = []
     , _config   = defConfig
-    , _cache    = IM.empty
+    , _cache    = (IM.empty, IM.empty)
     , _labels   = IM.empty
     , _files    = IM.empty
     , _dta      = 0

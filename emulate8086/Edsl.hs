@@ -167,25 +167,23 @@ full = S.fromList [ Heap',
         ]
 
 data ExpM a where
---    Lam :: ExpM b -> ExpM (a -> b)
---    App :: Exp a -> ExpM (a -> b) -> ExpM b
---    LetM' :: Exp a -> ExpM (a -> Machine b) -> ExpM b
-
     Seq :: ExpM b -> ExpM c -> ExpM c
-
-    IfM :: Exp Bool -> ExpM a -> ExpM a -> ExpM a
-    QuotRem :: Integral a => Exp a -> Exp a -> ExpM b -> ((Exp a, Exp a) -> ExpM b) -> ExpM b
-
-    LetM :: Exp a -> (Exp a -> ExpM b) -> ExpM b
-    Replicate :: Exp Int -> ExpM () -> ExpM ()
-
     Nop :: ExpM ()
-    Error :: Halt -> ExpM ()
-    Trace :: String -> ExpM ()
+
     Set :: Part a -> Exp a -> ExpM ()
+    LetM :: Exp a -> (Exp a -> ExpM b) -> ExpM b
+    IfM :: Exp Bool -> ExpM a -> ExpM a -> ExpM a
+
+    QuotRem :: Integral a => Exp a -> Exp a -> ExpM b -> ((Exp a, Exp a) -> ExpM b) -> ExpM b
+    Replicate :: Exp Int -> ExpM () -> ExpM ()
+    Cyc2 :: Exp Bool -> Exp Bool -> ExpM () -> ExpM ()
+
     Input :: Exp Word16 -> (Exp Word16 -> ExpM ()) -> ExpM ()
     Output :: Exp Word16 -> Exp Word16 -> ExpM ()
     CheckInterrupt :: Int -> ExpM ()
+
+    Error :: Halt -> ExpM ()
+    Trace :: String -> ExpM ()
 
 
 --    IOCall :: IO a -> ExpM a
@@ -219,7 +217,7 @@ data Exp a where
     Signed :: AsSigned a => Exp a -> Exp (Signed a)
     Extend :: Extend a => Exp a -> Exp (X2 a)
     Convert :: (Integral a, Num b) => Exp a -> Exp b
-    SegAddr :: Exp Word16 -> Exp Word16 -> Exp Int
+    SegAddr :: Part Word16 -> Exp Word16 -> Exp Int
 
 trace_ = Trace
 
@@ -305,6 +303,7 @@ mparts = \case
     IfM e a b -> eparts' e |+| mparts a |+| mparts b
     LetM e f -> mparts $ f e
     Replicate e x -> eparts' e |+| mparts x
+    Cyc2 a b x -> eparts' a |+| eparts' b |+| mparts x
     Set x y -> (keyOf x, eparts y)
     Nop -> mempty
     Error{} -> mempty
@@ -353,19 +352,10 @@ eparts = \case
     Signed e -> eparts e
     Extend e -> eparts e
     Convert e -> eparts e
-    SegAddr a b -> eparts a |.| eparts b
+    SegAddr a b -> keyOf a |.| eparts b
 
     Iterate{}   -> full
---    _   -> full
-
-data AState
-    = ASet Inf (ExpM ())
-    | AGet
-
-final st b = case st of
-    ASet _ xs -> xs <> b
-    AGet -> b
-
+{-
 reple :: forall a . Part a -> Exp a -> (forall b . Exp b -> Exp b)
 reple k e' = eparts where
 
@@ -408,9 +398,9 @@ reple k e' = eparts where
     Signed e -> Signed $ eparts e
     Extend e -> Extend $ eparts e
     Convert e -> Convert $ eparts e
-    SegAddr a b -> eparts a `SegAddr` eparts b
+    SegAddr a b ->  `SegAddr` eparts b
     e -> e
-
+-}
 
 repl' k e m@(Set k'' (Add v (Get k'))) = case same k k' of
     Eqq -> Set k'' (add v e)
@@ -421,11 +411,13 @@ repl' k e m@(Set k'' (Add v (Get k')) `Seq` m') = case same k k' of
 repl' k e m = Set k e `Seq` m
 
 
-repl, repl' :: Part a -> Exp a -> ExpM () -> ExpM ()
+repl' :: Part a -> Exp a -> ExpM () -> ExpM ()
+{-
 repl k e = \case
     p@(Set k' e') -> case same k k' of
         Eqq -> Set k $ reple k e e'
         _ -> p
+-}
 {-
     IfM :: Exp Bool -> ExpM () -> ExpM () -> ExpM ()
     QuotRem :: Integral a => Exp a -> Exp a -> ExpM () -> ((Exp a, Exp a) -> ExpM ()) -> ExpM ()
@@ -442,33 +434,36 @@ repl k e = \case
     CheckInterrupt :: Int -> ExpM ()
 -}
 
+type AState = [(Inf, ExpM ())]
+
+final st b = mconcat (map snd st) <> b
+
+findKey :: S.Set Part' -> AState -> Maybe (Inf, ExpM ())
+findKey k [] = Nothing
+findKey k (v@(_, Set k' _): _) | k == keyOf k' = Just v
+findKey k (_: xs) = findKey k xs
 
 reorderExp :: ExpM () -> ExpM ()
-reorderExp =  uncurry final . foldrExp f (AGet, Nop) . 
-    groupInterrupts 0
-
+reorderExp =  uncurry final . foldrExp f ([], Nop) .  groupInterrupts 0
   where
     f :: ExpM b -> (AState, ExpM ()) -> (AState, ExpM ())
     f a (st, b) = case a of
 
-        Set IP v -> case st of
-            AGet -> (ASet na a, b)
-            ASet i vs | i `disj` ni -> if IP' `S.notMember` i
-                then (ASet i vs, b)
-                else (ASet (na |.| i) $ repl' IP v vs, b)
-            _ -> fin
+        Set k@IP v -> case findKey (keyOf k) st of
+            Nothing -> ([(na, a)], b)
+            Just (i, vs)
+                | i `disj` ni -> ( if keyOf k `disj` i then [(i, vs)] else [(na |.| i, repl' k v vs)], b)
+                | otherwise -> fin
 
         _ -> case st of
-            ASet i vs | IP' `S.notMember` na && i `disj` ni -> (ASet i vs, a `Seq` b)
+            [(i, vs)] | IP' `S.notMember` na && i `disj` ni -> ([(i, vs)], a `Seq` b)
             _ -> fin
 
       where
         (ni, na) = mparts a
 
         fin :: (AState, ExpM ())
-        fin = (,) AGet $ a `Seq` case st of
-            ASet _ xs -> xs <> b
-            AGet -> b
+        fin = ([], a `Seq` final st b)
 
 
 disj a b = S.null $ S.intersection a b
@@ -491,12 +486,12 @@ nextAddr :: ExpM a -> Word16 -> Maybe Word16
 nextAddr e = case e of
     LetM e f -> nextAddr (f e)
     Seq a b -> nextAddr a >=> nextAddr b
-{- cycle
+
     IfM _ a b -> \w -> do
         i <- nextAddr a w
         j <- nextAddr b w
         if (i==j) then Just i else Nothing
--}
+
     Nop -> Just
     Trace _ -> Just
     CheckInterrupt _ -> Just  -- !
@@ -510,6 +505,7 @@ nextAddr e = case e of
 
 --    QuotRem :: Integral a => Exp a -> Exp a -> ExpM b -> ((Exp a, Exp a) -> ExpM b) -> ExpM b
 --    Replicate :: Exp Int -> ExpM () -> ExpM ()
+--    Cyc2
 --    Error :: Halt -> ExpM ()
 --    Input :: Exp Word16 -> (Exp Word16 -> ExpM ()) -> ExpM ()
 
@@ -562,7 +558,7 @@ reg = \case
 --    RegNone -> Immed $ C 0
 
 segAddr_ :: Part Word16 -> Exp Word16 -> Exp Int
-segAddr_ seg off = SegAddr (Get seg) off
+segAddr_ seg off = SegAddr seg off
 
 ips, sps :: Exp Int
 ips = segAddr_ Cs $ Get IP
@@ -581,7 +577,7 @@ getByteOperand segmentPrefix = \case
     x -> Get $ byteOperand segmentPrefix x
 
 byteOperand :: Maybe Segment -> Operand -> Part Word8
-byteOperand segmentPrefix x = case x of
+byteOperand segmentPrefix = \case
     Reg r -> case r of
         Reg8 r L -> case r of
             RAX -> Low AX
@@ -594,8 +590,6 @@ byteOperand segmentPrefix x = case x of
             RCX -> High CX
             RDX -> High DX
     Mem m -> Heap8 $ addressOf segmentPrefix m
---    Imm (Immediate Bits8 v) -> Immed $ C $ fromIntegral v
---    Hdis86.Const (Immediate Bits0 0) -> Immed $ C 1 -- !!!
 
 getWordOperand segmentPrefix = \case
     Imm i  -> C $ imm' i
@@ -603,11 +597,9 @@ getWordOperand segmentPrefix = \case
     x -> Get $ wordOperand segmentPrefix x
 
 wordOperand :: Maybe Segment -> Operand -> Part Word16
-wordOperand segmentPrefix x = case x of
+wordOperand segmentPrefix = \case
     Reg r  -> reg r
     Mem m  -> Heap16 $ addressOf segmentPrefix m
---    Imm i  -> Immed $ C $ imm' i
---    Jump i -> Immed $ Add (C $ imm i) (Get IP)
 
 
 imm = fromIntegral . iValue
@@ -650,11 +642,9 @@ execInstruction' mdat@Metadata{mdInst = i@Inst{..}}
         Set CX $ C 0
 
     cycle :: Exp Bool -> ExpM ()
-    cycle cond = do
-        when' (Not $ Eq (C 0) $ Get CX) $ do
-            body
-            modif CX $ Add $ C $ -1
-            when' cond $ cycle cond
+    cycle cond = Cyc2 (Not $ Eq (C 0) $ Get CX) cond $ do
+        body
+        modif CX $ Add $ C $ -1
 
     rep p = p `elem` [Rep, RepE, RepNE]
 
@@ -814,7 +804,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
         si'' = tr_ segmentPrefix $ Mem $ memIndex RSI
         di'' = tr_ (Just $ fromMaybe ES segmentPrefix) $ Mem $ memIndex RDI
 
-        adjustIndex i = modif i $ \x -> If (Get DF) (Add x $ C $ -sizeByte) (Add x $ C sizeByte)
+        adjustIndex i = modif i $ Add $ If (Get DF) (C $ -sizeByte) (C sizeByte)
 
         op1' = tr_ segmentPrefix op1
         op2' = tr_ segmentPrefix op2

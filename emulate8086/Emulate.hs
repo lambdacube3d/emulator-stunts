@@ -19,6 +19,7 @@ module Emulate where
 
 import Numeric
 import Numeric.Lens
+import Data.Function
 import Data.Word
 import Data.Int
 import Data.Bits hiding (bit)
@@ -43,7 +44,7 @@ import Control.Monad.State
 import Control.Monad.Except
 import Control.Monad.Reader
 import Control.Lens as Lens
-import Control.Concurrent.MVar
+import Control.Concurrent
 import Control.Exception (evaluate)
 import System.Directory
 import System.FilePath (takeFileName)
@@ -116,16 +117,16 @@ uWrite h i v = do
     let info = x `shiftR` 8
         n = info .&. 0x7f
     when (info /= 0) $ do
-        liftIO $ putStr "#"
+--        trace_ $ "invalid cache at " ++ showHex' 5 i
         when (n > 1) $ trace_ $ show info
         when (info == 0xff) $ error "system area written"
         ch <- use cache
-        let (ch', beg, end) = f n ch i i $ fst $ IM.split (i+1) ch
-            f :: Word16 -> Cache -> Int -> Int -> Cache -> (Cache, Int, Int)
+        let (ch', beg, end) = f n ch i i $ fst $ IM.split (i+1) $ fst ch
+            f :: Word16 -> Cache -> Int -> Int -> Cache1 -> (Cache, Int, Int)
             f 0 ch beg end _ = (ch, beg, end)
-            f n ch beg end ch' = f (n-1) (IM.delete i' ch) (min beg i') (max end $ e) (IM.delete i' ch')
+            f n ch beg end ch' = f (n-1) (_2 . at i' %~ Just . maybe 1 (+1) $ _1 . at i' .~ Nothing $ ch) (min beg i') (max end $ e) (IM.delete i' ch')
               where
-                (i', (e,_)) = IM.findMax ch'
+                (i', (_,e,_)) = IM.findMax ch'
         zipWithM_ (uWriteInfo h) [beg..end] [0,0..]
         cache .= ch'
 uWriteInfo h i v = liftIO $ do
@@ -146,7 +147,7 @@ bytesAt__ i' j' = (get, set)
 byteAt__ :: Int -> MachinePart' Word8
 byteAt__ i = (use heap'' >>= \h -> liftIO $ uRead h i, \v -> use heap'' >>= \h -> uWrite h i v)
 
-getByteAt i = use heap'' >>= \h -> liftIO $ uRead h i
+getByteAt i = view (_2 . heap'') >>= \h -> liftIO $ uRead h i
 
 setByteAt :: Int -> Word8 -> Machine ()
 setByteAt i v = use heap'' >>= \h -> uWrite h i v
@@ -155,7 +156,7 @@ wordAt__ :: Int -> MachinePart' Word16
 wordAt__ i = ( use heap'' >>= \h -> liftIO $ liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead h (i+1)) (uRead h i)
              , \v -> use heap'' >>= \h -> uWrite h i (fromIntegral v) >> uWrite h (i+1) (fromIntegral $ v `shiftR` 8))
 
-getWordAt i = use heap'' >>= \h -> liftIO $ liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead h $ i+1) (uRead h i)
+getWordAt i = view (_2 . heap'') >>= \h -> liftIO $ liftM2 (\hi lo -> hi `shiftL` 8 .|. lo) (U.unsafeRead h $ i+1) (U.unsafeRead h i)
 
 setWordAt :: Int -> Word16 -> Machine ()
 setWordAt i v = use heap'' >>= \h -> uWrite h i (fromIntegral v) >> uWrite h (i+1) (fromIntegral $ v `shiftR` 8)
@@ -181,8 +182,6 @@ getRetrace = do
 
 trace_ :: String -> Machine ()
 trace_ s = traceQ %= (s:)
-
-steps = config . numOfDisasmLines
 
 clearHist = do
     h <- use traceQ
@@ -212,32 +211,14 @@ ifff x = [x]
 addressOf a b = evalExp' $ Edsl.addressOf a b
 
 askCounter n = do
-    c <- use $ config . counter'
-    case c of
-      [] -> do
-        cc <- use $ config . counter
-        if maybe False (<=0) cc
-          then do
-            config . counter .= Nothing
-            return True
-          else do
-            config . counter %= fmap (+(-n))
-            return False
-      (c:cc) -> do
-        ns <- use $ config . stepsCounter
-        if c <= ns then do
-            config . counter' %= drop 1
-            return True
-          else do
-            return False
-
-verboseLevel' s
-    = if s ^. disassStart == 0 then 3 else if s ^. stepsCounter >= s ^. disassStart then 2 else s ^. verboseLevel
-    
-showErr e = show e: []
-
-immLens :: a -> Lens' b a
-immLens c = lens (const c) $ \_ _ -> error "can't update immediate value"
+    cc <- use $ config . counter
+    if maybe False (<=0) cc
+      then do
+        config . counter .= Nothing
+        return True
+      else do
+        config . counter %= fmap (+(-n))
+        return False
 
 showCode = catchError (forever mkStep) $ \case
     Interr -> showCode
@@ -250,12 +231,16 @@ mkStep = do
     ip_ <- use ip
     cs_ <- use cs
     let ips = segAddr cs_ ip_
-    info <- readInfo ips
-    case info of
-      OneByte -> do
-        Just (_, m) <- use $ cache . at ips
+    cv <- use $ cache . _1 . at ips
+    case cv of
+     Just (n, len, m) -> do
+        let n' = n + 1
+ --       cache . _1 . at ips .= (n' `seq` Just (n', len, m))
         m
         showHist
+     Nothing -> do
+     info <- readInfo ips
+     case info of
       Builtin -> do
         case M.lookup (cs_, ip_) origInterrupt of
           Just (i, m) -> do
@@ -276,7 +261,7 @@ mkStep = do
         h <- use heap''
         zipWithM_ (uModInfo h) [ips..] $ map mergeInfo $ 0x81: replicate (end-ips) 1
         let ch_ = evalExpM ch
-        cache %= IM.insert ips (end, ch_)
+        cache . _1 %= IM.insert ips (0, end, ch_)
         ch_
         showHist
 
@@ -379,7 +364,7 @@ data EExp :: List * -> * -> * where
     Signed' :: AsSigned a => EExp e a -> EExp e (Signed a)
     Extend' :: Extend a => EExp e a -> EExp e (X2 a)
     Convert' :: (Integral a, Num b) => EExp e a -> EExp e b
-    SegAddr' :: EExp e Word16 -> EExp e Word16 -> EExp e Int
+    SegAddr' :: Part_ (EExp e) Word16 -> EExp e Word16 -> EExp e Int
 
 data EExpM :: List * -> * -> * where
     LetM' :: EExp e a -> EExpM (Con a e) b -> EExpM e b
@@ -389,6 +374,7 @@ data EExpM :: List * -> * -> * where
     Seq' :: EExpM e b -> EExpM e c -> EExpM e c
     IfM' :: EExp e Bool -> EExpM e a -> EExpM e a -> EExpM e a
     Replicate' :: EExp e Int -> EExpM e () -> EExpM e ()
+    Cyc2' :: EExp e Bool -> EExp e Bool -> EExpM e () -> EExpM e ()
 
     Nop' :: EExpM e ()
     Error' :: Halt -> EExpM e ()
@@ -399,12 +385,7 @@ data EExpM :: List * -> * -> * where
 
 data Env :: List * -> * where
   Empty :: Env Nil
-  Push  :: Env env -> t -> Env (Con t env)
-
-getPushEnv :: Env (Con a e) -> Env e
-getPushEnv (Push v _) = v
-getPushVal :: Env (Con a e) -> a
-getPushVal (Push _ e) = e
+  Push  :: { getPushEnv :: Env env, getPushVal :: t } -> Env (Con t env)
 
 prj :: Var env t -> Env env -> t
 prj VarZ = getPushVal
@@ -467,7 +448,7 @@ convExp_ lyt = g where
         Xor a b -> Xor' (g a) (g b)
         SetBit i a b -> SetBit' i (g a) (g b)
         SetHighBit a b -> SetHighBit' (g a) (g b)
-        SegAddr a b -> SegAddr' (g a) (g b)
+        SegAddr a b -> SegAddr' (convPart lyt a) (g b)
         Not a -> Not' (g a)
         ShiftL a -> ShiftL' (g a)
         ShiftR a -> ShiftR' (g a)
@@ -499,6 +480,7 @@ convExpM = f EmptyLayout where
         Seq a b -> Seq' (k a) (k b)
         IfM a b c -> IfM' (q a) (k b) (k c)
         Replicate n a -> Replicate' (q n) (k a)
+        Cyc2 e f a -> Cyc2' (q e) (q f) (k a)
         Nop -> Nop'
         Error e -> Error' e
         Trace s -> Trace' s
@@ -521,16 +503,26 @@ evalExp' :: Exp a -> Machine a
 evalExp' e = flip runReaderT Empty $ evalExp (convExp e)
 
 evalExp :: EExp e a -> Machine' e a
-evalExp = \case
-    Var' ix -> reader $ prj ix
-    Let' e f -> evalExp e >>= pushVal (evalExp f)
-    Iterate' n f a -> evalExp n >>= \i -> evalExp a >>= iterateM i (pushVal (evalExp f))
+evalExp x = ReaderT $ \e -> get >>= \st -> liftIO $ runReaderT (evalExp_ x) (e, st)
+
+type Machine'' e = ReaderT (Env e, MachineState) IO
+
+pushVal' :: Machine'' (Con b e) a -> b -> Machine'' e a
+pushVal' m v = ReaderT $ \(e, x) -> runReaderT m (e `Push` v, x)
+
+evalExp_ :: EExp e a -> Machine'' e a
+evalExp_ = evalExp where
+  evalExp :: EExp e a -> Machine'' e a
+  evalExp = \case
+    Var' ix -> reader $ prj ix . fst
+    Let' e f -> evalExp e >>= pushVal' (evalExp f)
+    Iterate' n f a -> evalExp n >>= \i -> evalExp a >>= iterateM i (pushVal' (evalExp f))
 
     C' a -> return a
     Get' p -> case p of
         Heap16 e -> evalExp e >>= getWordAt
         Heap8 e -> evalExp e >>= getByteAt
-        p -> use $ evalPart_ p
+        p -> view $ _2 . evalPart_ p
 
     If' b x y -> evalExp b >>= iff (evalExp x) (evalExp y)
     Eq' x y -> liftM2 (==) (evalExp x) (evalExp y)
@@ -555,7 +547,7 @@ evalExp = \case
 
     Signed' e -> asSigned <$> evalExp e    
     Extend' e -> extend <$> evalExp e    
-    SegAddr' e f -> liftM2 segAddr (evalExp e) (evalExp f)
+    SegAddr' e f -> liftM2 segAddr (view $ _2 . evalPart_ e) (evalExp f)
     Convert' e -> fromIntegral <$> evalExp e    
 
     Tuple' a b -> liftM2 (,) (evalExp a) (evalExp b)
@@ -587,12 +579,20 @@ evalEExpM = evalExpM where
 
 
     Replicate' n e -> join $ liftM2 replicateM_ (evalExp n) (return $ evalExpM e)
+    Cyc2' a b e -> cyc2 (evalExp a) (evalExp b) (evalExpM e)
 
     Output' a b -> join $ lift <$> liftM2 output' (evalExp a) (evalExp b)
 
     Trace' a -> lift $ trace_ a
     Error' h -> throwError h
     CheckInterrupt' n -> lift $ checkInt n
+
+cyc2 a b m = do
+    x <- a
+    when x $ do
+        m
+        y <- b
+        when y $ cyc2 a b m
 
 pushVal :: Machine' (Con b e) a -> b -> Machine' e a
 pushVal m v = ReaderT $ runReaderT m . (`Push` v)
@@ -610,26 +610,29 @@ checkInt n = do
     ivar <- use $ config . interruptRequest
     int <- liftIO $ readMVar ivar
     case int of
-      Just int -> do
+      Just r -> case r of
+       AskInterrupt int -> do
         mask <- use intMask
         when (not (testBit mask 0)) $ do
           liftIO $ modifyMVar_ ivar $ const $ return Nothing
           interrupt_ int
+       PrintFreqTable wait -> do
+        (c1, c2) <- use cache
+        let f (k, (x, y)) = showHex' 5 k ++ "   " ++ pad ' ' 20 (maybe "" (\(a,b,_)->pad ' ' 10 (show a) ++ pad ' ' 10 (show $ b - k + 1)) x) ++ pad ' ' 10 (maybe "" show y)
+        let t = unlines $ map f $ sortBy (compare `on` (fmap (\(a,_,_)->a) . fst . snd)) $
+                  IM.toList $ IM.unionWith (\(a,b) (c,d) -> (maybe a Just c, maybe b Just d))
+                    (IM.map (\x -> (Just x, Nothing)) c1) (IM.map (\x -> (Nothing, Just x)) c2)
+        liftIO $ do
+--            writeFile "freqTable.txt" t
+--            putStrLn t
+--            threadDelay 1000000
+            putMVar wait ()
       Nothing -> do
-        ips <- use $ config . instPerSec
-        let ips' = ips `div` 5
-        when (ns' `div` ips' > ns `div` ips') $ do
-          v <- use heap''
-          var <- use $ config . videoMVar
-          liftIO $ do
-            let gs = 0xa0000
-            putMVar var v 
-          trace_ $ show ns
         mask <- use intMask
         when (not (testBit mask 0)) $ do
             cc <- askCounter n
             when cc $ do
-                trace_ "timer"
+                trace_ "int08"
                 interrupt_ 0x08
 
 
@@ -1160,8 +1163,6 @@ replicate' n x = replicate n x
 loadExe :: Word16 -> BS.ByteString -> Machine ()
 loadExe loadSegment gameExe = do
     heap .= ( [(length rom', length rom2')], 0xa0000 - 16)
-    h <- liftIO $ U.new 0x100000
-    heap'' .= h
     zipWithM_ (snd . byteAt__) [0..] $ concat
             [ rom2'
             , memUndefined'' $ 0x100000 - length rom2'
@@ -1178,6 +1179,9 @@ loadExe loadSegment gameExe = do
     si .=  0x0012 -- why?
     di .=  0x1f40 -- why?
     labels .= mempty
+
+    liftIO $ print $ showHex' 5 $ loadSegment ^. paragraph
+    liftIO $ print $ showHex' 5 headerSize
 
     forM_ [(fromIntegral a, b) | (b, (a, _)) <- M.toList origInterrupt] $ \(i, (hi, lo)) -> do
         setWordAt (4*i) $ "interrupt lo" @: lo

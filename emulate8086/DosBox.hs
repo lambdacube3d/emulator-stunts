@@ -17,14 +17,16 @@ import Graphics.Rendering.OpenGL.Raw.Core32
 import Graphics.Rendering.OpenGL.Raw.Compatibility30
 import "GLFW-b" Graphics.UI.GLFW as GLFW
 
+import MachineState
+
 dof = 320 * 200
 
-drawWithFrameBuffer :: MVar (Maybe Word8) -> MVar Word16 -> MVar (Vec.Vector Word32) -> IO (U.IOVector Word16) -> IO () -> IO ()
+drawWithFrameBuffer :: MVar (Maybe Request) -> MVar Word16 -> MVar (Vec.Vector Word32) -> U.IOVector Word16 -> IO () -> IO ()
 drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
     GLFW.init
-    vec2 <- U.new (640*400) :: IO (U.IOVector Word32)
+    vec2 <- U.new (320*200) :: IO (U.IOVector Word32)
     ovar <- newMVar 0
-    Just window <- GLFW.createWindow 640 400 "Haskell 8086 emulator" Nothing Nothing
+    Just window <- GLFW.createWindow 320 200 "Haskell Stunts" Nothing Nothing
     GLFW.makeContextCurrent $ Just window
     GLFW.setKeyCallback window $ Just $ \window key scancode action mods -> do
         modifyMVar_ keyboard $ const $ return $ (case action of
@@ -44,49 +46,48 @@ drawWithFrameBuffer interrupt keyboard palette framebuffer draw = do
             KeyState'Repeating -> return ()
             _ -> do
                 c <- readMVar keyboard
-                -- putStrLn $ "scancode: " Prelude.++ show c
-                modifyMVar_ interrupt $ const $ return $ Just 0x09
-        when (key == GLFW.Key'R && action == GLFW.KeyState'Pressed) $
-            modifyMVar_ ovar $ return . (const 0)
-        when (key == GLFW.Key'A && action == GLFW.KeyState'Pressed) $
-            modifyMVar_ ovar $ return . (+ dof)
-        when (key == GLFW.Key'S && action == GLFW.KeyState'Pressed) $
-            modifyMVar_ ovar $ return . (+ (-dof))
-        when (key == GLFW.Key'X && action == GLFW.KeyState'Pressed) $
-            modifyMVar_ ovar $ return . (+ 2*320)
-        when (key == GLFW.Key'Y && action == GLFW.KeyState'Pressed) $
-            modifyMVar_ ovar $ return . (+ (-2*320))
-        when (key == GLFW.Key'C && action == GLFW.KeyState'Pressed) $
-            modifyMVar_ ovar $ return . (+ 8)
-        when (key == GLFW.Key'V && action == GLFW.KeyState'Pressed) $
-            modifyMVar_ ovar $ return . (+ (-8))
-        when (key == GLFW.Key'Q && action == GLFW.KeyState'Pressed) $
-            GLFW.setWindowShouldClose window True
+                modifyMVar_ interrupt $ const $ return $ Just $ AskInterrupt 0x09
+        when (action /= GLFW.KeyState'Released) $ case key of
+            Key'R -> modifyMVar_ ovar $ return . (const 0)
+            Key'A -> modifyMVar_ ovar $ return . (+ dof)
+            Key'S -> modifyMVar_ ovar $ return . (+ (-dof))
+            Key'X -> modifyMVar_ ovar $ return . (+ 2*320)
+            Key'Y -> modifyMVar_ ovar $ return . (+ (-2*320))
+            Key'C -> modifyMVar_ ovar $ return . (+ 4)
+            Key'V -> modifyMVar_ ovar $ return . (+ (-4))
+            Key'Q -> GLFW.setWindowShouldClose window True
+            _ -> return ()
+
+    tv <- newEmptyMVar
+    forkIO $ forever $ do
+        threadDelay $ 1000000 `div` 20
+        putMVar tv ()
     let
         mainLoop = do
             b <- GLFW.windowShouldClose window
             unless b $ do
                 draw
-                fb <- framebuffer
+                _ <- takeMVar tv
+                let fb = framebuffer
                 p <- readMVar palette
                 offs <- readMVar ovar
                 let gs = 0xa0000 + offs
                 forM_ [0..199] $ \y -> do
                   let y_ = gs + 320 * (199 - y)
-                      y' = 1280 * y
+                      y' = 320 * y
                   forM_ [0..319] $ \x -> do
                     a <- U.unsafeRead fb $ (y_ + x) .&. 0xfffff
                     let v = p Vec.! fromIntegral (a .&. 0xff)
-                        z = y' + 2 * x
+                        z = y' + x
                     U.unsafeWrite vec2 (z) v
-                    U.unsafeWrite vec2 (z + 1) v
-                    U.unsafeWrite vec2 (z + 640) v
-                    U.unsafeWrite vec2 (z + 641) v
-                U.unsafeWith vec2 $ glDrawPixels 640 400 gl_RGBA gl_UNSIGNED_INT_8_8_8_8
+                U.unsafeWith vec2 $ glDrawPixels 320 200 gl_RGBA gl_UNSIGNED_INT_8_8_8_8
                 GLFW.swapBuffers window
                 GLFW.pollEvents
                 mainLoop
     mainLoop
+    wait <- newEmptyMVar
+    modifyMVar_ interrupt $ const $ return $ Just $ PrintFreqTable wait
+    _ <- takeMVar wait
     GLFW.destroyWindow window
     GLFW.terminate
 

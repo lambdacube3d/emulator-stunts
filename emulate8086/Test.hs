@@ -9,6 +9,7 @@ import qualified Data.ByteString as BS
 import qualified Data.Sequence as S
 import qualified Data.IntMap as IM
 import qualified Data.Vector as V
+import qualified Data.Vector.Storable.Mutable as U
 import Control.Applicative
 --import Control.Arrow
 import Control.Monad.State
@@ -118,22 +119,19 @@ comTest = unsafePerformIO $ loadCom <$> BS.readFile "bushes.com"
 -}
 --main = testTest'
 main = do
-    vid <- newEmptyMVar
+    heap <- liftIO $ U.new 0x100000
     hSetBuffering stdout NoBuffering
-    args <- getArgs
+--    args <- getArgs
     pmvar <- newMVar defaultPalette
     kvar <- newMVar 0
     ivar <- newMVar Nothing
 
 --    l <- getLabels
-    is <- {- take 100 . -} read <$> readFile "interrupts.txt"
-    let x = config . videoMVar .~ vid 
-                $ config . disassStart .~ f args $ config . verboseLevel .~ 1 
-                $ config . termLength .~ 10000 $ steps .~ 20000000
+    let x =       config . verboseLevel .~ 1 
                 $ config . palette .~ pmvar
                 $ config . keyDown .~ kvar
                 $ config . interruptRequest .~ ivar
-                $ (config . counter' .~ (is {- ++ tail (iterate (+5000) (last is))-})) $ emptyState
+                $ emptyState heap
 
     game <- BS.readFile "../restunts/stunts/game.exe"
 
@@ -141,7 +139,7 @@ main = do
     forkIO $ void $ flip evalStateT x $ runExceptT $ do
         loadExe loadSegment game
         showCode
-    drawWithFrameBuffer ivar kvar pmvar (takeMVar vid) $ return ()
+    drawWithFrameBuffer ivar kvar pmvar heap $ return ()
 
   where
     f [i] = read i
