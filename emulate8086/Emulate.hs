@@ -116,18 +116,17 @@ uWrite h i v = do
     x <- liftIO $ U.unsafeRead h i
     liftIO $ U.unsafeWrite h i $ fromIntegral v
     let info = x `shiftR` 8
-        n = info .&. 0x7f
+        n = info
     when (info /= 0) $ do
 --        trace_ $ "invalid cache at " ++ showHex' 5 i
-        when (n > 1) $ trace_ $ show info
-        when (info == 0xff) $ error "system area written"
+        when (n > 1) $ trace_ $ "#" ++ show info
         ch <- use cache
-        let (ch', beg, end) = f n ch i i $ fst $ IM.split (i+1) $ fst ch
-            f :: Word16 -> Cache -> Int -> Int -> Cache1 -> (Cache, Int, Int)
+        let (ch', beg, end) = f n ch i i $ fst $ IM.split (i+1) ch
+            f :: Word16 -> Cache -> Int -> Int -> Cache -> (Cache, Int, Int)
             f 0 ch beg end _ = (ch, beg, end)
-            f n ch beg end ch' = f (n-1) (_2 . at i' %~ Just . maybe 1 (+1) $ _1 . at i' .~ Nothing $ ch) (min beg i') (max end $ e) (IM.delete i' ch')
+            f n ch beg end ch' = f (n-1) (at i' .~ Just (DontCache 0) $ ch) (min beg i') (max end $ e) (IM.delete i' ch')
               where
-                (i', (_,e,_)) = IM.findMax ch'
+                (i', Compiled _ e _) = IM.findMax ch'
         zipWithM_ (uWriteInfo h) [beg..end] [0,0..]
         cache .= ch'
 uWriteInfo h i v = liftIO $ do
@@ -231,71 +230,46 @@ mkStep :: Machine ()
 mkStep = do
     ip_ <- use ip
     cs_ <- use cs
+    let mkInst ip' inst = do
+            let ips = segAddr cs_ ip'
+            Just (md, _) <- disassembleOne disasmConfig . BS.pack <$> fst (bytesAt__ ips maxInstLength)
+            let ch = Set IP (Add (C $ fromIntegral $ mdLength md) (Get IP))
+                  <> execInstruction' md
+                  <> CheckInterrupt 1
+                ch' = inst <> ch
+            case nextAddr ch ip' of
+                Just ip_' | ip_' > ip' -> mkInst ip_' ch'
+                _ -> return (ips + fromIntegral (mdLength md) - 1, ch')
+
     let ips = segAddr cs_ ip_
-    cv <- use $ cache . _1 . at ips
+    cv <- use $ cache . at ips
     case cv of
-     Just (n, len, m) -> do
+     Just v -> case v of
+      Compiled n len m -> do
         let n' = n + 1
  --       cache . _1 . at ips .= (n' `seq` Just (n', len, m))
         m
         showHist
+      BuiltIn m -> do
+        m
+        showHist
+      DontCache _ -> do
+        (end, reorderExp -> ch) <- mkInst ip_ mempty
+        evalExpM ch
+        showHist
+
      Nothing -> do
-     info <- readInfo ips
-     case info of
-      Builtin -> do
-        case M.lookup (cs_, ip_) origInterrupt of
-          Just (i, m) -> do
-            m
-            showHist
-      _ -> do
-        let mkInst ip' inst = do
-                let ips = segAddr cs_ ip'
-                Just (md, _) <- disassembleOne disasmConfig . BS.pack <$> fst (bytesAt__ ips maxInstLength)
-                let ch = Set IP (Add (C $ fromIntegral $ mdLength md) (Get IP))
-                      <> execInstruction' md
-                      <> CheckInterrupt 1
-                    ch' = inst <> ch
-                case nextAddr ch ip' of
-                    Just ip_' | ip_' > ip' -> mkInst ip_' ch'
-                    _ -> return (ips + fromIntegral (mdLength md) - 1, ch')
         (end, reorderExp -> ch) <- mkInst ip_ mempty
         h <- use heap''
-        zipWithM_ (uModInfo h) [ips..] $ map mergeInfo $ 0x81: replicate (end-ips) 1
+        zipWithM_ (uModInfo h) [ips..] $ map (+) $ replicate (end-ips+1) 1
         let ch_ = evalExpM ch
-        cache . _1 %= IM.insert ips (0, end, ch_)
+        cache %= IM.insert ips (Compiled 0 end ch_)
         ch_
         showHist
 
 showHist = do
     hist <- clearHist
     when (not $ null hist) $ liftIO $ putStr $ " | " ++ hist
-
-data Info
-    = Builtin
-    | OneByte
-    | NoInfo
-
-mergeInfo :: Word8 -> Word8 -> Word8
-mergeInfo a b = (a + b) .|. (a .&. 0x80) .|. (b .&. 0x80)
-
-readInfo :: Int -> Machine Info
-readInfo i = do
-    h <- use heap''
-    info <- liftIO $ U.unsafeRead h i
-    case info of
-      0xff00 -> return Builtin
-      _ | testBit info 15 -> return OneByte
-      _ -> return NoInfo
-
-bytesToInt :: [Word8] -> Int
-bytesToInt = foldl (\s b -> fromIntegral b .|. (s `shiftL` 8)) 0
-intToBytes :: Int -> Int -> [Word8]
-intToBytes 0 0 = []
-intToBytes n i = (fromIntegral $ i .&. 0xff): intToBytes (n-1) (i `shiftR` 8)
-
-
-getDef ( a: as) = a: getDef as
-getDef _ = []
 
 maxInstLength = 7
 
@@ -624,7 +598,7 @@ checkInt n = do
           liftIO $ putMVar ivar rs
           config . keyDown .= scancode
           interrupt_ 0x09
-
+{-
        PrintFreqTable wait -> do
         (c1, c2) <- use cache
         let f (k, (x, y)) = showHex' 5 k ++ "   " ++ pad ' ' 20 (maybe "" (\(a,b,_)->pad ' ' 10 (show a) ++ pad ' ' 10 (show $ b - k + 1)) x) ++ pad ' ' 10 (maybe "" show y)
@@ -636,6 +610,7 @@ checkInt n = do
 --            putStrLn t
 --            threadDelay 1000000
             putMVar wait ()
+-}
       [] -> do
         liftIO $ putMVar ivar []
   where
@@ -699,7 +674,7 @@ output' v x = do
             config . speaker .= fromIntegral x
             when (x .&. 0xfc /= 0x30) $ trace_ $ "speaker <- " ++ showHex' 2 x
             liftIO $ do
-                when (testBit x 0 /= testBit x' 0) $ sourceGain source $= if testBit x 0 then 1 else 0
+                when (testBit x 0 /= testBit x' 0) $ sourceGain source $= if testBit x 0 then 0.1 else 0
                 when (testBit x 1 /= testBit x' 1) $ (if testBit x 1 then play else stop) [source]
         0xf100 -> do
             trace_ "implemented for jmpmov test"
@@ -714,7 +689,7 @@ interrupt_ :: Word8 -> Machine ()
 interrupt_ n = do
     i <- use interruptF
     when i $ do
-        when (n /= 0x08) $ trace_ $ "int" ++ showHex' 2 n
+        trace_ $ "int" ++ showHex' 2 n
 --        when (n == 0x08) $ config . counter .= Nothing
         interrupt'' n >> throwError Interr
 --         else trace_ $ "interrupt cancelled " ++ showHex' 2 n
@@ -1222,11 +1197,10 @@ loadExe loadSegment gameExe = do
     liftIO $ print $ showHex' 5 $ loadSegment ^. paragraph
     liftIO $ print $ showHex' 5 headerSize
 
-    forM_ [(fromIntegral a, b) | (b, (a, _)) <- M.toList origInterrupt] $ \(i, (hi, lo)) -> do
+    forM_ [(fromIntegral a, b, m) | (b, (a, m)) <- M.toList origInterrupt] $ \(i, (hi, lo), m) -> do
         setWordAt (4*i) $ "interrupt lo" @: lo
         setWordAt (4*i + 2) $ "interrupt hi" @: hi
-        h <- use heap''
-        uWriteInfo h (segAddr hi lo) 0xff
+        cache %= IM.insert (segAddr hi lo) (BuiltIn m)
 
 
     setWordAt (0x410) $ "equipment word" @: 0xd426 --- 0x4463   --- ???

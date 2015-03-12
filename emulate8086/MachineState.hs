@@ -69,8 +69,12 @@ data Regs = Regs { _ax_,_dx_,_bx_,_cx_, _si_,_di_, _cs_,_ss_,_ds_,_es_, _ip_,_sp
 $(makeLenses ''Regs)
 
 type UVec = U.IOVector Word16
-type Cache1 = IM.IntMap (Int, Int, Machine ())
-type Cache = (Cache1, IM.IntMap Int)
+type Cache = IM.IntMap CacheEntry
+
+data CacheEntry
+    = Compiled !Int !Int !(Machine ())
+    | BuiltIn !(Machine ())
+    | DontCache !Int
 
 data MachineState = MachineState
     { _flags_   :: Flags
@@ -96,7 +100,7 @@ emptyState heap = MachineState
 
     , _traceQ   = []
     , _config   = defConfig
-    , _cache    = (IM.empty, IM.empty)
+    , _cache    = IM.empty
     , _labels   = IM.empty
     , _files    = IM.empty
     , _dta      = 0
