@@ -15,6 +15,7 @@
 {-# LANGUAGE PackageImports #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE BangPatterns #-}
 module Emulate where
 
 import Numeric
@@ -175,7 +176,7 @@ flags = flags_ . iso id wordToFlags
 
 getSender = do
     v <- use $ config . interruptRequest
-    return $ \r -> modifyMVar_ v $ return . (r:)
+    return $ \r -> modifyMVar_ v $ return . (++ [r])
 
 setCounter = do
     config . counter %= (+1)
@@ -579,27 +580,28 @@ evalExpM e = flip runReaderT Empty $ evalEExpM (convExpM e)
 
 checkInt n = do
   ns <- use $ config . stepsCounter
-  let ns' = ns + n
+  let !ns' = ns + n
   config . stepsCounter .= ns'
   let ma = complement 0x3ff
   when (ns' .&. ma /= ns .&. ma) $ do
-    ivar <- use $ config . interruptRequest
-    int <- liftIO $ takeMVar ivar
-    case int of
-      (r:rs) -> case r of
-       AskTimerInterrupt id -> checkMask (liftIO $ putMVar ivar (r:rs)) $ do
-          i <- use interruptF
-          if i then do
-              liftIO $ putMVar ivar rs
+    i <- use interruptF
+    when i $ do
+        mask <- use intMask
+        let ok = \case
+                AskTimerInterrupt{} -> not $ testBit mask 0
+                AskKeyInterrupt{}   -> not $ testBit mask 1
+        ivar <- use $ config . interruptRequest
+        ints <- liftIO $ takeMVar ivar
+        let (now, later) = partition ok ints
+        liftIO $ putMVar ivar later
+        forM_ now $ \case
+           AskTimerInterrupt id -> do
               cc <- use $ config . counter
               when (id == cc) $ interrupt'' 0x08
-          else do
-              liftIO $ putMVar ivar (r:rs)
+           AskKeyInterrupt scancode -> do
+              config . keyDown .= scancode
+              interrupt'' 0x09
 
-       AskKeyInterrupt scancode -> checkMask (liftIO $ putMVar ivar (r:rs)) $ do
-          liftIO $ putMVar ivar rs
-          config . keyDown .= scancode
-          interrupt_ 0x09
 {-
        PrintFreqTable wait -> do
         (c1, c2) <- use cache
@@ -613,12 +615,6 @@ checkInt n = do
 --            threadDelay 1000000
             putMVar wait ()
 -}
-      [] -> do
-        liftIO $ putMVar ivar []
-  where
-    checkMask fail ok = do
-      mask <- use intMask
-      if testBit mask 0 then fail else ok
 
 
 
@@ -686,15 +682,6 @@ output' v x = do
 
 imMax m | IM.null m = 0
         | otherwise = succ . fst . IM.findMax $ m
-
-interrupt_ :: Word8 -> Machine ()
-interrupt_ n = do
-    i <- use interruptF
-    when i $ do
-        trace_ $ "int" ++ showHex' 2 n
---        when (n == 0x08) $ config . counter .= Nothing
-        interrupt'' n
---         else trace_ $ "interrupt cancelled " ++ showHex' 2 n
 
 origInterrupt :: M.Map (Word16, Word16) (Word8, Machine ())
 origInterrupt = M.fromList

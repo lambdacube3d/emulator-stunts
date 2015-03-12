@@ -31,15 +31,15 @@ type MemPiece = (Regions, Int)
 data Config_ = Config_
     { _verboseLevel     :: Int
     , _instPerSec       :: MVar Float  -- Hz
-
     , _stepsCounter     :: Int
     , _counter          :: Int -- timer interrupt counter
-    , _speaker          :: Word8     -- 0x61 port
     , _palette          :: MVar (V.Vector Word32)
-    , _keyDown          :: Word16
-    , _interruptRequest :: MVar [Request]
+
     , _soundSource      :: Source
-    , _frequency        :: Word16
+    , _frequency        :: Word16   -- speaker frequency
+    , _interruptRequest :: MVar [Request]
+    , _keyDown          :: Word16
+    , _speaker          :: Word8     -- 0x61 port
     }
 
 $(makeLenses ''Config_)
@@ -75,13 +75,15 @@ data MachineState = MachineState
     , _heap     :: MemPiece     -- heap layout
     , _heap''   :: UVec
 
+    , _retrace  :: [Word16]
+    , _intMask  :: Word8
+
     , _config   :: Config_
     , _cache    :: Cache
     , _labels   :: IM.IntMap BS.ByteString
     , _files    :: IM.IntMap (FilePath, Int)  -- filepath, position
     , _dta      :: Int
-    , _retrace  :: [Word16]
-    , _intMask  :: Word8
+
     }
 
 emptyState heap = MachineState

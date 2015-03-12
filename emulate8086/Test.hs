@@ -149,14 +149,13 @@ main = withProgNameAndArgs runALUT $ \_ _ -> do
 
     forkIO $ void $ flip evalStateT x $ do
         loadExe loadSegment game
-        showCode
-    drawWithFrameBuffer (\r -> modifyMVar_ tvar $ return . r) (\r -> modifyMVar_ ivar $ return . (r:)) pmvar heap $ return ()
+        forever $ do
+            mkStep >>= checkInt
+    drawWithFrameBuffer (\r -> modifyMVar_ tvar $ return . r) (\r -> modifyMVar_ ivar $ return . (++[r])) pmvar heap $ return ()
 
   where
     f [i] = read i
     f _ = 0
-
-showCode = forever $ mkStep >>= checkInt
 
 createBuff :: BufferData a -> Frequency -> IO Buffer
 createBuff (BufferData m fmt f) x = do
