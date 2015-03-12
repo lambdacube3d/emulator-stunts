@@ -216,14 +216,24 @@ addressOf a b = evalExp' $ Edsl.addressOf a b
 
 cacheFile = "dontcache.txt"
 
+adjustCache = do
+    ch <- use cache
+    let p (DontCache _) = True
+        p _ = False
+    liftIO $ do
+        cf <- read <$> readFile cacheFile
+        writeFile cacheFile $ show $ merge cf $ map fst $ filter (p . snd) $ IM.toList ch
+
+merge (x:xs) (y:ys) = case compare x y of
+    EQ  -> x: merge xs ys
+    GT  -> y: merge (x:xs) ys
+    LT  -> x: merge xs (y:ys)
+merge xs ys = xs ++ ys
+
 showCode = catchError (forever mkStep) $ \case
     Interr -> showCode
-    CleanHalt -> do
-        ch <- use cache
-        let p (DontCache _) = True
-            p _ = False
-        liftIO $ writeFile cacheFile $ show $ map fst $ filter (p . snd) $ IM.toList ch
     e -> do
+        adjustCache
         liftIO $ print e
         throwError e
 
