@@ -37,7 +37,7 @@ type MemPiece = ([Region], Int)
 
 data Config_ = Config_
     { _verboseLevel     :: Int
-    , _instPerSec       :: Int
+    , _instPerSec       :: MVar Float  -- Hz
 
     , _stepsCounter     :: Int
     , _counter          :: Int -- timer interrupt counter
@@ -53,7 +53,7 @@ $(makeLenses ''Config_)
 
 defConfig = Config_
     { _verboseLevel = 2
-    , _instPerSec   = 1000000 `div` 10 -- 3 * 71000 -- 710000
+    , _instPerSec   = undefined
     , _stepsCounter = 0
     , _counter      = 0
     , _speaker      = 0x30 -- ??

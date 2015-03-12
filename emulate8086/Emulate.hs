@@ -180,7 +180,8 @@ setCounter = do
     v <- use $ config . instPerSec
     send <- getSender
     liftIO $ void $ forkIO $ do
-        threadDelay v
+        vv <- readMVar v
+        threadDelay $ round $ 1000000 / vv
         send $ AskTimerInterrupt c
 
 -- TODO

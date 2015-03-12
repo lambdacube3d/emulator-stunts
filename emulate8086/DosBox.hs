@@ -22,8 +22,8 @@ import MachineState
 
 dof = 320 * 200
 
-drawWithFrameBuffer :: (Request -> IO ()) -> MVar (Vec.Vector Word32) -> U.IOVector Word16 -> IO () -> IO ()
-drawWithFrameBuffer interrupt palette framebuffer draw = do
+drawWithFrameBuffer :: (Float -> IO ()) -> (Request -> IO ()) -> MVar (Vec.Vector Word32) -> U.IOVector Word16 -> IO () -> IO ()
+drawWithFrameBuffer sett interrupt palette framebuffer draw = do
     GLFW.init
     vec2 <- U.new (320*200) :: IO (U.IOVector Word32)
     ovar <- newMVar 0
@@ -56,6 +56,8 @@ drawWithFrameBuffer interrupt palette framebuffer draw = do
             Key'Y -> modifyMVar_ ovar $ return . (+ (-2*320))
             Key'B -> modifyMVar_ ovar $ return . (+ 4)
             Key'V -> modifyMVar_ ovar $ return . (+ (-4))
+            Key'N -> sett (1/1.1)
+            Key'M -> sett (1.1)
             Key'Q -> GLFW.setWindowShouldClose window True
             _ -> return ()
 
