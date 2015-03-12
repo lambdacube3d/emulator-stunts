@@ -14,14 +14,6 @@ import Control.Monad.Except
 import Control.Lens as Lens
 import Sound.ALUT
 
---import Edsl
-
-data Halt
-    = CleanHalt
-    | Interr
-    | Err String
-  deriving Show
-
 data Request
     = AskKeyInterrupt Word16
     | AskTimerInterrupt Int
@@ -107,7 +99,7 @@ emptyState heap = MachineState
     , _intMask  = 0xf8
     }
 
-type Machine = ExceptT Halt (StateT MachineState IO)
+type Machine = StateT MachineState IO
 type MachinePart a = Lens' MachineState a
 
 $(makeLenses ''MachineState)

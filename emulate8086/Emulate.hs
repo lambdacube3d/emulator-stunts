@@ -92,8 +92,8 @@ modifyAllocated addr req (alloc, endf) = head $ concatMap f $ getOut $ zip alloc
 b @: x = x
 infix 5 @:
 
-haltWith = throwError . Err
-halt = throwError CleanHalt
+haltWith = error
+halt = error "CleanHalt"
 
 ax = regs . ax_
 bx = regs . bx_
@@ -234,12 +234,6 @@ merge (x:xs) (y:ys) = case compare x y of
     GT  -> y: merge (x:xs) ys
     LT  -> x: merge xs (y:ys)
 merge xs ys = xs ++ ys
-
-showCode = catchError (forever $ mkStep >>= checkInt) $ \case
-    Interr -> showCode
-    e -> do
-        liftIO $ print e
-        throwError e
 
 regionsToList :: Regions -> [Int]
 regionsToList = concatMap $ \(a, b) -> [a..b-1]
@@ -598,7 +592,7 @@ checkInt n = do
           if i then do
               liftIO $ putMVar ivar rs
               cc <- use $ config . counter
-              when (id == cc) $ interrupt'' 0x08 >> throwError Interr
+              when (id == cc) $ interrupt'' 0x08
           else do
               liftIO $ putMVar ivar (r:rs)
 
@@ -699,7 +693,7 @@ interrupt_ n = do
     when i $ do
         trace_ $ "int" ++ showHex' 2 n
 --        when (n == 0x08) $ config . counter .= Nothing
-        interrupt'' n >> throwError Interr
+        interrupt'' n
 --         else trace_ $ "interrupt cancelled " ++ showHex' 2 n
 
 origInterrupt :: M.Map (Word16, Word16) (Word8, Machine ())
