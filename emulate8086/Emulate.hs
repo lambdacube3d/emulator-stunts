@@ -37,6 +37,7 @@ import qualified Data.Set as Set
 import qualified Data.Map as M
 import qualified Data.IntMap.Strict as IM
 import qualified Data.Vector as V
+import qualified Data.Vector.Storable as US
 import qualified Data.Vector.Storable.Mutable as U
 import Control.Applicative
 import Control.Arrow
@@ -56,7 +57,7 @@ import Unsafe.Coerce
 import Debug.Trace
 
 import Hdis86 hiding (wordSize)
-import Hdis86.Incremental
+import Hdis86.Pure
 
 import Helper
 import Edsl hiding (Flags, trace_, ips, sps, segAddr_, addressOf, (>>), when, return, Info)
@@ -114,23 +115,22 @@ uRead h i = fromIntegral <$> U.unsafeRead h i
 uWrite, uWriteInfo :: UVec -> Int -> Word8 -> Machine ()
 uWrite h i v = do
     x <- liftIO $ U.unsafeRead h i
-    liftIO $ U.unsafeWrite h i $ fromIntegral v
+    liftIO $ U.unsafeWrite h i $ (x .&. 0xff00) .|. fromIntegral v
     let info = x `shiftR` 8
         n = info
     when (info /= 0) $ do
---        trace_ $ "invalid cache at " ++ showHex' 5 i
-        when (n > 1) $ trace_ $ "#" ++ show info
+        trace_ $ "invalid cache at " ++ showHex' 5 i
+        trace_ $ "#" ++ show info
+        adjustCache
         ch <- use cache
         let 
             f :: Word16 -> Cache -> Cache -> Machine ()
             f 0 ch _ = cache .= ch
-            f n ch ch'
-                | i `inRegions` e = do
+            f n ch ch' = case IM.findMax ch' of
+                (i', Compiled _ e _) | i `inRegions` e -> do
                     zipWithM_ (uModInfo h) (regionsToList e) $ repeat (+(-1))
                     f (n-1) (at i' .~ Just (DontCache 0) $ ch) (IM.delete i' ch')
-                | otherwise = f n ch (IM.delete i' ch')
-              where
-                (i', Compiled _ e _) = IM.findMax ch'
+                (i', _) -> f n ch (IM.delete i' ch')
         f n ch $ fst $ IM.split (i+1) ch
 
 uWriteInfo h i v = liftIO $ do
@@ -226,6 +226,7 @@ adjustCache = do
         p _ = False
     liftIO $ do
         cf <- read <$> readFile cacheFile
+        evaluate $ length cf
         writeFile cacheFile $ show $ merge cf $ map fst $ filter (p . snd) $ IM.toList ch
 
 merge (x:xs) (y:ys) = case compare x y of
@@ -237,7 +238,6 @@ merge xs ys = xs ++ ys
 showCode = catchError (forever mkStep) $ \case
     Interr -> showCode
     e -> do
-        adjustCache
         liftIO $ print e
         throwError e
 
@@ -247,20 +247,19 @@ regionsToList = concatMap $ \(a, b) -> [a..b-1]
 inRegions :: Int -> Regions -> Bool
 inRegions i = any $ \(a, b) -> a <= i && i < b
 
+getFetcher :: Machine (Int -> Metadata)
+getFetcher = do
+    h <- use heap''
+    v <- liftIO $ US.unsafeFreeze h
+    return $ head . disassembleMetadata disasmConfig . BS.pack . map fromIntegral . US.toList . (\ips -> US.slice ips maxInstLength v)
+
+fetchBlock :: Machine CacheEntry
+fetchBlock = (\(r,e) -> Compiled 0 r $ evalExpM e) <$> liftM3 fetchBlock_ getFetcher (use cs) (use ip)
+
 mkStep :: Machine ()
 mkStep = do
     ip_ <- use ip
     cs_ <- use cs
-    let mkInst ip' inst = do
-            let ips = segAddr cs_ ip'
-            Just (md, _) <- disassembleOne disasmConfig . BS.pack <$> fst (bytesAt__ ips maxInstLength)
-            let ch = Set IP (Add (C $ fromIntegral $ mdLength md) (Get IP))
-                  <> execInstruction' md
-                  <> CheckInterrupt 1
-                ch' = inst <> ch
-            case nextAddr ch ip' of
-                Just ip_' | ip_' > ip' -> mkInst ip_' ch'
-                _ -> return $ Compiled 0 [(ips, ips + fromIntegral (mdLength md))] $ evalExpM $ reorderExp ch'
 
     let ips = segAddr cs_ ip_
     cv <- use $ cache . at ips
@@ -273,11 +272,11 @@ mkStep = do
       BuiltIn m -> do
         m
       DontCache _ -> do
-        Compiled _ _ ch <- mkInst ip_ mempty
+        Compiled _ _ ch <- fetchBlock
         ch
 
      Nothing -> do
-        entry@(Compiled _ reg ch) <- mkInst ip_ mempty
+        entry@(Compiled _ reg ch) <- fetchBlock
         h <- use heap''
         zipWithM_ (uModInfo h) (regionsToList reg) $ map (+) [1,1..]
         cache %= IM.insert ips entry

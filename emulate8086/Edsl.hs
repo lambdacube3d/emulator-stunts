@@ -443,6 +443,22 @@ findKey k [] = Nothing
 findKey k (v@(_, Set k' _): _) | k == keyOf k' = Just v
 findKey k (_: xs) = findKey k xs
 
+fetchBlock_ :: (Int -> Metadata) -> Word16 -> Word16 -> (Regions, ExpM ())
+fetchBlock_ fetch cs_ ip_ = mkInst ip_ mempty
+  where
+    mkInst ip' inst = case nextAddr ch ip' of
+        Just ip_' | ip_' > ip' -> mkInst ip_' ch'
+        _ -> ([(ips, ips + fromIntegral (mdLength md))], reorderExp ch')
+      where
+        md = fetch ips
+        ips = segAddr cs_ ip'
+
+        ch = Set IP (Add (C $ fromIntegral $ mdLength md) (Get IP))
+              <> execInstruction' md
+              <> CheckInterrupt 1
+        ch' = inst <> ch
+
+
 reorderExp :: ExpM () -> ExpM ()
 reorderExp =  uncurry final . foldrExp f ([], Nop) .  groupInterrupts 0
   where
