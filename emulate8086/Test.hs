@@ -129,33 +129,24 @@ main = withProgNameAndArgs runALUT $ \_ _ -> do
     stop [source]
     buffer source $= Just buff
 
-    heap <- liftIO $ U.new 0x100000
     hSetBuffering stdout NoBuffering
 --    args <- getArgs
-    pmvar <- newMVar defaultPalette
-    ivar <- newMVar []
-    tvar <- newMVar 10
-
+    changeState <- newMVar $ return ()
+    let addChange m = modifyMVar_ changeState $ \n -> return $ n >> m
 --    l <- getLabels
-    let x =       config . verboseLevel .~ 1 
-                $ config . palette .~ pmvar
-                $ config . instPerSec .~ tvar
-                $ config . soundSource .~ source
-                $ config . interruptRequest .~ ivar
-                $ emptyState heap
-
     game <- BS.readFile "../restunts/stunts/game.exe"
-
-
-    forkIO $ void $ flip evalStateT x $ do
+    st <- emptyState
+    pmvar <- newMVar st
+    forkIO $ void $ flip evalStateT st $ do
+        config . verboseLevel .= 1 
+        config . soundSource .= source
         loadExe loadSegment game
         forever $ do
             mkStep >>= checkInt
-    drawWithFrameBuffer (\r -> modifyMVar_ tvar $ return . r) (\r -> modifyMVar_ ivar $ return . (++[r])) pmvar heap $ return ()
-
-  where
-    f [i] = read i
-    f _ = 0
+            st <- use id
+            liftIO $ modifyMVar_ pmvar $ const $ return st
+            join $ liftIO $ modifyMVar changeState $ \m -> return (return (), m)
+    drawWithFrameBuffer addChange (\r -> modifyMVar_ (st ^. config . interruptRequest) $ return . (++[r])) pmvar $ return ()
 
 createBuff :: BufferData a -> Frequency -> IO Buffer
 createBuff (BufferData m fmt f) x = do

@@ -184,8 +184,7 @@ setCounter = do
     v <- use $ config . instPerSec
     send <- getSender
     liftIO $ void $ forkIO $ do
-        vv <- readMVar v
-        threadDelay $ round $ 1000000 / vv
+        threadDelay $ round $ 1000000 / v
         send $ AskTimerInterrupt c
 
 -- TODO
@@ -587,12 +586,12 @@ checkInt n = do
     i <- use interruptF
     when i $ do
         mask <- use intMask
-        let ok = \case
-                AskTimerInterrupt{} -> not $ testBit mask 0
-                AskKeyInterrupt{}   -> not $ testBit mask 1
         ivar <- use $ config . interruptRequest
         ints <- liftIO $ takeMVar ivar
-        let (now, later) = partition ok ints
+        let ibit = \case
+                AskTimerInterrupt{} -> 0
+                AskKeyInterrupt{}   -> 1
+            (now, later) = partition (not . testBit mask . ibit) ints
         liftIO $ putMVar ivar later
         forM_ now $ \case
            AskTimerInterrupt id -> do
@@ -737,8 +736,7 @@ origInterrupt = M.fromList
                 -- ES:DX addr of a table of R,G,B values (it will be CX*3 bytes long)
                 addr <- addressOf (Just ES) $ memIndex RDX
                 colors <- fst $ bytesAt__ addr $ 3 * fromIntegral number_of_registers
-                pmvar <- use $ config . palette
-                liftIO $ modifyMVar_ pmvar $ \cs -> return $ cs V.//
+                config . palette %= \cs -> cs V.//
                     zip [fromIntegral first_DAC_register .. fromIntegral (first_DAC_register + number_of_registers - 1)]
                         -- shift 2 more positions because there are 64 intesity levels
                         [ fromIntegral r `shiftL` 26 .|. fromIntegral g `shiftL` 18 .|. fromIntegral b `shiftL` 10
