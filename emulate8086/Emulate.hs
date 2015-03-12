@@ -191,13 +191,7 @@ getRetrace = do
 
 
 trace_ :: String -> Machine ()
-trace_ s = traceQ %= (s:)
-
-clearHist = do
-    h <- use traceQ
-    traceQ .= []
-    return (intercalate "; " $ reverse h)
-
+trace_ s = liftIO $ putStr $ " | " ++ s
 
 [overflowF,directionF,interruptF,signF,zeroF,adjustF,parityF,carryF] =
     [ flags_ . lens (`testBit` i) (\x b -> if b then setBit x i else clearBit x i) :: MachinePart (Bool)
@@ -249,14 +243,11 @@ mkStep = do
         let n' = n + 1
  --       cache . _1 . at ips .= (n' `seq` Just (n', len, m))
         m
-        showHist
       BuiltIn m -> do
         m
-        showHist
       DontCache _ -> do
         (end, reorderExp -> ch) <- mkInst ip_ mempty
         evalExpM ch
-        showHist
 
      Nothing -> do
         (end, reorderExp -> ch) <- mkInst ip_ mempty
@@ -265,11 +256,6 @@ mkStep = do
         let ch_ = evalExpM ch
         cache %= IM.insert ips (Compiled 0 end ch_)
         ch_
-        showHist
-
-showHist = do
-    hist <- clearHist
-    when (not $ null hist) $ liftIO $ putStr $ " | " ++ hist
 
 maxInstLength = 7
 
@@ -1202,11 +1188,8 @@ loadExe loadSegment gameExe = do
         setWordAt (4*i + 2) $ "interrupt hi" @: hi
         cache %= IM.insert (segAddr hi lo) (BuiltIn m)
 
-
     setWordAt (0x410) $ "equipment word" @: 0xd426 --- 0x4463   --- ???
     setByteAt (0x417) $ "keyboard shift flag 1" @: 0x20
-
-    void $ clearHist
   where
     rom' = concat
             [ prelude'

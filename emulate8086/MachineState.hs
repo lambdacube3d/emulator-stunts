@@ -82,7 +82,6 @@ data MachineState = MachineState
     , _heap     :: MemPiece     -- heap layout
     , _heap''   :: UVec
 
-    , _traceQ   :: [String]
     , _config   :: Config_
     , _cache    :: Cache
     , _labels   :: IM.IntMap BS.ByteString
@@ -98,7 +97,6 @@ emptyState heap = MachineState
     , _heap     = undefined
     , _heap''    = heap
 
-    , _traceQ   = []
     , _config   = defConfig
     , _cache    = IM.empty
     , _labels   = IM.empty
