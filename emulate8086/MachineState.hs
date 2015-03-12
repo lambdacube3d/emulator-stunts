@@ -24,6 +24,7 @@ data Halt
 
 data Request
     = AskKeyInterrupt Word16
+    | AskTimerInterrupt Int
     | PrintFreqTable (MVar ())
 
 type Flags = Word16
@@ -39,7 +40,7 @@ data Config_ = Config_
     , _instPerSec       :: Int
 
     , _stepsCounter     :: Int
-    , _counter          :: Maybe Int -- time to raise interrupt 0x08
+    , _counter          :: Int -- timer interrupt counter
     , _speaker          :: Word8     -- 0x61 port
     , _palette          :: MVar (V.Vector Word32)
     , _keyDown          :: Word16
@@ -52,9 +53,9 @@ $(makeLenses ''Config_)
 
 defConfig = Config_
     { _verboseLevel = 2
-    , _instPerSec   = 3 * 71000 -- 710000
+    , _instPerSec   = 1000000 `div` 10 -- 3 * 71000 -- 710000
     , _stepsCounter = 0
-    , _counter      = Nothing
+    , _counter      = 0
     , _speaker      = 0x30 -- ??
     , _palette      = undefined
     , _keyDown      = 0x00

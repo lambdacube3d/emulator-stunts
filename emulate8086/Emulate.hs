@@ -170,10 +170,18 @@ dwordAt__ i = ( liftM2 (\hi lo -> fromIntegral hi `shiftL` 16 .|. fromIntegral l
 flags :: MachinePart Word16
 flags = flags_ . iso id wordToFlags
 
+getSender = do
+    v <- use $ config . interruptRequest
+    return $ \r -> modifyMVar_ v $ return . (r:)
+
 setCounter = do
+    config . counter %= (+1)
+    c <- use $ config . counter
     v <- use $ config . instPerSec
-    s <- use $ config . stepsCounter
-    config . counter .= Just (s + v `div` 24)
+    send <- getSender
+    liftIO $ void $ forkIO $ do
+        threadDelay v
+        send $ AskTimerInterrupt c
 
 -- TODO
 getRetrace = do
@@ -602,10 +610,20 @@ checkInt n = do
     int <- liftIO $ takeMVar ivar
     case int of
       (r:rs) -> case r of
+       AskTimerInterrupt id -> checkMask (liftIO $ putMVar ivar (r:rs)) $ do
+          i <- use interruptF
+          if i then do
+              liftIO $ putMVar ivar rs
+              cc <- use $ config . counter
+              when (id == cc) $ interrupt_ 0x08
+          else do
+              liftIO $ putMVar ivar (r:rs)
+
        AskKeyInterrupt scancode -> checkMask (liftIO $ putMVar ivar (r:rs)) $ do
           liftIO $ putMVar ivar rs
           config . keyDown .= scancode
           interrupt_ 0x09
+
        PrintFreqTable wait -> do
         (c1, c2) <- use cache
         let f (k, (x, y)) = showHex' 5 k ++ "   " ++ pad ' ' 20 (maybe "" (\(a,b,_)->pad ' ' 10 (show a) ++ pad ' ' 10 (show $ b - k + 1)) x) ++ pad ' ' 10 (maybe "" show y)
@@ -619,8 +637,6 @@ checkInt n = do
             putMVar wait ()
       [] -> do
         liftIO $ putMVar ivar []
-        cc <- use $ config . counter
-        when (maybe False (<=ns') cc) $ checkMask (return ()) $ interrupt_ 0x08
   where
     checkMask fail ok = do
       mask <- use intMask
@@ -698,7 +714,7 @@ interrupt_ n = do
     i <- use interruptF
     when i $ do
         when (n /= 0x08) $ trace_ $ "int" ++ showHex' 2 n
-        when (n == 0x08) $ config . counter .= Nothing
+--        when (n == 0x08) $ config . counter .= Nothing
         interrupt'' n >> throwError Interr
 --         else trace_ $ "interrupt cancelled " ++ showHex' 2 n
 
