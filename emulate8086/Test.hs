@@ -149,7 +149,7 @@ main = withProgNameAndArgs runALUT $ \_ _ -> do
     forkIO $ void $ flip evalStateT x $ runExceptT $ do
         loadExe loadSegment game
         showCode
-    drawWithFrameBuffer (\r -> modifyMVar_ tvar $ return . (*r)) (\r -> modifyMVar_ ivar $ return . (r:)) pmvar heap $ return ()
+    drawWithFrameBuffer (\r -> modifyMVar_ tvar $ return . r) (\r -> modifyMVar_ ivar $ return . (r:)) pmvar heap $ return ()
 
   where
     f [i] = read i
