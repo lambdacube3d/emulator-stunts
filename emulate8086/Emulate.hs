@@ -113,7 +113,7 @@ bp = regs . bp_
 uRead :: UVec -> Int -> IO Word8
 uRead h i = fromIntegral <$> U.unsafeRead h i
 
-uWrite, uWriteInfo :: UVec -> Int -> Word8 -> Machine ()
+uWrite :: UVec -> Int -> Word8 -> Machine ()
 uWrite h i v = do
     x <- liftIO $ U.unsafeRead h i
     liftIO $ U.unsafeWrite h i $ (x .&. 0xff00) .|. fromIntegral v
@@ -134,9 +134,6 @@ uWrite h i v = do
                 (i', _) -> f n ch (IM.delete i' ch')
         f n ch $ fst $ IM.split (i+1) ch
 
-uWriteInfo h i v = liftIO $ do
-    x <- U.unsafeRead h i
-    U.unsafeWrite h i $ high .~ v $ x
 uModInfo :: UVec -> Int -> (Word8 -> Word8) -> Machine ()
 uModInfo h i f = liftIO $ do
     x <- U.unsafeRead h i
@@ -1162,10 +1159,7 @@ replicate' n x = replicate n x
 loadExe :: Word16 -> BS.ByteString -> Machine ()
 loadExe loadSegment gameExe = do
     heap .= ( [(length rom', length rom2')], 0xa0000 - 16)
-    zipWithM_ (snd . byteAt__) [0..] $ concat
-            [ rom2'
-            , memUndefined'' $ 0x100000 - length rom2'
-            ]
+    zipWithM_ (snd . byteAt__) [0..] rom2'
     ss .=  (ssInit + loadSegment)
     sp .=  spInit
     cs .=  (csInit + loadSegment)

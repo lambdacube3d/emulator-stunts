@@ -20,16 +20,18 @@ import Foreign
 
 import MachineState
 
+videoMem = 0xa0000
 dof = 320 * 200
 
 drawWithFrameBuffer :: (Machine () -> IO ()) -> (Request -> IO ()) -> MVar MachineState -> IO () -> IO ()
 drawWithFrameBuffer changeSt interrupt stvar draw = do
     GLFW.init
     vec2 <- U.new (320*200) :: IO (U.IOVector Word32)
-    ovar <- newMVar 0
+    ovar <- newMVar videoMem
     let winW = 960
         winH = 600
         sett r = changeSt $ config . instPerSec %= r
+        setOVar f = modifyMVar_ ovar $ return . max 0 . min videoMem . f
     Just window <- GLFW.createWindow winW winH "Haskell Stunts" Nothing Nothing
     GLFW.makeContextCurrent $ Just window
     GLFW.setKeyCallback window $ Just $ \window key scancode action mods -> do
@@ -49,13 +51,13 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
             Key'Down    -> send (0xe050, 0xd0)
             _ -> return ()
         when (action /= GLFW.KeyState'Released) $ case key of
-            Key'R -> modifyMVar_ ovar $ return . (const 0)
-            Key'A -> modifyMVar_ ovar $ return . (+ dof)
-            Key'S -> modifyMVar_ ovar $ return . (+ (-dof))
-            Key'X -> modifyMVar_ ovar $ return . (+ 2*320)
-            Key'Y -> modifyMVar_ ovar $ return . (+ (-2*320))
-            Key'B -> modifyMVar_ ovar $ return . (+ 4)
-            Key'V -> modifyMVar_ ovar $ return . (+ (-4))
+            Key'R -> setOVar $ const videoMem
+            Key'A -> setOVar (+ dof)
+            Key'S -> setOVar (+ (-dof))
+            Key'X -> setOVar (+ 2*320)
+            Key'Y -> setOVar (+ (-2*320))
+            Key'B -> setOVar (+ 4)
+            Key'V -> setOVar (+ (-4))
             Key'0 -> sett $ const 0.5
             Key'1 -> sett $ const 1
             Key'2 -> sett $ const 5
@@ -88,12 +90,11 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
                 let fb = st ^. heap''
                     p = st ^. config . palette
                 offs <- readMVar ovar
-                let gs = 0xa0000 + offs
                 forM_ [0..199] $ \y -> do
-                  let y_ = gs + 320 * (199 - y)
+                  let y_ = offs + 320 * (199 - y)
                       y' = 320 * y
                   forM_ [0..319] $ \x -> do
-                    a <- U.unsafeRead fb $ (y_ + x) .&. 0xfffff
+                    a <- U.unsafeRead fb $ y_ + x
                     v <- Vec.unsafeIndexM p $ fromIntegral a .&. 0xff
                     U.unsafeWrite vec2 (y' + x) v
                 U.unsafeWith vec2 $ glTexSubImage2D gl_TEXTURE_2D 0 0 0 320 200 gl_RGBA gl_UNSIGNED_INT_8_8_8_8

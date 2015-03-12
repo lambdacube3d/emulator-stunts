@@ -79,7 +79,7 @@ wordToFlags :: Word16 -> Flags
 wordToFlags w = fromIntegral $ (w .&. 0xed3) .|. 0x2
 
 emptyState = do
-  heap <- liftIO $ U.new 0x100000
+  heap <- liftIO $ U.new $ 0xb0000
   ivar <- newMVar []
   return $ MachineState
     { _flags_   = wordToFlags 0xf202
