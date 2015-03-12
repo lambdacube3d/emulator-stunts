@@ -82,7 +82,7 @@ data MachineState = MachineState
     , _config   :: Config_
     , _cache    :: Cache
     , _labels   :: IM.IntMap BS.ByteString
-    , _files    :: IM.IntMap (FilePath, BS.ByteString, Int)  -- filename, file, position
+    , _files    :: IM.IntMap (FilePath, Int)  -- filepath, position
     , _dta      :: Int
     , _retrace  :: [Word16]
     , _intMask  :: Word8

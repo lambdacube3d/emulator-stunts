@@ -862,18 +862,14 @@ origInterrupt = M.fromList
             if b then dosFail 0x05 -- access denied
               else do
                 liftIO $ writeFile fn ""
-                checkExists fn $ do
-                    s <- liftIO $ BS.readFile fn
-                    newHandle fn s
+                newHandle fn
         0x3d -> do
             trace_ "Open File Using Handle"
             open_access_mode <- use al
             case open_access_mode of
               0 -> do   -- read mode
                 (f,fn) <- getFileName
-                checkExists fn $ do
-                    s <- liftIO $ BS.readFile fn
-                    newHandle fn s
+                checkExists fn $ newHandle fn
 
         0x3e -> do
             trace_ "Close file"
@@ -881,20 +877,20 @@ origInterrupt = M.fromList
             trace_ $ "handle " ++ showHex' 4 handle
             x <- IM.lookup handle <$> use files
             case x of
-              Just (fn, _, _) -> do
+              Just (fn, _) -> do
                 trace_ $ "file: " ++ fn
                 files %= IM.delete handle
                 returnOK
 
         0x3f -> do
             handle <- fromIntegral <$> use bx
-            fn <- (^. _1) . (IM.! handle) <$> use files
+            (fn, seek) <- (IM.! handle) <$> use files
             num <- fromIntegral <$> use cx
             trace_ $ "Read " ++ showHex' 4 handle ++ ":" ++ fn ++ " " ++ showHex' 4 num
             loc <- addressOf Nothing $ memIndex RDX
-            s <- BS.take num . (\(fn, s, p) -> BS.drop p s) . (IM.! handle) <$> use files
+            s <- liftIO $ BS.take num . BS.drop seek <$> BS.readFile fn
             let len = BS.length s
-            files %= flip IM.adjust handle (\(fn, s, p) -> (fn, s, p+len))
+            files %= flip IM.adjust handle (\(fn, p) -> (fn, p+len))
             snd (bytesAt__ loc len) (BS.unpack s)
             ax .= "length" @: fromIntegral len
             returnOK
@@ -923,12 +919,13 @@ origInterrupt = M.fromList
             mode <- use al
             pos <- fromIntegral . asSigned <$> use (uComb cx dx . combine)
             trace_ $ "Seek " ++ showHex' 4 handle ++ ":" ++ fn ++ " to " ++ show mode ++ ":" ++ showHex' 8 pos
-            files %= (flip IM.adjust handle $ \(fn, s, p) -> case mode of
-                0 -> (fn, s, pos)
-                1 -> (fn, s, p + pos)
-                2 -> (fn, s, BS.length s + pos)
+            s <- liftIO $ BS.readFile fn
+            files %= (flip IM.adjust handle $ \(fn, p) -> case mode of
+                0 -> (fn, pos)
+                1 -> (fn, p + pos)
+                2 -> (fn, BS.length s + pos)
                 )
-            pos' <- (^. _3) . (IM.! handle) <$> use files
+            pos' <- (^. _2) . (IM.! handle) <$> use files
             (uComb dx ax . combine) .= fromIntegral pos'
             returnOK
 
@@ -1076,9 +1073,9 @@ origInterrupt = M.fromList
     item a k m = (k, (a, m >> iret'))
     iret' = evalExpM iret
 
-    newHandle fn s = do
+    newHandle fn = do
         handle <- max 5 . imMax <$> use files
-        files %= IM.insert handle (fn, s, 0)
+        files %= IM.insert handle (fn, 0)
         trace_ $ "handle " ++ showHex' 4 handle
         ax .= "file handle" @: fromIntegral handle
         returnOK
