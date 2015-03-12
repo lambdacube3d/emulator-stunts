@@ -121,14 +121,18 @@ uWrite h i v = do
 --        trace_ $ "invalid cache at " ++ showHex' 5 i
         when (n > 1) $ trace_ $ "#" ++ show info
         ch <- use cache
-        let (ch', beg, end) = f n ch i i $ fst $ IM.split (i+1) ch
-            f :: Word16 -> Cache -> Int -> Int -> Cache -> (Cache, Int, Int)
-            f 0 ch beg end _ = (ch, beg, end)
-            f n ch beg end ch' = f (n-1) (at i' .~ Just (DontCache 0) $ ch) (min beg i') (max end $ e) (IM.delete i' ch')
+        let 
+            f :: Word16 -> Cache -> Cache -> Machine ()
+            f 0 ch _ = cache .= ch
+            f n ch ch'
+                | i `inRegions` e = do
+                    zipWithM_ (uModInfo h) (regionsToList e) $ repeat (+(-1))
+                    f (n-1) (at i' .~ Just (DontCache 0) $ ch) (IM.delete i' ch')
+                | otherwise = f n ch (IM.delete i' ch')
               where
                 (i', Compiled _ e _) = IM.findMax ch'
-        zipWithM_ (uWriteInfo h) [beg..end] [0,0..]
-        cache .= ch'
+        f n ch $ fst $ IM.split (i+1) ch
+
 uWriteInfo h i v = liftIO $ do
     x <- U.unsafeRead h i
     U.unsafeWrite h i $ high .~ v $ x
@@ -237,6 +241,12 @@ showCode = catchError (forever mkStep) $ \case
         liftIO $ print e
         throwError e
 
+regionsToList :: Regions -> [Int]
+regionsToList = concatMap $ \(a, b) -> [a..b-1]
+
+inRegions :: Int -> Regions -> Bool
+inRegions i = any $ \(a, b) -> a <= i && i < b
+
 mkStep :: Machine ()
 mkStep = do
     ip_ <- use ip
@@ -250,7 +260,7 @@ mkStep = do
                 ch' = inst <> ch
             case nextAddr ch ip' of
                 Just ip_' | ip_' > ip' -> mkInst ip_' ch'
-                _ -> return (ips + fromIntegral (mdLength md) - 1, ch')
+                _ -> return $ Compiled 0 [(ips, ips + fromIntegral (mdLength md))] $ evalExpM $ reorderExp ch'
 
     let ips = segAddr cs_ ip_
     cv <- use $ cache . at ips
@@ -263,16 +273,15 @@ mkStep = do
       BuiltIn m -> do
         m
       DontCache _ -> do
-        (end, reorderExp -> ch) <- mkInst ip_ mempty
-        evalExpM ch
+        Compiled _ _ ch <- mkInst ip_ mempty
+        ch
 
      Nothing -> do
-        (end, reorderExp -> ch) <- mkInst ip_ mempty
+        entry@(Compiled _ reg ch) <- mkInst ip_ mempty
         h <- use heap''
-        zipWithM_ (uModInfo h) [ips..] $ map (+) $ replicate (end-ips+1) 1
-        let ch_ = evalExpM ch
-        cache %= IM.insert ips (Compiled 0 end ch_)
-        ch_
+        zipWithM_ (uModInfo h) (regionsToList reg) $ map (+) [1,1..]
+        cache %= IM.insert ips entry
+        ch
 
 maxInstLength = 7
 

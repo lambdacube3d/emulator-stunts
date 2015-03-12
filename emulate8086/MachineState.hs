@@ -33,7 +33,8 @@ wordToFlags :: Word16 -> Flags
 wordToFlags w = fromIntegral $ (w .&. 0xed3) .|. 0x2
 
 type Region = (Int, Int)
-type MemPiece = ([Region], Int)
+type Regions = [Region]
+type MemPiece = (Regions, Int)
 
 data Config_ = Config_
     { _verboseLevel     :: Int
@@ -72,7 +73,7 @@ type UVec = U.IOVector Word16
 type Cache = IM.IntMap CacheEntry
 
 data CacheEntry
-    = Compiled !Int !Int !(Machine ())
+    = Compiled !Int !Regions !(Machine ())
     | BuiltIn !(Machine ())
     | DontCache !Int
 
