@@ -172,6 +172,7 @@ data ExpM a where
 
     Set :: Part a -> Exp a -> ExpM ()
     LetM :: Exp a -> (Exp a -> ExpM b) -> ExpM b
+    LetMM :: ExpM a -> (ExpM a -> ExpM b) -> ExpM b
     IfM :: Exp Bool -> ExpM a -> ExpM a -> ExpM a
 
     QuotRem :: Integral a => Exp a -> Exp a -> ExpM b -> ((Exp a, Exp a) -> ExpM b) -> ExpM b
@@ -436,6 +437,7 @@ repl k e = \case
 
 type AState = [(Inf, ExpM ())]
 
+fin = uncurry final
 final st b = mconcat (map snd st) <> b
 
 findKey :: S.Set Part' -> AState -> Maybe (Inf, ExpM ())
@@ -443,24 +445,10 @@ findKey k [] = Nothing
 findKey k (v@(_, Set k' _): _) | k == keyOf k' = Just v
 findKey k (_: xs) = findKey k xs
 
-fetchBlock_ :: (Int -> Metadata) -> Word16 -> Word16 -> (Regions, ExpM ())
-fetchBlock_ fetch cs_ ip_ = mkInst ip_ mempty
-  where
-    mkInst ip' inst = case nextAddr ch ip' of
-        Just ip_' | ip_' > ip' -> mkInst ip_' ch'
-        _ -> ([(ips, ips + fromIntegral (mdLength md))], reorderExp ch')
-      where
-        md = fetch ips
-        ips = segAddr cs_ ip'
-
-        ch = Set IP (Add (C $ fromIntegral $ mdLength md) (Get IP))
-              <> execInstruction' md
-              <> CheckInterrupt 1
-        ch' = inst <> ch
-
-
+-- TODO: do groupInterrupts inside IfM
+-- TODO: optimize IP setting out of IfM 
 reorderExp :: ExpM () -> ExpM ()
-reorderExp =  uncurry final . foldrExp f ([], Nop) .  groupInterrupts 0
+reorderExp =  uncurry final . foldrExp f (\b x y -> ([], IfM b (fin x) (fin y))) ([], Nop) . groupInterrupts 0
   where
     f :: ExpM b -> (AState, ExpM ()) -> (AState, ExpM ())
     f a (st, b) = case a of
@@ -485,9 +473,10 @@ reorderExp =  uncurry final . foldrExp f ([], Nop) .  groupInterrupts 0
 disj a b = S.null $ S.intersection a b
 
 
-foldrExp :: (forall b . ExpM b -> a -> a) -> a -> ExpM b -> a
-foldrExp f x (Seq a b) = f a (foldrExp f x b)
-foldrExp f x y = f y x
+foldrExp :: (forall b . ExpM b -> a -> a) -> (forall b . Exp Bool -> a -> a -> a) -> a -> ExpM b -> a
+foldrExp f g x (Seq a b) = f a (foldrExp f g x b)
+foldrExp f g x (IfM a b c) = g a (foldrExp f g x b) (foldrExp f g x c)
+foldrExp f g x y = f y x
 
 groupInterrupts n = \case
     Seq (CheckInterrupt n') b -> groupInterrupts (n + n') b
@@ -497,6 +486,22 @@ groupInterrupts n = \case
 
 checkInterrupt 0 = Nop
 checkInterrupt n = CheckInterrupt n
+
+fetchBlock_ :: (Int -> Metadata) -> Word16 -> Word16 -> (Regions, ExpM ())
+fetchBlock_ fetch cs_ ip_ = mkInst ip_ mempty
+  where
+    mkInst ip' inst = case nextAddr ch ip' of
+        Just ip_' | ip_' > ip' -> mkInst ip_' ch'
+        _ -> ([(ips, ips + fromIntegral (mdLength md))], reorderExp ch')
+      where
+        md = fetch ips
+        ips = segAddr cs_ ip'
+
+        ch = Set IP (Add (C $ fromIntegral $ mdLength md) (Get IP))
+              <> execInstruction' md
+              <> CheckInterrupt 1
+        ch' = inst <> ch
+
 
 nextAddr :: ExpM a -> Word16 -> Maybe Word16
 nextAddr e = case e of
