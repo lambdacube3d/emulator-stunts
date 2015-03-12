@@ -182,7 +182,6 @@ data ExpM a where
     Input :: Exp Word16 -> (Exp Word16 -> ExpM ()) -> ExpM ()
     Output :: Exp Word16 -> Exp Word16 -> ExpM ()
 
-    Error :: Halt -> ExpM ()
     Trace :: String -> ExpM ()
 
 
@@ -306,7 +305,6 @@ mparts = \case
     Cyc2 a b x -> eparts' a |+| eparts' b |+| mparts x
     Set x y -> (keyOf x, eparts y)
     Nop -> mempty
-    Error{} -> mempty
     Trace{} -> mempty
     QuotRem{} -> (full, full)
     Input{} -> (full, full)
@@ -513,7 +511,6 @@ nextAddr e = case e of
 --    QuotRem :: Integral a => Exp a -> Exp a -> ExpM b -> ((Exp a, Exp a) -> ExpM b) -> ExpM b
 --    Replicate :: Exp Int -> ExpM () -> ExpM ()
 --    Cyc2
---    Error :: Halt -> ExpM ()
 --    Input :: Exp Word16 -> (Exp Word16 -> ExpM ()) -> ExpM ()
 
 
@@ -695,7 +692,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
     Iint  -> interrupt $ getByteOperand segmentPrefix op1
     Iinto -> when' (Get OF) $ interrupt $ C 4
 
-    Ihlt  -> Error CleanHalt
+    Ihlt  -> interrupt $ C 0x20
 
     Ijp   -> condJump $ Get PF
     Ijnp  -> condJump $ Not $ Get PF
@@ -821,7 +818,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
         divide :: (Integral a, Integral c, Integral (X2 c)) => (Exp a -> Exp c) -> (Exp (X2 a) -> Exp (X2 c)) -> ExpM ()
         divide asSigned asSigned' =
             QuotRem (asSigned' $ Get axd) (convert $ asSigned op1v)
-                (Error $ Err $ "divide by zero interrupt is not called (not implemented)") $ \(d, m) -> do
+                (interrupt $ C 0) $ \(d, m) -> do
                     Set alx $ Convert d
                     Set ahd $ Convert m
 

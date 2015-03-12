@@ -366,7 +366,6 @@ data EExpM :: List * -> * -> * where
     Cyc2' :: EExp e Bool -> EExp e Bool -> EExpM e () -> EExpM e ()
 
     Nop' :: EExpM e ()
-    Error' :: Halt -> EExpM e ()
     Trace' :: String -> EExpM e ()
     Set' :: Part_ (EExp e) a -> EExp e a -> EExpM e ()
     Output' :: EExp e Word16 -> EExp e Word16 -> EExpM e ()
@@ -470,7 +469,6 @@ convExpM = f EmptyLayout where
         Replicate n a -> Replicate' (q n) (k a)
         Cyc2 e f a -> Cyc2' (q e) (q f) (k a)
         Nop -> Nop'
-        Error e -> Error' e
         Trace s -> Trace' s
         Set p e -> Set' (convPart lyt p) (q e)
         Output a b -> Output' (q a) (q b)
@@ -571,7 +569,6 @@ evalEExpM = evalExpM where
     Output' a b -> join $ lift <$> liftM2 output' (evalExp a) (evalExp b)
 
     Trace' a -> lift $ trace_ a
-    Error' h -> throwError h
 
 cyc2 a b m = do
     x <- a
@@ -787,7 +784,7 @@ origInterrupt = M.fromList
             returnOK
       v  -> haltWith $ "interrupt #15,#" ++ showHex' 2 v
 
-  , item 0x16 (0xf000,0x1200) $ do     -- 16h
+  , item 0x16 (0xf000,0x1200) $ do
     trace_ "Keyboard Services"
     v <- use ah
     case v of
@@ -800,13 +797,11 @@ origInterrupt = M.fromList
             zeroF .= False  -- no keys in buffer
         v  -> haltWith $ "interrupt #16,#" ++ showHex' 2 v
 
-{-
-  0x20 -> do
+  , item 0x20 (0x0000, 0x0000) $ do
     trace_ "interrupt halt"
     halt
--}
 
-  , item 0x21 (0xf000,0x14c0) $ do     -- 21h
+  , item 0x21 (0xf000,0x14c0) $ do
     trace_ "DOS rutine"
     v <- use ah
     case v of
