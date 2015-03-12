@@ -50,6 +50,7 @@ import System.Directory
 import System.FilePath (takeFileName)
 import "Glob" System.FilePath.Glob
 --import Data.IORef
+import Sound.ALUT (play, stop, sourceGain, pitch, ($=))
 
 import Unsafe.Coerce
 import Debug.Trace
@@ -171,7 +172,8 @@ flags = flags_ . iso id wordToFlags
 
 setCounter = do
     v <- use $ config . instPerSec
-    config . counter .= Just (v `div` 24)
+    s <- use $ config . stepsCounter
+    config . counter .= Just (s + v `div` 24)
 
 -- TODO
 getRetrace = do
@@ -209,16 +211,6 @@ ifff "" = []
 ifff x = [x]
 
 addressOf a b = evalExp' $ Edsl.addressOf a b
-
-askCounter n = do
-    cc <- use $ config . counter
-    if maybe False (<=0) cc
-      then do
-        config . counter .= Nothing
-        return True
-      else do
-        config . counter %= fmap (+(-n))
-        return False
 
 showCode = catchError (forever mkStep) $ \case
     Interr -> showCode
@@ -604,9 +596,8 @@ checkInt n = do
   ns <- use $ config . stepsCounter
   let ns' = ns + n
   config . stepsCounter .= ns'
---  let ma = complement 0x3f
---  when (ns' .&. ma /= ns .&. ma) $ do
-  do
+  let ma = complement 0x3ff
+  when (ns' .&. ma /= ns .&. ma) $ do
     ivar <- use $ config . interruptRequest
     int <- liftIO $ takeMVar ivar
     case int of
@@ -628,11 +619,8 @@ checkInt n = do
             putMVar wait ()
       [] -> do
         liftIO $ putMVar ivar []
-        checkMask (return ()) $ do
-            cc <- askCounter n
-            when cc $ do
-                trace_ "int08"
-                interrupt_ 0x08
+        cc <- use $ config . counter
+        when (maybe False (<=ns') cc) $ checkMask (return ()) $ interrupt_ 0x08
   where
     checkMask fail ok = do
       mask <- use intMask
@@ -653,7 +641,7 @@ input v = do
             return $ "???" @: k
         0x61 -> do
             x <- use $ config . speaker
-            trace_ $ "speaker -> " ++ showHex' 2 x
+            when ((x .&. 0xfc) /= 0x30) $ trace_ $ "speaker -> " ++ showHex' 2 x
             return $ "???" @: fromIntegral x
         0x03da -> do
             r <- getRetrace
@@ -665,7 +653,7 @@ output' :: Word16 -> Word16 -> Machine ()
 output' v x = do
     case v of
         0x20 -> do
-            trace_ $ "int resume " ++ showHex' 2 x  -- ?
+--            trace_ $ "int resume " ++ showHex' 2 x  -- ?
             case x of
               0x20 -> setCounter
 --              v -> trace_ "int resume " ++ show
@@ -678,15 +666,24 @@ output' v x = do
         0x41 -> do
             trace_ $ "ch #41 " ++ showHex' 2 x  -- ?
         0x42 -> do
-            trace_ $ "ch #42 " ++ showHex' 2 x
+--            trace_ $ "ch #42 " ++ showHex' 2 x
+            config . frequency %= (.|. (x `shiftL` 8)) . (`shiftR` 8)
+            f <- use $ config . frequency
+            source <- use $ config . soundSource
+            liftIO $ when (fromIntegral f >= 128) $ pitch source $= 2711 / fromIntegral f
         0x43 -> do
             trace_ $ "set timer control " ++ showHex' 2 x
             case x of
                 0x36  -> trace_ "set timer frequency lsb+msb, square wave"
                 0xb6  -> trace_ "set speaker frequency lsb+msb, square wave"
         0x61 -> do
+            x' <- use $ config . speaker
+            source <- use $ config . soundSource
             config . speaker .= fromIntegral x
-            trace_ $ "speaker <- " ++ showHex' 2 x
+            when (x .&. 0xfc /= 0x30) $ trace_ $ "speaker <- " ++ showHex' 2 x
+            liftIO $ do
+                when (testBit x 0 /= testBit x' 0) $ sourceGain source $= if testBit x 0 then 1 else 0
+                when (testBit x 1 /= testBit x' 1) $ (if testBit x 1 then play else stop) [source]
         0xf100 -> do
             trace_ "implemented for jmpmov test"
         _ -> haltWith $ "output #" ++ showHex' 4 v ++ " 0x" ++ showHex' 4 x
@@ -699,10 +696,11 @@ imMax m | IM.null m = 0
 interrupt_ :: Word8 -> Machine ()
 interrupt_ n = do
     i <- use interruptF
-    if i then interrupt'' n >> throwError Interr
-         else do
-            trace_ $ "interrupt cancelled " ++ showHex' 2 n
-            when (n == 0x08) $ config . counter .= Just 0
+    when i $ do
+        when (n /= 0x08) $ trace_ $ "int" ++ showHex' 2 n
+        when (n == 0x08) $ config . counter .= Nothing
+        interrupt'' n >> throwError Interr
+--         else trace_ $ "interrupt cancelled " ++ showHex' 2 n
 
 origInterrupt :: M.Map (Word16, Word16) (Word8, Machine ())
 origInterrupt = M.fromList
@@ -712,7 +710,7 @@ origInterrupt = M.fromList
     haltWith $ "int 00"
 
   , item 0x08 (0xf000,0xfea5) $ do
-    trace_ "orig timer"
+--    trace_ "orig timer"
     output' 0x20 0x20
 
   , item 0x09 (0xf000,0xe987) $ do

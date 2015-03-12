@@ -12,6 +12,7 @@ import qualified Data.Vector.Storable.Mutable as U
 import Control.Monad.State
 import Control.Monad.Except
 import Control.Lens as Lens
+import Sound.ALUT
 
 --import Edsl
 
@@ -36,12 +37,15 @@ type MemPiece = ([Region], Int)
 data Config_ = Config_
     { _verboseLevel     :: Int
     , _instPerSec       :: Int
+
     , _stepsCounter     :: Int
-    , _counter          :: Maybe Int -- counter to count down
+    , _counter          :: Maybe Int -- time to raise interrupt 0x08
     , _speaker          :: Word8     -- 0x61 port
     , _palette          :: MVar (V.Vector Word32)
     , _keyDown          :: Word16
     , _interruptRequest :: MVar [Request]
+    , _soundSource      :: Source
+    , _frequency        :: Word16
     }
 
 $(makeLenses ''Config_)
@@ -50,11 +54,13 @@ defConfig = Config_
     { _verboseLevel = 2
     , _instPerSec   = 3 * 71000 -- 710000
     , _stepsCounter = 0
-    , _counter = Nothing
-    , _speaker = 0x30 -- ??
-    , _palette = undefined
-    , _keyDown = 0x00
+    , _counter      = Nothing
+    , _speaker      = 0x30 -- ??
+    , _palette      = undefined
+    , _keyDown      = 0x00
     , _interruptRequest = undefined
+    , _soundSource  = undefined
+    , _frequency    = 0x0000
     }
 
 data Regs = Regs { _ax_,_dx_,_bx_,_cx_, _si_,_di_, _cs_,_ss_,_ds_,_es_, _ip_,_sp_,_bp_ :: Word16 }
@@ -68,7 +74,7 @@ type Cache = (Cache1, IM.IntMap Int)
 data MachineState = MachineState
     { _flags_   :: Flags
     , _regs     :: Regs
-    , _heap     :: MemPiece
+    , _heap     :: MemPiece     -- heap layout
     , _heap''   :: UVec
 
     , _traceQ   :: [String]

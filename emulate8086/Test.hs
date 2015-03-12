@@ -21,6 +21,7 @@ import Test.QuickCheck hiding ((.&.))
 import System.Environment
 import System.IO
 import System.IO.Unsafe
+import Sound.ALUT
 
 import Emulate
 import DosBox
@@ -118,7 +119,15 @@ eaTest = loadCom <$> BS.readFile "tests/testea.com"
 comTest = unsafePerformIO $ loadCom <$> BS.readFile "bushes.com"
 -}
 --main = testTest'
-main = do
+main = withProgNameAndArgs runALUT $ \_ _ -> do
+
+    bData <- createBufferData (Square 440 0 0.1)
+    buff <- createBuff bData 1
+    [source] <- genObjectNames 1
+    loopingMode source $= Looping
+    stop [source]
+    buffer source $= Just buff
+
     heap <- liftIO $ U.new 0x100000
     hSetBuffering stdout NoBuffering
 --    args <- getArgs
@@ -128,6 +137,7 @@ main = do
 --    l <- getLabels
     let x =       config . verboseLevel .~ 1 
                 $ config . palette .~ pmvar
+                $ config . soundSource .~ source
                 $ config . interruptRequest .~ ivar
                 $ emptyState heap
 
@@ -142,6 +152,12 @@ main = do
   where
     f [i] = read i
     f _ = 0
+
+createBuff :: BufferData a -> Frequency -> IO Buffer
+createBuff (BufferData m fmt f) x = do
+    [b] <- genObjectNames 1
+    bufferData b $= BufferData m fmt (x*f)
+    return b
 
 {-
 comTestMain = do
