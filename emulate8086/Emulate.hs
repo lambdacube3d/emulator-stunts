@@ -127,7 +127,7 @@ uWrite h i v = do
             f :: Word16 -> Cache -> Cache -> Machine ()
             f 0 ch _ = cache .= ch
             f n ch ch' = case IM.findMax ch' of
-                (i', Compiled _ e _) | i `inRegions` e -> do
+                (i', Compiled _ _ e _) | i `inRegions` e -> do
                     zipWithM_ (uModInfo h) (regionsToList e) $ repeat (+(-1))
                     f (n-1) (at i' .~ Just (DontCache 0) $ ch) (IM.delete i' ch')
                 (i', _) -> f n ch (IM.delete i' ch')
@@ -235,7 +235,7 @@ merge (x:xs) (y:ys) = case compare x y of
     LT  -> x: merge xs (y:ys)
 merge xs ys = xs ++ ys
 
-showCode = catchError (forever mkStep) $ \case
+showCode = catchError (forever $ mkStep >>= checkInt) $ \case
     Interr -> showCode
     e -> do
         liftIO $ print e
@@ -254,9 +254,9 @@ getFetcher = do
     return $ head . disassembleMetadata disasmConfig . BS.pack . map fromIntegral . US.toList . (\ips -> US.slice ips maxInstLength v)
 
 fetchBlock :: Machine CacheEntry
-fetchBlock = (\(r,e) -> Compiled 0 r $ evalExpM e) <$> liftM3 fetchBlock_ getFetcher (use cs) (use ip)
+fetchBlock = (\(n, r, e) -> Compiled 0 n r $ evalExpM e) <$> liftM3 fetchBlock_ getFetcher (use cs) (use ip)
 
-mkStep :: Machine ()
+mkStep :: Machine Int
 mkStep = do
     ip_ <- use ip
     cs_ <- use cs
@@ -265,22 +265,25 @@ mkStep = do
     cv <- use $ cache . at ips
     case cv of
      Just v -> case v of
-      Compiled n len m -> do
-        let n' = n + 1
+      Compiled _ n len m -> do
+--        let n' = n + 1
  --       cache . _1 . at ips .= (n' `seq` Just (n', len, m))
         m
+        return n
       BuiltIn m -> do
         m
+        return 1
       DontCache _ -> do
-        Compiled _ _ ch <- fetchBlock
+        Compiled _ n _ ch <- fetchBlock
         ch
-
+        return n
      Nothing -> do
-        entry@(Compiled _ reg ch) <- fetchBlock
+        entry@(Compiled _ n reg ch) <- fetchBlock
         h <- use heap''
         zipWithM_ (uModInfo h) (regionsToList reg) $ map (+) [1,1..]
         cache %= IM.insert ips entry
         ch
+        return n
 
 maxInstLength = 7
 
@@ -367,7 +370,6 @@ data EExpM :: List * -> * -> * where
     Trace' :: String -> EExpM e ()
     Set' :: Part_ (EExp e) a -> EExp e a -> EExpM e ()
     Output' :: EExp e Word16 -> EExp e Word16 -> EExpM e ()
-    CheckInterrupt' :: Int -> EExpM e ()
 
 data Env :: List * -> * where
   Empty :: Env Nil
@@ -472,7 +474,6 @@ convExpM = f EmptyLayout where
         Trace s -> Trace' s
         Set p e -> Set' (convPart lyt p) (q e)
         Output a b -> Output' (q a) (q b)
-        CheckInterrupt i -> CheckInterrupt' i
 
 convPart :: Layout e e -> Part_ Exp a -> Part_ (EExp e) a
 convPart lyt = mapPart (convExp_ lyt)
@@ -571,7 +572,6 @@ evalEExpM = evalExpM where
 
     Trace' a -> lift $ trace_ a
     Error' h -> throwError h
-    CheckInterrupt' n -> lift $ checkInt n
 
 cyc2 a b m = do
     x <- a

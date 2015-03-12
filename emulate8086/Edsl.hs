@@ -181,7 +181,6 @@ data ExpM a where
 
     Input :: Exp Word16 -> (Exp Word16 -> ExpM ()) -> ExpM ()
     Output :: Exp Word16 -> Exp Word16 -> ExpM ()
-    CheckInterrupt :: Int -> ExpM ()
 
     Error :: Halt -> ExpM ()
     Trace :: String -> ExpM ()
@@ -312,7 +311,6 @@ mparts = \case
     QuotRem{} -> (full, full)
     Input{} -> (full, full)
     Output{} -> (full, full)
-    CheckInterrupt{} -> (full, full)
 --    _ -> (full, full)
 
 eparts' = (,) mempty . eparts
@@ -432,7 +430,6 @@ repl k e = \case
 
     Input :: Exp Word16 -> (Exp Word16 -> ExpM ()) -> ExpM ()
     Output :: Exp Word16 -> Exp Word16 -> ExpM ()
-    CheckInterrupt :: Int -> ExpM ()
 -}
 
 type AState = [(Inf, ExpM ())]
@@ -445,10 +442,9 @@ findKey k [] = Nothing
 findKey k (v@(_, Set k' _): _) | k == keyOf k' = Just v
 findKey k (_: xs) = findKey k xs
 
--- TODO: do groupInterrupts inside IfM
 -- TODO: optimize IP setting out of IfM 
 reorderExp :: ExpM () -> ExpM ()
-reorderExp =  uncurry final . foldrExp f (\b x y -> ([], IfM b (fin x) (fin y))) ([], Nop) . groupInterrupts 0
+reorderExp =  uncurry final . foldrExp f (\b x y -> ([], IfM b (fin x) (fin y))) ([], Nop)
   where
     f :: ExpM b -> (AState, ExpM ()) -> (AState, ExpM ())
     f a (st, b) = case a of
@@ -478,28 +474,19 @@ foldrExp f g x (Seq a b) = f a (foldrExp f g x b)
 foldrExp f g x (IfM a b c) = g a (foldrExp f g x b) (foldrExp f g x c)
 foldrExp f g x y = f y x
 
-groupInterrupts n = \case
-    Seq (CheckInterrupt n') b -> groupInterrupts (n + n') b
-    Seq a b -> a `Seq` groupInterrupts n b
-    CheckInterrupt n' -> CheckInterrupt $ n + n'
-    e -> e `Seq` checkInterrupt n
-
-checkInterrupt 0 = Nop
-checkInterrupt n = CheckInterrupt n
-
-fetchBlock_ :: (Int -> Metadata) -> Word16 -> Word16 -> (Regions, ExpM ())
-fetchBlock_ fetch cs_ ip_ = mkInst ip_ mempty
+fetchBlock_ :: (Int -> Metadata) -> Word16 -> Word16 -> (Int, Regions, ExpM ())
+fetchBlock_ fetch cs_ ip_ = mkInst 0 ip_ mempty
   where
-    mkInst ip' inst = case nextAddr ch ip' of
-        Just ip_' | ip_' > ip' -> mkInst ip_' ch'
-        _ -> ([(ips, ips + fromIntegral (mdLength md))], reorderExp ch')
+    mkInst n ip' inst = case nextAddr ch ip' of
+        Just ip_' | ip_' > ip' -> mkInst n' ip_' ch'
+        _ -> (n', [(ips, ips + fromIntegral (mdLength md))], reorderExp ch')
       where
+        n' = n + 1
         md = fetch ips
         ips = segAddr cs_ ip'
 
         ch = Set IP (Add (C $ fromIntegral $ mdLength md) (Get IP))
               <> execInstruction' md
-              <> CheckInterrupt 1
         ch' = inst <> ch
 
 
@@ -515,7 +502,6 @@ nextAddr e = case e of
 
     Nop -> Just
     Trace _ -> Just
-    CheckInterrupt _ -> Just  -- !
     Output _ _ -> Just
 
     Set IP (Add (C i) (Get IP)) | i >= 0 && i < 8 -> \x -> Just $ i + x
