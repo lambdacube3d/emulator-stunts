@@ -91,9 +91,9 @@ drawWithFrameBuffer sett interrupt palette framebuffer draw = do
                 GLFW.pollEvents
                 mainLoop
     mainLoop
-    wait <- newEmptyMVar
-    interrupt $ PrintFreqTable wait
-    _ <- takeMVar wait
+--    wait <- newEmptyMVar
+--    interrupt $ PrintFreqTable wait
+--    _ <- takeMVar wait
 
     -- free back buffer
     Foreign.with fbo $ glDeleteFramebuffers 1

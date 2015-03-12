@@ -214,8 +214,15 @@ ifff x = [x]
 
 addressOf a b = evalExp' $ Edsl.addressOf a b
 
+cacheFile = "dontcache.txt"
+
 showCode = catchError (forever mkStep) $ \case
     Interr -> showCode
+    CleanHalt -> do
+        ch <- use cache
+        let p (DontCache _) = True
+            p _ = False
+        liftIO $ writeFile cacheFile $ show $ map fst $ filter (p . snd) $ IM.toList ch
     e -> do
         liftIO $ print e
         throwError e
@@ -576,7 +583,7 @@ checkInt n = do
           if i then do
               liftIO $ putMVar ivar rs
               cc <- use $ config . counter
-              when (id == cc) $ interrupt_ 0x08
+              when (id == cc) $ interrupt'' 0x08 >> throwError Interr
           else do
               liftIO $ putMVar ivar (r:rs)
 
@@ -1187,6 +1194,9 @@ loadExe loadSegment gameExe = do
         setWordAt (4*i) $ "interrupt lo" @: lo
         setWordAt (4*i + 2) $ "interrupt hi" @: hi
         cache %= IM.insert (segAddr hi lo) (BuiltIn m)
+
+    cf <- liftIO $ read <$> readFile cacheFile
+    cache %= IM.union (IM.fromList $ zip cf $ repeat $ DontCache 0)
 
     setWordAt (0x410) $ "equipment word" @: 0xd426 --- 0x4463   --- ???
     setByteAt (0x417) $ "keyboard shift flag 1" @: 0x20
