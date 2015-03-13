@@ -117,7 +117,7 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
                         U.unsafeWrite vec2 (y' + x) v
                     return (vec2, return ())
                 U.unsafeWith vec $ glTexSubImage2D gl_TEXTURE_2D 0 0 0 320 200 gl_RGBA gl_UNSIGNED_INT_8_8_8_8
-                glBlitFramebuffer 0 0 320 200 0 0 (fromIntegral winW) (fromIntegral winH) gl_COLOR_BUFFER_BIT gl_NEAREST
+                glBlitFramebuffer 0 200 320 0 0 0 (fromIntegral winW) (fromIntegral winH) gl_COLOR_BUFFER_BIT gl_NEAREST
                 GLFW.swapBuffers window
                 post
                 GLFW.pollEvents
