@@ -27,11 +27,10 @@ drawWithFrameBuffer :: (Machine () -> IO ()) -> (Request -> IO ()) -> MVar Machi
 drawWithFrameBuffer changeSt interrupt stvar draw = do
     GLFW.init
     vec2 <- U.new (320*200) :: IO (U.IOVector Word32)
-    ovar <- newMVar videoMem
     let winW = 960
         winH = 600
         sett r = changeSt $ config . instPerSec %= r
-        setOVar f = modifyMVar_ ovar $ return . max 0 . min videoMem . f
+        setOVar f = changeSt $ config . showOffset %= max 0 . min videoMem . f
     Just window <- GLFW.createWindow winW winH "Haskell Stunts" Nothing Nothing
     GLFW.makeContextCurrent $ Just window
     GLFW.setKeyCallback window $ Just $ \window key scancode action mods -> do
@@ -70,6 +69,7 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
             Key'9 -> sett $ const 10000
             Key'N -> sett (* (1/1.1))
             Key'M -> sett (* 1.1)
+            Key'T -> changeSt $ config . showReads %= not
             Key'Q -> GLFW.setWindowShouldClose window True
             _ -> return ()
 
@@ -87,19 +87,25 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
                 draw
                 _ <- takeMVar tv
                 st <- readMVar stvar
-                let fb = st ^. heap''
-                    p = st ^. config . palette
-                offs <- readMVar ovar
-                forM_ [0..199] $ \y -> do
-                  let y_ = offs + 320 * (199 - y)
-                      y' = 320 * y
-                  forM_ [0..319] $ \x -> do
-                    a <- U.unsafeRead fb $ y_ + x
-                    v <- Vec.unsafeIndexM p $ fromIntegral a .&. 0xff
-                    U.unsafeWrite vec2 (y' + x) v
-                U.unsafeWith vec2 $ glTexSubImage2D gl_TEXTURE_2D 0 0 0 320 200 gl_RGBA gl_UNSIGNED_INT_8_8_8_8
+                let offs = st ^. config . showOffset
+                (vec, post) <- if st ^. config . showReads then do
+                    let v = st ^. config . showBuffer 
+                    return (v, U.set v 0)
+                  else do
+                    let fb = st ^. heap''
+                        p = st ^. config . palette
+                    forM_ [0..199] $ \y -> do
+                      let y_ = offs + 320 * y
+                          y' = 320 * y
+                      forM_ [0..319] $ \x -> do
+                        a <- U.unsafeRead fb $ y_ + x
+                        v <- Vec.unsafeIndexM p $ fromIntegral a .&. 0xff
+                        U.unsafeWrite vec2 (y' + x) v
+                    return (vec2, return ())
+                U.unsafeWith vec $ glTexSubImage2D gl_TEXTURE_2D 0 0 0 320 200 gl_RGBA gl_UNSIGNED_INT_8_8_8_8
                 glBlitFramebuffer 0 0 320 200 0 0 (fromIntegral winW) (fromIntegral winH) gl_COLOR_BUFFER_BIT gl_NEAREST
                 GLFW.swapBuffers window
+                post
                 GLFW.pollEvents
                 mainLoop
     mainLoop

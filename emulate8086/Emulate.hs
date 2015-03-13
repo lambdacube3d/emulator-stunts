@@ -113,10 +113,20 @@ bp = regs . bp_
 uRead :: UVec -> Int -> IO Word8
 uRead h i = fromIntegral <$> U.unsafeRead h i
 
-uWrite :: UVec -> Int -> Word8 -> Machine ()
-uWrite h i v = do
+uWrite :: Int -> Word8 -> Machine ()
+uWrite i v = do
+    h <- use heap''
     x <- liftIO $ U.unsafeRead h i
     liftIO $ U.unsafeWrite h i $ (x .&. 0xff00) .|. fromIntegral v
+    b <- use $ config . showReads
+    when b $ do
+        off <- use $ config . showOffset
+        let j = i - off
+        when (0 <= j && j < 320 * 200) $ do
+            v <- use $ config . showBuffer
+            liftIO $ do
+                x <- U.unsafeRead v j
+                U.unsafeWrite v j $ x .|. 0x00ff0000
     let info = x `shiftR` 8
         n = info
     when (info /= 0) $ do
@@ -142,29 +152,28 @@ uModInfo h i f = liftIO $ do
 bytesAt__ :: Int -> Int -> MachinePart' [Word8]
 bytesAt__ i' j' = (get, set)
   where
-    set ws = use heap'' >>= \h -> zipWithM_ (uWrite h) [i'..]
+    set ws = zipWithM_ uWrite [i'..]
         $ (pad (error "pad") j' . take j') ws
     get = use heap'' >>= \h -> liftIO $ mapM (uRead h) [i'..i'+j'-1]
 
-byteAt__ :: Int -> MachinePart' Word8
-byteAt__ i = (use heap'' >>= \h -> liftIO $ uRead h i, \v -> use heap'' >>= \h -> uWrite h i v)
+byteAt__ :: Int -> Machine Word8
+byteAt__ i = use heap'' >>= \h -> liftIO $ uRead h i
 
 getByteAt i = view (_2 . heap'') >>= \h -> liftIO $ uRead h i
 
 setByteAt :: Int -> Word8 -> Machine ()
-setByteAt i v = use heap'' >>= \h -> uWrite h i v
+setByteAt i v = uWrite i v
 
-wordAt__ :: Int -> MachinePart' Word16
-wordAt__ i = ( use heap'' >>= \h -> liftIO $ liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead h (i+1)) (uRead h i)
-             , \v -> use heap'' >>= \h -> uWrite h i (fromIntegral v) >> uWrite h (i+1) (fromIntegral $ v `shiftR` 8))
+wordAt__ :: Int -> Machine Word16
+wordAt__ i = use heap'' >>= \h -> liftIO $ liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead h (i+1)) (uRead h i)
 
 getWordAt i = view (_2 . heap'') >>= \h -> liftIO $ liftM2 (\hi lo -> hi `shiftL` 8 .|. lo) (U.unsafeRead h $ i+1) (U.unsafeRead h i)
 
 setWordAt :: Int -> Word16 -> Machine ()
-setWordAt i v = use heap'' >>= \h -> uWrite h i (fromIntegral v) >> uWrite h (i+1) (fromIntegral $ v `shiftR` 8)
+setWordAt i v = uWrite i (fromIntegral v) >> uWrite (i+1) (fromIntegral $ v `shiftR` 8)
 
 dwordAt__ :: Int -> MachinePart' Word32
-dwordAt__ i = ( liftM2 (\hi lo -> fromIntegral hi `shiftL` 16 .|. fromIntegral lo) (fst $ wordAt__ $ i+2) (fst $ wordAt__ i)
+dwordAt__ i = ( liftM2 (\hi lo -> fromIntegral hi `shiftL` 16 .|. fromIntegral lo) (wordAt__ $ i+2) (wordAt__ i)
              , \v -> setWordAt (i) (fromIntegral v) >> setWordAt (i+2) (fromIntegral $ v `shiftR` 16))
 
 
@@ -245,7 +254,17 @@ getFetcher = do
     return $ head . disassembleMetadata disasmConfig . BS.pack . map fromIntegral . US.toList . (\ips -> US.slice ips maxInstLength v)
 
 fetchBlock :: Machine CacheEntry
-fetchBlock = (\(n, r, e) -> Compiled 0 n r $ evalExpM e) <$> liftM3 fetchBlock_ getFetcher (use cs) (use ip)
+fetchBlock = do
+    (n, r, e) <- liftM3 fetchBlock_ getFetcher (use cs) (use ip)
+    return $ Compiled 0 n r $ do
+        evalExpM e
+        b <- use $ config . showReads
+        when b $ do
+            v <- use $ config . showBuffer
+            off <- use $ config . showOffset
+            liftIO $ forM_ r $ \(beg, end) -> forM_ [max 0 $ beg - off .. min (320 * 200 - 1) $ end - 1 - off] $ \i -> do
+                x <- U.unsafeRead v i
+                U.unsafeWrite v i $ x .|. 0xff000000
 
 mkStep :: Machine Int
 mkStep = do
@@ -808,8 +827,8 @@ origInterrupt = M.fromList
         0x35 -> do
             v <- fromIntegral <$> use al
             trace_ $ "Get Interrupt Vector " ++ showHex' 2 v
-            fst (wordAt__ (4*v)) >>= (bx .=)
-            fst (wordAt__ (4*v + 2)) >>= (es .=)   -- ES:BX = pointer to interrupt handler
+            wordAt__ (4*v) >>= (bx .=)
+            wordAt__ (4*v + 2) >>= (es .=)   -- ES:BX = pointer to interrupt handler
 
         0x3c -> do
             trace_ "Create File"
@@ -967,7 +986,7 @@ origInterrupt = M.fromList
             fname <- fst $ bytesAt__ (ad + 0x02) 13
             let f_ = map (chr . fromIntegral) $ takeWhile (/=0) fname
             trace_ $ "Find next matching file " ++ show f_
-            n <- fst (byteAt__ $ ad + 0x00)
+            n <- byteAt__ $ ad + 0x00
             s <- do
                     b <- liftIO $ globDir1 (compile $ map toUpper f_) "../original"
                     case drop (fromIntegral n) b of
@@ -1159,7 +1178,7 @@ replicate' n x = replicate n x
 loadExe :: Word16 -> BS.ByteString -> Machine ()
 loadExe loadSegment gameExe = do
     heap .= ( [(length rom', length rom2')], 0xa0000 - 16)
-    zipWithM_ (snd . byteAt__) [0..] rom2'
+    zipWithM_ setByteAt [0..] rom2'
     ss .=  (ssInit + loadSegment)
     sp .=  spInit
     cs .=  (csInit + loadSegment)

@@ -27,6 +27,9 @@ type MemPiece = (Regions, Int)
 
 data Config_ = Config_
     { _verboseLevel     :: Int
+    , _showReads        :: Bool
+    , _showBuffer       :: U.IOVector Word32
+    , _showOffset       :: Int
     , _instPerSec       :: Float  -- Hz
     , _stepsCounter     :: Int
     , _counter          :: Int -- timer interrupt counter
@@ -81,6 +84,7 @@ wordToFlags w = fromIntegral $ (w .&. 0xed3) .|. 0x2
 emptyState = do
   heap <- liftIO $ U.new $ 0xb0000
   ivar <- newMVar []
+  vec2 <- U.new (320*200) :: IO (U.IOVector Word32)
   return $ MachineState
     { _flags_   = wordToFlags 0xf202
     , _regs     = Regs 0 0 0 0  0 0  0 0 0 0  0 0 0
@@ -94,6 +98,9 @@ emptyState = do
     , _intMask  = 0xf8
     , _config   = Config_
         { _verboseLevel = 2
+        , _showReads    = False
+        , _showBuffer   = vec2
+        , _showOffset   = 0xa0000
         , _instPerSec   = 50
         , _stepsCounter = 0
         , _counter      = 0
