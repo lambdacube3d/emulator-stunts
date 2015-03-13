@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE PackageImports #-}
 module DosBox
     ( drawWithFrameBuffer
@@ -5,6 +6,7 @@ module DosBox
 
 import Data.Bits
 import Data.Word
+import qualified Data.IntMap.Strict as IM
 import qualified Data.Vector as Vec
 import Data.Vector.Mutable as MVec
 import qualified Data.Vector.Storable.Mutable as U
@@ -70,6 +72,7 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
             Key'N -> sett (* (1/1.1))
             Key'M -> sett (* 1.1)
             Key'T -> changeSt $ config . showReads %= not
+            Key'U -> changeSt $ config . showCache %= not
             Key'Q -> GLFW.setWindowShouldClose window True
             _ -> return ()
 
@@ -89,8 +92,18 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
                 st <- readMVar stvar
                 let offs = st ^. config . showOffset
                 (vec, post) <- if st ^. config . showReads then do
-                    let v = st ^. config . showBuffer 
-                    return (v, U.set v 0)
+                    let v = st ^. config . showBuffer
+                    return $ (,) v $ do
+                        U.set v 0
+                        when (st ^. config . showCache) $ do
+                            forM_ (IM.toList $ fst $ IM.split (offs + 320 * 200) $ snd $ IM.split (offs-1) $ st ^. cache) $ \case
+                                (k, Compiled _ _ r _) -> forM_ r $ \(beg, end) ->
+                                    forM_ [max 0 $ beg - offs .. min (320 * 200 - 1) $ end - 1 - offs] $ \i -> do
+                                        x <- U.unsafeRead v i
+                                        U.unsafeWrite v i $ x .|. 0x0000ff00
+                                (k, DontCache _) -> do
+                                    U.unsafeWrite v (k - offs) $ 0xffffff00
+                                _ -> return ()
                   else do
                     let fb = st ^. heap''
                         p = st ^. config . palette

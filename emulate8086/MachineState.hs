@@ -28,6 +28,7 @@ type MemPiece = (Regions, Int)
 data Config_ = Config_
     { _verboseLevel     :: Int
     , _showReads        :: Bool
+    , _showCache        :: Bool
     , _showBuffer       :: U.IOVector Word32
     , _showOffset       :: Int
     , _instPerSec       :: Float  -- Hz
@@ -99,6 +100,7 @@ emptyState = do
     , _config   = Config_
         { _verboseLevel = 2
         , _showReads    = False
+        , _showCache    = False
         , _showBuffer   = vec2
         , _showOffset   = 0xa0000
         , _instPerSec   = 50

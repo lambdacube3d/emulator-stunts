@@ -475,9 +475,10 @@ foldrExp f g x y = f y x
 fetchBlock_ :: (Int -> Metadata) -> Word16 -> Word16 -> (Int, Regions, ExpM ())
 fetchBlock_ fetch cs_ ip_ = mkInst 0 ip_ mempty
   where
+    ips_ = segAddr cs_ ip_
     mkInst n ip' inst = case nextAddr ch ip' of
         Just ip_' | ip_' > ip' -> mkInst n' ip_' ch'
-        _ -> (n', [(ips, ips + fromIntegral (mdLength md))], reorderExp ch')
+        _ -> (n', [(ips_, ips_ + fromIntegral (mdLength md))], reorderExp ch')
       where
         n' = n + 1
         md = fetch ips
