@@ -110,8 +110,16 @@ ip = regs . ip_
 sp = regs . sp_
 bp = regs . bp_
 
-uRead :: UVec -> Int -> IO Word8
-uRead h i = fromIntegral <$> U.unsafeRead h i
+uRead :: MachineState -> Int -> IO Word8
+uRead h i = do
+    when (h ^. config . showReads') $ do
+        let off = h ^. config . showOffset
+        let j = i - off
+        when (0 <= j && j < 320 * 200) $ do
+            let v = h ^. config . showBuffer
+            x <- U.unsafeRead v j
+            U.unsafeWrite v j $ x .|. 0x0000ff00
+    fromIntegral <$> U.unsafeRead (h ^. heap'') i
 
 uWrite :: Int -> Word8 -> Machine ()
 uWrite i v = do
@@ -150,24 +158,24 @@ uModInfo h i f = liftIO $ do
     U.unsafeWrite h i $ high %~ f $ x
 
 bytesAt__ :: Int -> Int -> MachinePart' [Word8]
-bytesAt__ i' j' = (get, set)
+bytesAt__ i' j' = (get_, set)
   where
     set ws = zipWithM_ uWrite [i'..]
         $ (pad (error "pad") j' . take j') ws
-    get = use heap'' >>= \h -> liftIO $ mapM (uRead h) [i'..i'+j'-1]
+    get_ = get >>= \h -> liftIO $ mapM (uRead h) [i'..i'+j'-1]
 
 byteAt__ :: Int -> Machine Word8
-byteAt__ i = use heap'' >>= \h -> liftIO $ uRead h i
+byteAt__ i = get >>= \h -> liftIO $ uRead h i
 
-getByteAt i = view (_2 . heap'') >>= \h -> liftIO $ uRead h i
+getByteAt i = view _2 >>= \h -> liftIO $ uRead h i
 
 setByteAt :: Int -> Word8 -> Machine ()
 setByteAt i v = uWrite i v
 
 wordAt__ :: Int -> Machine Word16
-wordAt__ i = use heap'' >>= \h -> liftIO $ liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead h (i+1)) (uRead h i)
+wordAt__ i = get >>= \h -> liftIO $ liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead h (i+1)) (uRead h i)
 
-getWordAt i = view (_2 . heap'') >>= \h -> liftIO $ liftM2 (\hi lo -> hi `shiftL` 8 .|. lo) (U.unsafeRead h $ i+1) (U.unsafeRead h i)
+getWordAt i = view _2 >>= \h -> liftIO $ liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead h (i+1)) (uRead h i)
 
 setWordAt :: Int -> Word16 -> Machine ()
 setWordAt i v = uWrite i (fromIntegral v) >> uWrite (i+1) (fromIntegral $ v `shiftR` 8)

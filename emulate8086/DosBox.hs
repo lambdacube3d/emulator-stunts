@@ -72,6 +72,7 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
             Key'N -> sett (* (1/1.1))
             Key'M -> sett (* 1.1)
             Key'T -> changeSt $ config . showReads %= not
+            Key'I -> changeSt $ config . showReads' %= not
             Key'U -> changeSt $ config . showCache %= not
             Key'Q -> GLFW.setWindowShouldClose window True
             _ -> return ()
@@ -100,9 +101,9 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
                                 (k, Compiled _ _ r _) -> forM_ r $ \(beg, end) ->
                                     forM_ [max 0 $ beg - offs .. min (320 * 200 - 1) $ end - 1 - offs] $ \i -> do
                                         x <- U.unsafeRead v i
-                                        U.unsafeWrite v i $ x .|. 0x0000ff00
+                                        U.unsafeWrite v i $ x .|. 0x3f000000
                                 (k, DontCache _) -> do
-                                    U.unsafeWrite v (k - offs) $ 0xffffff00
+                                    U.unsafeWrite v (k - offs) $ 0xffff0000
                                 _ -> return ()
                   else do
                     let fb = st ^. heap''
