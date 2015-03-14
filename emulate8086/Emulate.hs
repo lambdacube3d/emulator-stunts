@@ -396,7 +396,7 @@ data EExpM :: List * -> * -> * where
     Nop' :: EExpM e ()
     Trace' :: String -> EExpM e ()
     Set' :: Part_ (EExp e) a -> EExp e a -> EExpM e ()
---    Jump' :: EExp e Word16 -> EExp e Word16 -> EExpM e ()
+    Jump'' :: EExp e Word16 -> EExp e Word16 -> EExpM e ()
     Output' :: EExp e Word16 -> EExp e Word16 -> EExpM e ()
 
 data Env :: List * -> * where
@@ -429,7 +429,7 @@ prjIx n (PushLayout l _)  = prjIx (n - 1) l
 interrupt'' n = flip runReaderT (Push Empty n) $ evalEExpM int
    where
     int :: EExpM (Con Word8 Nil) ()
-    int = case convExpM $ LetM (C (0 :: Word8)) interrupt of
+    int = case convExpM $ LetM (C (0 :: Word8)) (interrupt $ Get Cs) of
         LetM' _ i -> unsafeCoerce i
 
 convExp :: Exp a -> EExp Nil a
@@ -499,9 +499,9 @@ convExpM = f EmptyLayout where
         Cyc2 e f a -> Cyc2' (q e) (q f) (k a)
         Nop -> Nop'
         Trace s -> Trace' s
-        Jump' cs ip -> Seq' (Set' (convPart lyt Cs) (q cs)) (Set' (convPart lyt IP) (q ip))
+        Jump' cs ip -> Jump'' (q cs) (q ip) --Seq' (Set' (convPart lyt Cs) (q cs)) (Set' (convPart lyt IP) (q ip))
         Set Cs _ -> error "convExpM: set cs"
-        Set IP _ -> error "convExpM: set ip"
+--        Set IP _ -> error "convExpM: set ip"
         Set p e -> Set' (convPart lyt p) (q e)
         Output a b -> Output' (q a) (q b)
 
@@ -582,6 +582,7 @@ evalEExpM = evalExpM where
         Heap16 e -> join $ lift <$> liftM2 setWordAt (evalExp e) (evalExp e')
         Heap8 e -> join $ lift <$> liftM2 setByteAt (evalExp e) (evalExp e')
         p -> evalExp e' >>= (evalPart_ p .=)
+    Jump'' c i -> join $ liftM2 (\c i -> cs .= c >> ip .= i) (evalExp c) (evalExp i)
     Nop' -> return ()
 
     IfM' b x y -> evalExp b >>= iff (evalExpM x) (evalExpM y)

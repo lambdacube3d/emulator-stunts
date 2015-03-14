@@ -477,48 +477,16 @@ foldrExp f g x (Seq a b) = f a (foldrExp f g x b)
 foldrExp f g x (IfM a b c) = g a (foldrExp f g x b) (foldrExp f g x c)
 foldrExp f g x y = f y x
 
-fetchBlock_ :: (Int -> Metadata) -> Word16 -> Word16 -> (Int, Regions, ExpM ())
-fetchBlock_ fetch cs_ ip_ = mkInst 0 ip_ mempty
+fetchBlock_ fetch cs_ ip_ = (1, [(ips_, ips_ +1)], fetchBlock_' fetch cs_ ip_)
   where
     ips_ = segAddr cs_ ip_
-    mkInst n ip' inst = case nextAddr ch ip' of
-        Just ip_' | ip_' > ip' -> mkInst n' ip_' ch'
-        _ -> (n', [(ips_, ips_ + fromIntegral (mdLength md))], {- reorderExp -} ch')
+
+    fetchBlock_' :: (Int -> Metadata) -> Word16 -> Word16 -> ExpM ()
+    fetchBlock_' fetch cs_ ip_ = do
+        Set IP (Add (C $ fromIntegral $ mdLength md) (Get IP))
+        execInstruction' md (fetchBlock_' fetch cs_) cs_ ip_
       where
-        n' = n + 1
-        md = fetch ips
-        ips = segAddr cs_ ip'
-
-        ch = Jump' (Get Cs) (Add (C $ fromIntegral $ mdLength md) (Get IP))
-              <> execInstruction' md
-        ch' = inst <> ch
-
-
-nextAddr :: ExpM a -> Word16 -> Maybe Word16
-nextAddr e = case e of
-    LetM e f -> nextAddr (f e)
-    Seq a b -> nextAddr a >=> nextAddr b
-
-    IfM _ a b -> \w -> do
-        i <- nextAddr a w
-        j <- nextAddr b w
-        if (i==j) then Just i else Nothing
-
-    Nop -> Just
-    Trace _ -> Just
-    Output _ _ -> Just
-
-    Jump' (Get Cs) (Add (C i) (Get IP)) | i >= 0 && i < 8 -> \x -> Just $ i + x
-    Set IP _ -> const Nothing
-    Set Cs _ -> const Nothing
-    Set _ _ -> Just
-    _ -> const Nothing
-
---    QuotRem :: Integral a => Exp a -> Exp a -> ExpM b -> ((Exp a, Exp a) -> ExpM b) -> ExpM b
---    Replicate :: Exp Int -> ExpM () -> ExpM ()
---    Cyc2
---    Input :: Exp Word16 -> (Exp Word16 -> ExpM ()) -> ExpM ()
-
+        md = fetch $ segAddr cs_ ip_
 
 --------------------------------------------------------------------------------
 
@@ -538,7 +506,7 @@ operandSize = \case
     _ -> Nothing
 
 segOf = \case
-    RegIP     -> error "Cs used"
+    RegIP     -> error "segOf RegIP"
     Reg16 RSP -> Ss
     Reg16 RBP -> Ss
     _         -> Ds
@@ -570,8 +538,7 @@ reg = \case
 segAddr_ :: Part Word16 -> Exp Word16 -> Exp Int
 segAddr_ seg off = SegAddr seg off
 
-ips, sps :: Exp Int
-ips = segAddr_ Cs $ Get IP
+sps :: Exp Int
 sps = segAddr_ Ss $ Get SP
 
 addressOf :: Maybe Segment -> Memory -> Exp Int
@@ -634,8 +601,8 @@ pop cont = LetM (Get stackTop) $ \x -> do
 
 move a b = Set a $ Get b
 
-execInstruction' :: Metadata -> ExpM ()
-execInstruction' mdat@Metadata{mdInst = i@Inst{..}}
+execInstruction' :: Metadata -> (Word16 -> ExpM ()) -> Word16 -> Word16 -> ExpM ()
+execInstruction' mdat@Metadata{mdInst = i@Inst{..}} cont cs ip
   = case filter nonSeg inPrefixes of
     [Rep, RepE]
         | inOpcode `elem` [Icmpsb, Icmpsw, Iscasb, Iscasw] -> cycle $ Get ZF      -- repe
@@ -643,61 +610,57 @@ execInstruction' mdat@Metadata{mdInst = i@Inst{..}}
     [RepNE]
         | inOpcode `elem` [Icmpsb, Icmpsw, Iscasb, Iscasw, Imovsb, Imovsw, Ilodsb, Ilodsw, Istosb, Istosw]
             -> cycle $ Not $ Get ZF
-    [] -> body
+    [] -> body cont cs ip
   where
-    body = compileInst $ mdat { mdInst = i { inPrefixes = filter (not . rep) inPrefixes }}
+    body = compileInst (mdat { mdInst = i { inPrefixes = filter (not . rep) inPrefixes }})
+    body' = body (const Nop) cs ip
 
-    cycle' = do
-        Replicate (Convert $ Get CX) body
+    cycle' = c $ do
+        Replicate (Convert $ Get CX) body'
         Set CX $ C 0
 
     cycle :: Exp Bool -> ExpM ()
-    cycle cond = Cyc2 (Not $ Eq (C 0) $ Get CX) cond $ do
-        body
+    cycle cond = c $ Cyc2 (Not $ Eq (C 0) $ Get CX) cond $ do
+        body'
         modif CX $ Add $ C $ -1
 
     rep p = p `elem` [Rep, RepE, RepNE]
+    c m = m >> cc
+    cc = cont $ ip + fromIntegral (mdLength mdat)
 
 nonSeg = \case
     Seg _ -> False
     x -> True
 
 
-compileInst :: Metadata -> ExpM ()
-compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
+compileInst :: Metadata -> (Word16 -> ExpM ()) -> Word16 -> Word16 -> ExpM ()
+compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ip = case inOpcode of
 
     _ | length inOperands > 2 -> error "more than 2 operands are not supported"
 
     _ | inOpcode `elem` [Ijmp, Icall] -> do
+      let jmp far cs' ip' = do
+            when (inOpcode == Icall) $ do
+                when far $ push $ C cs
+                push $ Get IP
+            Jump' cs' ip'
       case op1 of
-        Ptr (Pointer seg (Immediate Bits16 v)) -> do
-            when (inOpcode == Icall) $ do
-                push $ Get Cs
-                push $ Get IP
-            Jump' (C $ fromIntegral seg) (C $ fromIntegral v)
-        Mem _ -> do
-            when (inOpcode == Icall) $ do
-                when far $ push $ Get Cs
-                push $ Get IP
-            letM (addr op1) $ \ad -> do
-                Jump' (Get $ if far then Heap16 $ add (C 2) ad else Cs) (Get $ Heap16 ad)
-        _ -> do
-            when (inOpcode == Icall) $ do
-                push $ Get IP
-            Jump' (Get Cs) getOp1w
+        Ptr (Pointer seg (Immediate Bits16 v)) -> jmp True (C $ fromIntegral seg) (C $ fromIntegral v)
+        Mem _ -> letM (addr op1) $ \ad -> jmp far (if far then Get $ Heap16 $ add (C 2) ad else C cs) (Get $ Heap16 ad)
+        _     -> jmp False (C cs) getOp1w
 
-    _ | inOpcode `elem` [Iret, Iretf, Iiretw] -> do
---        when (inOpcode == Iiretw) $ trace_ "iret"
-        pop $ \ip -> if (inOpcode `elem` [Iretf, Iiretw])
-            then pop $ \cs -> Jump' cs ip
-            else Jump' (Get Cs) ip
-        when (inOpcode == Iiretw) $ pop $ Set Flags
-        when (length inOperands == 1) $ modif SP $ Add (getOp1w)
+    _ | inOpcode `elem` [Iret, Iretf, Iiretw] -> pop $ \ip -> do
+        let m = do
+                when (inOpcode == Iiretw) $ pop $ Set Flags
+                when (length inOperands == 1) $ modif SP $ Add (getOp1w)
+        if (inOpcode `elem` [Iretf, Iiretw])
+            then pop $ \cs' -> m >> Jump' cs' ip
+            else m >> Jump' (C cs) ip
 
-    Iint  -> interrupt $ getByteOperand segmentPrefix op1
-    Iinto -> when' (Get OF) $ interrupt $ C 4
+    Iint  -> interrupt (C cs) $ getByteOperand segmentPrefix op1
+    Iinto -> when' (Get OF) (interrupt (C cs) $ C 4)
 
-    Ihlt  -> interrupt $ C 0x20
+    Ihlt  -> interrupt (C cs) $ C 0x20
 
     Ijp   -> condJump $ Get PF
     Ijnp  -> condJump $ Not $ Get PF
@@ -722,35 +685,35 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
     Iloope  -> loop $ Get ZF
     Iloopnz -> loop $ Not $ Get ZF
 
-    Ipush   -> push $ getOp1w
-    Ipop    -> pop $ setOp1w
-    Ipusha  -> mconcat $ map (push . Get) [AX,CX,DX,BX,SP,BP,SI,DI]
-    Ipopa   -> mconcat $ map pop [Set DI,Set SI,Set BP,const Nop,Set BX,Set DX,Set CX,Set AX]
-    Ipushfw -> push $ Get Flags
-    Ipopfw  -> pop $ Set Flags
-    Isahf -> Set (Low  AX) $ Get $ Low Flags
-    Ilahf -> Set (High AX) $ Get $ Low Flags
+    Ipush   -> c $ push $ getOp1w
+    Ipop    -> c $ pop $ setOp1w
+    Ipusha  -> c $ mconcat $ map (push . Get) [AX,CX,DX,BX,SP,BP,SI,DI]
+    Ipopa   -> c $ mconcat $ map pop [Set DI,Set SI,Set BP,const Nop,Set BX,Set DX,Set CX,Set AX]
+    Ipushfw -> c $ push $ Get Flags
+    Ipopfw  -> c $ pop $ Set Flags
+    Isahf -> c $ Set (Low  AX) $ Get $ Low Flags
+    Ilahf -> c $ Set (High AX) $ Get $ Low Flags
 
-    Iclc  -> Set CF $ C False
-    Icmc  -> modif CF Not
-    Istc  -> Set CF $ C True
-    Icld  -> Set DF $ C False
-    Istd  -> Set DF $ C True
-    Icli  -> Set IF $ C False
-    Isti  -> Set IF $ C True
+    Iclc  -> c $ Set CF $ C False
+    Icmc  -> c $ modif CF Not
+    Istc  -> c $ Set CF $ C True
+    Icld  -> c $ Set DF $ C False
+    Istd  -> c $ Set DF $ C True
+    Icli  -> c $ Set IF $ C False
+    Isti  -> c $ Set IF $ C True
 
-    Inop  -> Nop
+    Inop  -> cc
 
-    Ixlatb -> Set (Low AX) $ Get $ Heap8 $ segAddr_ (maybe Ds (reg . RegSeg) segmentPrefix) $ Add (Extend $ Get $ Low AX) (Get BX)
+    Ixlatb -> c $ Set (Low AX) $ Get $ Heap8 $ segAddr_ (maybe Ds (reg . RegSeg) segmentPrefix) $ Add (Extend $ Get $ Low AX) (Get BX)
 
-    Ilea -> setOp1w op2addr'
-    _ | inOpcode `elem` [Iles, Ilds] -> letM (addr op2) $ \ad -> do
+    Ilea -> c $ setOp1w op2addr'
+    _ | inOpcode `elem` [Iles, Ilds] -> c $ letM (addr op2) $ \ad -> do
         setOp1w $ Get $ Heap16 ad
         Set (case inOpcode of Iles -> Es; Ilds -> Ds) $ Get $ Heap16 $ add (C 2) ad
 
     _ -> case sizeByte of
-        1 -> withSize getByteOperand byteOperand (Low AX) (High AX) AX
-        2 -> withSize getWordOperand wordOperand AX DX DXAX
+        1 -> c $ withSize getByteOperand byteOperand (Low AX) (High AX) AX
+        2 -> c $ withSize getWordOperand wordOperand AX DX DXAX
   where
     withSize :: forall a . (AsSigned a, Extend a, Extend (Signed a), AsSigned (X2 a), X2 (Signed a) ~ Signed (X2 a))
         => (Maybe Segment -> Operand -> Exp a)
@@ -823,7 +786,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
         divide :: (Integral a, Integral c, Integral (X2 c)) => (Exp a -> Exp c) -> (Exp (X2 a) -> Exp (X2 c)) -> ExpM ()
         divide asSigned asSigned' =
             QuotRem (asSigned' $ Get axd) (convert $ asSigned op1v)
-                (interrupt $ C 0) $ \(d, m) -> do
+                (interrupt (C cs) $ C 0) $ \(d, m) -> do
                     Set alx $ Convert d
                     Set ahd $ Convert m
 
@@ -875,6 +838,9 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
 
             when store $ Set op1 r
 
+    c m = m >> cc
+    cc = cont $ ip + fromIntegral (mdLength mdat)
+
     far = " far " `isInfixOf` mdAssembly mdat
 
     addr op = case op of Mem m -> addressOf segmentPrefix m
@@ -884,7 +850,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
         condJump $ And (Not $ Eq (C 0) (Get CX)) cond
 
     condJump :: Exp Bool -> ExpM ()
-    condJump b = when' b $ Jump' (Get Cs) getOp1w
+    condJump b = ifM b (Jump' (C cs) getOp1w) cc
 
     sizeByte :: Word16
     sizeByte = fromIntegral $ sizeByte_ i
@@ -899,11 +865,11 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
         [Seg s] -> Just s
         [] -> Nothing
 
-interrupt :: Exp Word8 -> ExpM ()
-interrupt v = letM (mul (C 4) $ convert v) $ \v -> do
+interrupt :: Exp Word16 -> Exp Word8 -> ExpM ()
+interrupt cs v = letM (mul (C 4) $ convert v) $ \v -> do
 --    trace_ $ "interrupt " ++ showHex' 2 v
     push $ Get Flags
-    push $ Get Cs
+    push $ cs
     push $ Get IP
     Set IF $ C False
     Jump' (Get $ Heap16 $ add (C 2) v) (Get $ Heap16 v)
