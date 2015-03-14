@@ -242,7 +242,8 @@ getFetcher = do
 fetchBlock :: Machine CacheEntry
 fetchBlock = do
     (n, r, e) <- liftM3 fetchBlock_ getFetcher (use cs) (use ip)
-    return $ Compiled 0 n r $ do
+    cs_ <- use cs
+    return $ Compiled cs_ n r $ do
         evalExpM e
         b <- use $ config . showReads
         when b $ do
@@ -261,7 +262,9 @@ mkStep = do
     cv <- use $ cache . at ips
     case cv of
      Just v -> case v of
-      Compiled _ n len m -> do
+      Compiled cs' n len m -> do
+        cs'' <- use cs
+        when (cs' /= cs'') $ error "cs differs"
 --        let n' = n + 1
  --       cache . _1 . at ips .= (n' `seq` Just (n', len, m))
         m
@@ -366,6 +369,7 @@ data EExpM :: List * -> * -> * where
     Nop' :: EExpM e ()
     Trace' :: String -> EExpM e ()
     Set' :: Part_ (EExp e) a -> EExp e a -> EExpM e ()
+--    Jump' :: EExp e Word16 -> EExp e Word16 -> EExpM e ()
     Output' :: EExp e Word16 -> EExp e Word16 -> EExpM e ()
 
 data Env :: List * -> * where
@@ -468,6 +472,9 @@ convExpM = f EmptyLayout where
         Cyc2 e f a -> Cyc2' (q e) (q f) (k a)
         Nop -> Nop'
         Trace s -> Trace' s
+        Jump' cs ip -> Seq' (Set' (convPart lyt Cs) (q cs)) (Set' (convPart lyt IP) (q ip))
+        Set Cs _ -> error "convExpM: set cs"
+        Set IP _ -> error "convExpM: set ip"
         Set p e -> Set' (convPart lyt p) (q e)
         Output a b -> Output' (q a) (q b)
 

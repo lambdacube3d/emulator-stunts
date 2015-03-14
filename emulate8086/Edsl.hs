@@ -171,6 +171,8 @@ data ExpM a where
     Nop :: ExpM ()
 
     Set :: Part a -> Exp a -> ExpM ()
+    Jump' :: Exp Word16 -> Exp Word16 -> ExpM ()
+
     LetM :: Exp a -> (Exp a -> ExpM b) -> ExpM b
     LetMM :: ExpM a -> (ExpM a -> ExpM b) -> ExpM b
     IfM :: Exp Bool -> ExpM a -> ExpM a -> ExpM a
@@ -304,6 +306,7 @@ mparts = \case
     Replicate e x -> eparts' e |+| mparts x
     Cyc2 a b x -> eparts' a |+| eparts' b |+| mparts x
     Set x y -> (keyOf x, eparts y)
+    Jump' x y -> eparts' x |+| eparts' y |+| (keyOf Cs |.| keyOf IP, mempty)
     Nop -> mempty
     Trace{} -> mempty
     QuotRem{} -> (full, full)
@@ -399,12 +402,8 @@ reple k e' = eparts where
     e -> e
 -}
 
-repl' k e m@(Set k'' (Add v (Get k'))) = case same k k' of
-    Eqq -> Set k'' (add v e)
-    _ -> Set k e `Seq` m
-repl' k e m@(Set k'' (Add v (Get k')) `Seq` m') = case same k k' of
-    Eqq -> Set k'' (add v e) `Seq` m'
-    _ -> Set k e `Seq` m
+repl' IP e m@(Set IP (Add v (Get IP))) = Set IP (add v e)
+repl' IP e m@(Set IP (Add v (Get IP)) `Seq` m') = Set IP (add v e) `Seq` m'
 repl' k e m = Set k e `Seq` m
 
 
@@ -478,13 +477,13 @@ fetchBlock_ fetch cs_ ip_ = mkInst 0 ip_ mempty
     ips_ = segAddr cs_ ip_
     mkInst n ip' inst = case nextAddr ch ip' of
         Just ip_' | ip_' > ip' -> mkInst n' ip_' ch'
-        _ -> (n', [(ips_, ips_ + fromIntegral (mdLength md))], reorderExp ch')
+        _ -> (n', [(ips_, ips_ + fromIntegral (mdLength md))], {- reorderExp -} ch')
       where
         n' = n + 1
         md = fetch ips
         ips = segAddr cs_ ip'
 
-        ch = Set IP (Add (C $ fromIntegral $ mdLength md) (Get IP))
+        ch = Jump' (Get Cs) (Add (C $ fromIntegral $ mdLength md) (Get IP))
               <> execInstruction' md
         ch' = inst <> ch
 
@@ -503,7 +502,7 @@ nextAddr e = case e of
     Trace _ -> Just
     Output _ _ -> Just
 
-    Set IP (Add (C i) (Get IP)) | i >= 0 && i < 8 -> \x -> Just $ i + x
+    Jump' (Get Cs) (Add (C i) (Get IP)) | i >= 0 && i < 8 -> \x -> Just $ i + x
     Set IP _ -> const Nothing
     Set Cs _ -> const Nothing
     Set _ _ -> Just
@@ -558,7 +557,7 @@ reg = \case
         ES -> Es
         DS -> Ds
         SS -> Ss
-        CS -> error "Cs used(2)"
+        CS -> Cs --error "Cs used(2)"
     RegIP -> IP
 --    RegNone -> Immed $ C 0
 
@@ -669,24 +668,23 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
             when (inOpcode == Icall) $ do
                 push $ Get Cs
                 push $ Get IP
-            Set Cs $ C $ fromIntegral seg
-            Set IP $ C $ fromIntegral v
+            Jump' (C $ fromIntegral seg) (C $ fromIntegral v)
         Mem _ -> do
             when (inOpcode == Icall) $ do
                 when far $ push $ Get Cs
                 push $ Get IP
             letM (addr op1) $ \ad -> do
-                Set IP $ Get $ Heap16 ad
-                when far $ Set Cs $ Get $ Heap16 $ add (C 2) ad
+                Jump' (Get $ if far then Heap16 $ add (C 2) ad else Cs) (Get $ Heap16 ad)
         _ -> do
             when (inOpcode == Icall) $ do
                 push $ Get IP
-            Set IP $ getOp1w
+            Jump' (Get Cs) getOp1w
 
     _ | inOpcode `elem` [Iret, Iretf, Iiretw] -> do
 --        when (inOpcode == Iiretw) $ trace_ "iret"
-        pop $ Set IP
-        when (inOpcode `elem` [Iretf, Iiretw]) $ pop $ Set Cs
+        pop $ \ip -> if (inOpcode `elem` [Iretf, Iiretw])
+            then pop $ \cs -> Jump' cs ip
+            else Jump' (Get Cs) ip
         when (inOpcode == Iiretw) $ pop $ Set Flags
         when (length inOperands == 1) $ modif SP $ Add (getOp1w)
 
@@ -880,7 +878,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
         condJump $ And (Not $ Eq (C 0) (Get CX)) cond
 
     condJump :: Exp Bool -> ExpM ()
-    condJump b = when' b $ Set IP getOp1w
+    condJump b = when' b $ Jump' (Get Cs) getOp1w
 
     sizeByte :: Word16
     sizeByte = fromIntegral $ sizeByte_ i
@@ -902,14 +900,12 @@ interrupt v = letM (mul (C 4) $ convert v) $ \v -> do
     push $ Get Cs
     push $ Get IP
     Set IF $ C False
-    Set Cs $ Get $ Heap16 $ add (C 2) v
-    Set IP $ Get $ Heap16 v
+    Jump' (Get $ Heap16 $ add (C 2) v) (Get $ Heap16 v)
 
 iret :: ExpM ()
 iret = do
 --    trace_ "iret"
-    pop $ Set IP
-    pop $ Set Cs
+    pop $ \ip -> pop $ \cs -> Jump' cs ip
     pop $ Set IF . Bit 9
 
 
