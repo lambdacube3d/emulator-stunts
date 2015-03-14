@@ -117,10 +117,10 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
                         U.set v 0
                         when (st ^. config . showCache) $ do
                             forM_ (IM.toList $ fst $ IM.split (offs + 320 * 200) $ snd $ IM.split (offs-1) $ st ^. cache) $ \case
-                                (k, Compiled _ _ r _) -> forM_ r $ \(beg, end) ->
+                                (k, Compiled cs _ r _) -> forM_ r $ \(beg, end) ->
                                     forM_ [max 0 $ beg - offs .. min (320 * 200 - 1) $ end - 1 - offs] $ \i -> do
-                                        x <- U.unsafeRead v i
-                                        U.unsafeWrite v i $ x .|. 0x3f000000
+--                                        x <- U.unsafeRead v i
+                                        U.unsafeWrite v i $ fromIntegral cs `shiftL` 16 .|. 0x0000ff00 -- x .|. 0x3f000000
                                 (k, DontCache _) -> do
                                     U.unsafeWrite v (k - offs) $ 0xffff0000
                                 _ -> return ()

@@ -533,7 +533,7 @@ operandSize = \case
     _ -> Nothing
 
 segOf = \case
-    RegIP     -> Cs
+    RegIP     -> error "Cs used"
     Reg16 RSP -> Ss
     Reg16 RBP -> Ss
     _         -> Ds
@@ -558,7 +558,7 @@ reg = \case
         ES -> Es
         DS -> Ds
         SS -> Ss
-        CS -> Cs
+        CS -> error "Cs used(2)"
     RegIP -> IP
 --    RegNone -> Immed $ C 0
 
