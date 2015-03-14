@@ -299,9 +299,12 @@ mkStep = do
         entry@(Compiled _ n reg ch) <- fetchBlock
         h <- use heap''
         zipWithM_ (uModInfo h) (regionsToList reg) $ map (+) [1,1..]
-        cache %= IM.insert ips entry
+        when (cacheOK ips) $ cache %= IM.insert ips entry
         ch
         return n
+
+-- ad-hoc hacking for stunts!
+cacheOK ips = ips < 0x39000 || isp >= 0x3a700
 
 maxInstLength = 7
 
@@ -1031,8 +1034,8 @@ origInterrupt = M.fromList
     case v of
         0x00 -> do
             trace_ "Mouse Reset/Get Mouse Installed Flag"
-            ax .= "mouse?" @: 0xffff -- "mouse driver not installed" @: 0x0000
-            bx .= "number of buttons" @: 3 -- 0
+            ax .= {- "mouse?" @: 0xffff -} "mouse driver not installed" @: 0x0000
+            bx .= "number of buttons" @: 0 -- 3
         0x03 -> do
 --            trace_ "Get Mouse position and button status"
             cx .= "mouse X" @: 0
