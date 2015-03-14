@@ -737,7 +737,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} = case inOpcode of
 
     Inop  -> Nop
 
-    Ixlatb -> Set (Low AX) $ Get $ Heap8 $ segAddr_ (maybe Ds (reg . RegSeg) segmentPrefix) $ Add (Convert $ Get $ Low AX) (Get BX)
+    Ixlatb -> Set (Low AX) $ Get $ Heap8 $ segAddr_ (maybe Ds (reg . RegSeg) segmentPrefix) $ Add (Extend $ Get $ Low AX) (Get BX)
 
     Ilea -> setOp1w op2addr'
     _ | inOpcode `elem` [Iles, Ilds] -> letM (addr op2) $ \ad -> do
