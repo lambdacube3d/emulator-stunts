@@ -47,7 +47,7 @@ data Config_ = Config_
 
 data Regs = Regs { _ax_,_dx_,_bx_,_cx_, _si_,_di_, _cs_,_ss_,_ds_,_es_, _ip_,_sp_,_bp_ :: Word16 }
 
-type UVec = U.IOVector Word16
+type UVec = U.IOVector Word8
 type Cache = IM.IntMap CacheEntry
 
 data CacheEntry

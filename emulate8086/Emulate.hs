@@ -119,13 +119,12 @@ uRead h i = do
             let v = h ^. config . showBuffer
             x <- U.unsafeRead v j
             U.unsafeWrite v j $ x .|. 0x0000ff00
-    fromIntegral <$> U.unsafeRead (h ^. heap'') i
+    U.unsafeRead (h ^. heap'') i
 
 uWrite :: Int -> Word8 -> Machine ()
 uWrite i v = do
     h <- use heap''
-    x <- liftIO $ U.unsafeRead h i
-    liftIO $ U.unsafeWrite h i $ (x .&. 0xff00) .|. fromIntegral v
+    liftIO $ U.unsafeWrite h i v
     b <- use $ config . showReads
     when b $ do
         off <- use $ config . showOffset
@@ -135,27 +134,6 @@ uWrite i v = do
             liftIO $ do
                 x <- U.unsafeRead v j
                 U.unsafeWrite v j $ x .|. 0x00ff0000
-    let info = x `shiftR` 8
-        n = info
-    when (info /= 0) $ do
-        trace_ $ "invalid cache at " ++ showHex' 5 i
-        trace_ $ "#" ++ show info
-        adjustCache
-        ch <- use cache
-        let 
-            f :: Word16 -> Cache -> Cache -> Machine ()
-            f 0 ch _ = cache .= ch
-            f n ch ch' = case IM.findMax ch' of
-                (i', Compiled _ _ e _) | i `inRegions` e -> do
-                    zipWithM_ (uModInfo h) (regionsToList e) $ repeat (+(-1))
-                    f (n-1) (at i' .~ Just (DontCache 0) $ ch) (IM.delete i' ch')
-                (i', _) -> f n ch (IM.delete i' ch')
-        f n ch $ fst $ IM.split (i+1) ch
-
-uModInfo :: UVec -> Int -> (Word8 -> Word8) -> Machine ()
-uModInfo h i f = liftIO $ do
-    x <- U.unsafeRead h i
-    U.unsafeWrite h i $ high %~ f $ x
 
 bytesAt__ :: Int -> Int -> MachinePart' [Word8]
 bytesAt__ i' j' = (get_, set)
@@ -298,13 +276,12 @@ mkStep = do
      Nothing -> do
         entry@(Compiled _ n reg ch) <- fetchBlock
         h <- use heap''
-        zipWithM_ (uModInfo h) (regionsToList reg) $ map (+) [1,1..]
         when (cacheOK ips) $ cache %= IM.insert ips entry
         ch
         return n
 
 -- ad-hoc hacking for stunts!
-cacheOK ips = ips < 0x39000 || isp >= 0x3a700
+cacheOK ips = ips < 0x39000 || ips >= 0x3a700
 
 maxInstLength = 7
 
