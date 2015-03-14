@@ -21,6 +21,7 @@ import "GLFW-b" Graphics.UI.GLFW as GLFW
 import Foreign
 
 import MachineState
+import Helper
 
 videoMem = 0xa0000
 dof = 320 * 200
@@ -33,8 +34,24 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
         winH = 600
         sett r = changeSt $ config . instPerSec %= r
         setOVar f = changeSt $ config . showOffset %= max 0 . min videoMem . f
+    pos <- newMVar Nothing
     Just window <- GLFW.createWindow winW winH "Haskell Stunts" Nothing Nothing
     GLFW.makeContextCurrent $ Just window
+    let posToAddr st x y = do
+            let offs = st ^. config . showOffset
+                fb = st ^. heap''
+                addr = offs + 320 * y + x
+            val <- U.read fb addr
+            return (addr, val)
+    setCursorEnterCallback window $ Just $ \window -> \case
+        CursorState'NotInWindow -> modifyMVar_ pos $ const $ return Nothing
+        _ -> return ()
+    setCursorPosCallback window $ Just $ \window x_ y_ -> do
+        st <- readMVar stvar
+        let x = round x_ `div` 3
+            y = round y_ `div` 3
+        when (0 <= x && x < 320 && 0 <= y && y < 200) $ do
+            modifyMVar_ pos $ const $ return $ Just ((x, y), Nothing)
     GLFW.setKeyCallback window $ Just $ \window key scancode action mods -> do
         let send (press, release) = case action of
                 GLFW.KeyState'Pressed  -> interrupt $ AskKeyInterrupt press
@@ -74,6 +91,7 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
             Key'T -> changeSt $ config . showReads %= not
             Key'I -> changeSt $ config . showReads' %= not
             Key'U -> changeSt $ config . showCache %= not
+            Key'P -> changeSt $ config . speed %= (3000 -)
             Key'Q -> GLFW.setWindowShouldClose window True
             _ -> return ()
 
@@ -92,6 +110,7 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
                 _ <- takeMVar tv
                 st <- readMVar stvar
                 let offs = st ^. config . showOffset
+                let fb = st ^. heap''
                 (vec, post) <- if st ^. config . showReads then do
                     let v = st ^. config . showBuffer
                     return $ (,) v $ do
@@ -106,8 +125,7 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
                                     U.unsafeWrite v (k - offs) $ 0xffff0000
                                 _ -> return ()
                   else do
-                    let fb = st ^. heap''
-                        p = st ^. config . palette
+                    let p = st ^. config . palette
                     forM_ [0..199] $ \y -> do
                       let y_ = offs + 320 * y
                           y' = 320 * y
@@ -116,6 +134,19 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
                         v <- Vec.unsafeIndexM p $ fromIntegral a .&. 0xff
                         U.unsafeWrite vec2 (y' + x) v
                     return (vec2, return ())
+                p <- readMVar pos
+                case p of
+                    Nothing -> return ()
+                    Just ((x, y), v) -> do
+                        v'@(addr, val) <- posToAddr st x y
+                        modifyMVar_ pos $ const $ return $ Just ((x, y), Just v')
+                        when (v /= Just v') $ onScreen $ "[" ++ showHex' 5 addr ++ "] = " ++ showHex' 2 val
+                        let drawPix x y = when (0 <= i && i < 320 * 200) $ U.write vec i 0xffffff00 where i = 320 * y + x
+                        forM_ [5..8] $ \j -> do
+                            drawPix (x + j) y
+                            drawPix (x - j) y
+                            drawPix x (y + j)
+                            drawPix x (y - j)
                 U.unsafeWith vec $ glTexSubImage2D gl_TEXTURE_2D 0 0 0 320 200 gl_RGBA gl_UNSIGNED_INT_8_8_8_8
                 glBlitFramebuffer 0 200 320 0 0 0 (fromIntegral winW) (fromIntegral winH) gl_COLOR_BUFFER_BIT gl_NEAREST
                 GLFW.swapBuffers window
@@ -133,6 +164,9 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
 
     GLFW.destroyWindow window
     GLFW.terminate
+
+-- TODO
+onScreen str = putStrLn str
 
 mkBackBuffer = do
   fbo <- alloca $! \pbo -> glGenFramebuffers 1 pbo >> peek pbo

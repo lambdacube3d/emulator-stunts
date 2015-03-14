@@ -142,7 +142,10 @@ main = withProgNameAndArgs runALUT $ \_ _ -> do
         config . soundSource .= source
         loadExe loadSegment game
         forever $ do
-            mkStep >>= checkInt
+            sp <- use $ config . speed
+            if sp > 0 then do
+                mkStep >>= checkInt
+              else liftIO $ threadDelay 20000
             st <- use id
             liftIO $ modifyMVar_ pmvar $ const $ return st
             join $ liftIO $ modifyMVar changeState $ \m -> return (return (), m)

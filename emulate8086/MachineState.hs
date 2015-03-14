@@ -33,6 +33,7 @@ data Config_ = Config_
     , _showBuffer       :: U.IOVector Word32
     , _showOffset       :: Int
     , _instPerSec       :: Float  -- Hz
+    , _speed            :: Int  -- 0: stop
     , _stepsCounter     :: Int
     , _counter          :: Int -- timer interrupt counter
     , _palette          :: V.Vector Word32
@@ -106,6 +107,7 @@ emptyState = do
         , _showBuffer   = vec2
         , _showOffset   = 0xa0000
         , _instPerSec   = 50
+        , _speed        = 3000
         , _stepsCounter = 0
         , _counter      = 0
         , _speaker      = 0x30 -- ??
