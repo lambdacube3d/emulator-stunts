@@ -36,6 +36,7 @@ import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Sequence as S
 import qualified Data.Set as Set
 import qualified Data.Map as M
+import qualified Data.IntSet as IS
 import qualified Data.IntMap.Strict as IM
 import qualified Data.Vector as V
 import qualified Data.Vector.Storable as US
@@ -48,12 +49,14 @@ import Control.Monad.Reader
 import Control.Lens as Lens
 import Control.Concurrent
 import Control.Exception (evaluate)
+import Control.DeepSeq
 import System.Directory
 import System.FilePath (takeFileName)
 import "Glob" System.FilePath.Glob
 --import Data.IORef
 import Sound.ALUT (play, stop, sourceGain, pitch, ($=))
 
+import System.IO.Unsafe
 import Unsafe.Coerce
 import Debug.Trace
 
@@ -210,16 +213,19 @@ ifff x = [x]
 
 addressOf a b = evalExp' $ Edsl.addressOf a b
 
+invalidFile = "invalid.txt"
 cacheFile = "dontcache.txt"
 
 adjustCache = do
+    trace_ "adjust cache"
     ch <- use cache
-    let p (DontCache _) = True
-        p _ = False
+    let p (Compiled cs _ _ _) = Just cs
+        p _ = Nothing
+        f (cs, ip) = IM.alter (Just . maybe (IS.singleton ip) (IS.insert ip)) (fromIntegral cs)
     liftIO $ do
         cf <- read <$> readFile cacheFile
-        evaluate $ length cf
-        writeFile cacheFile $ show $ merge cf $ map fst $ filter (p . snd) $ IM.toList ch
+        let cf' = foldr f cf [(cs, i - cs ^. paragraph) | (i, p -> Just cs) <- IM.toList ch ] :: IM.IntMap IS.IntSet
+        cf' `deepseq` writeFile cacheFile (show cf')
 
 merge (x:xs) (y:ys) = case compare x y of
     EQ  -> x: merge xs ys
@@ -233,17 +239,29 @@ regionsToList = concatMap $ \(a, b) -> [a..b-1]
 inRegions :: Int -> Regions -> Bool
 inRegions i = any $ \(a, b) -> a <= i && i < b
 
-getFetcher :: Machine (Int -> Metadata)
+getFetcher :: Machine (Int -> BS.ByteString)
 getFetcher = do
     h <- use heap''
     v <- liftIO $ US.unsafeFreeze h
-    return $ head . disassembleMetadata disasmConfig . BS.pack . map fromIntegral . US.toList . (\ips -> US.slice ips maxInstLength v)
-
-fetchBlock :: Machine CacheEntry
-fetchBlock = do
-    (n, r, e) <- liftM3 fetchBlock_ getFetcher (use cs) (use ip)
+    (start, bs) <- use $ config . gameexe
+    ip_ <- use ip
     cs_ <- use cs
-    return $ Compiled cs_ n r $ do
+    inv <- use $ config . invalid
+    let f ips
+            | 0 <= i && i < BS.length bs = if x == x' || (cs_,ip_) `Set.member` inv then x else unsafePerformIO $ do
+                writeFile invalidFile $ show $ Set.insert (cs_,ip_) inv
+                error $ "getFetcher: " ++ show ((cs_,ip_), ips)
+            | otherwise = x
+          where
+            x = BS.pack . map fromIntegral . US.toList $ US.slice ips maxInstLength v
+            x' = BS.take maxInstLength $ BS.drop i bs
+            i = ips - start
+    return f
+
+fetchBlock_' f cs ip = do
+    let (n, r, e) = fetchBlock_ (head . disassembleMetadata disasmConfig . f) cs ip
+    liftIO $ evaluate n
+    return $ Compiled cs n r $ do
         evalExpM e
         b <- use $ config . showReads
         when b $ do
@@ -252,6 +270,13 @@ fetchBlock = do
             liftIO $ forM_ r $ \(beg, end) -> forM_ [max 0 $ beg - off .. min (320 * 200 - 1) $ end - 1 - off] $ \i -> do
                 x <- U.unsafeRead v i
                 U.unsafeWrite v i $ x .|. 0xff000000
+
+fetchBlock :: Machine CacheEntry
+fetchBlock = do
+    cs_ <- use cs
+    ip_ <- use ip
+    f <- getFetcher
+    fetchBlock_' f cs_ ip_
 
 mkStep :: Machine Int
 mkStep = do
@@ -279,12 +304,14 @@ mkStep = do
      Nothing -> do
         entry@(Compiled _ n reg ch) <- fetchBlock
         h <- use heap''
-        when (cacheOK ips) $ cache %= IM.insert ips entry
+        when (cacheOK ips) $ do
+            cache %= IM.insert ips entry
+            adjustCache
         ch
         return n
 
 -- ad-hoc hacking for stunts!
-cacheOK ips = ips < 0x39000 || ips >= 0x3a700
+cacheOK ips = ips < 0x39000 -- || ips >= 0x3a700
 
 maxInstLength = 7
 
@@ -1190,17 +1217,38 @@ loadExe loadSegment gameExe = do
     liftIO $ print $ showHex' 5 $ loadSegment ^. paragraph
     liftIO $ print $ showHex' 5 headerSize
 
+    setWordAt (0x410) $ "equipment word" @: 0xd426 --- 0x4463   --- ???
+    setByteAt (0x417) $ "keyboard shift flag 1" @: 0x20
+
     forM_ [(fromIntegral a, b, m) | (b, (a, m)) <- M.toList origInterrupt] $ \(i, (hi, lo), m) -> do
         setWordAt (4*i) $ "interrupt lo" @: lo
         setWordAt (4*i + 2) $ "interrupt hi" @: hi
         cache %= IM.insert (segAddr hi lo) (BuiltIn m)
 
-    cf <- liftIO $ read <$> readFile cacheFile
-    cache %= IM.union (IM.fromList $ zip cf $ repeat $ DontCache 0)
+    config . gameexe .= (exeStart, relocatedExe)
+    trace_ "Loading cache"
+    inv <- read <$> liftIO (readFile invalidFile)
+    config . invalid .= inv
+    let inv' = IS.fromList $ map (uncurry segAddr) $ Set.toList inv
+    cache %= IM.union (IM.fromList $ zip (IS.toList inv') $ repeat $ DontCache 0)
+    cf <- do
+        x <- liftIO $ readFile cacheFile
+        case x `deepseq` reads x of
+            [(v,"")] -> return v
+            _ -> do
+                trace_ "outdated cache file deleted!"
+                liftIO $ writeFile cacheFile "fromList []"
+                return mempty
+    cf' <- cf `deepseq` (forM (IM.toList cf) $ \(fromIntegral -> cs, ips) -> forM (map fromIntegral $ IS.toList ips) $ \ip -> (,) (segAddr cs ip) <$> fetchBlock_' getInst cs ip)
+    cache %= IM.union (IM.fromList (filter (not . (`IS.member` inv') . fst) $ concat cf'))
+    trace_ "cache loaded"
 
-    setWordAt (0x410) $ "equipment word" @: 0xd426 --- 0x4463   --- ???
-    setByteAt (0x417) $ "keyboard shift flag 1" @: 0x20
   where
+    getInst i
+        | j >= 0 && j < BS.length relocatedExe = BS.take maxInstLength $ BS.drop j relocatedExe
+      where
+        j = i - exeStart
+
     rom' = concat
             [ prelude'
             , envvars
@@ -1208,13 +1256,14 @@ loadExe loadSegment gameExe = do
             ]
     rom2' = concat
         [ rom'
-        , concat
-            [ replicate 16 0
-            , psp'
-            , BS.unpack $ relocate relocationTable loadSegment $ BS.drop headerSize gameExe
-            , memUndefined'' $ additionalMemoryAllocated ^. paragraph
-            ]
+        , replicate 16 0
+        , psp'
+        , BS.unpack $ relocatedExe
+        , memUndefined'' $ additionalMemoryAllocated ^. paragraph
         ]
+
+    exeStart = loadSegment ^. paragraph
+    relocatedExe = relocate relocationTable loadSegment $ BS.drop headerSize gameExe
 
     psp' = programSegmentPrefix' (length prelude' ^. from paragraph) endseg ""
 

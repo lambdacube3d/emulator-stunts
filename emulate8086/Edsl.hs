@@ -1,3 +1,5 @@
+{-# LANGUAGE DeriveGeneric #-}
+-- {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE LambdaCase #-}
@@ -30,6 +32,8 @@ import Data.Monoid
 import Control.Applicative
 import Control.Monad ((>=>))
 import Control.Lens
+import Control.DeepSeq
+import GHC.Generics (Generic)
 import Prelude hiding ((>>), return)
 import Unsafe.Coerce
 
@@ -185,7 +189,9 @@ data ExpM a where
     Output :: Exp Word16 -> Exp Word16 -> ExpM ()
 
     Trace :: String -> ExpM ()
+--    deriving (Generic)
 
+instance NFData (ExpM a) where
 
 --    IOCall :: IO a -> ExpM a
 --    SetMachine :: Lens' MachineState a -> Exp a -> ExpM ()

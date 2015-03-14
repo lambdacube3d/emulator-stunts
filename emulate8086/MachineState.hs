@@ -4,7 +4,9 @@ module MachineState where
 
 import Data.Word
 import Data.Bits
+import Data.Monoid
 import Control.Concurrent.MVar
+import qualified Data.Set as S
 import qualified Data.Vector as V
 import qualified Data.IntMap.Strict as IM
 import qualified Data.ByteString as BS
@@ -37,6 +39,8 @@ data Config_ = Config_
     , _stepsCounter     :: Int
     , _counter          :: Int -- timer interrupt counter
     , _palette          :: V.Vector Word32
+    , _gameexe          :: (Int, BS.ByteString)
+    , _invalid          :: S.Set (Word16, Word16)
 
     , _soundSource      :: Source
     , _frequency        :: Word16   -- speaker frequency
@@ -116,6 +120,8 @@ emptyState = do
         , _interruptRequest = ivar
         , _soundSource  = undefined
         , _frequency    = 0x0000
+        , _gameexe      = undefined
+        , _invalid      = mempty
         }
     }
 
