@@ -226,7 +226,7 @@ addressOf Nothing RDX = liftM2 segAddr (use ds) (use dx)
 addressOf (Just ES) RDX = liftM2 segAddr (use es) (use dx)
 
 invalidFile = "invalid.txt"
-cacheFile = "dontcache.txt"
+cacheFile = "cache.txt"
 
 --alter i f = IM.alter (Just . maybe (f mempty) f) i
 alter' :: Maybe Word16 -> Int
@@ -1273,13 +1273,17 @@ loadExe loadSegment gameExe = do
     let inv' = IS.fromList $ map (uncurry segAddr) $ Set.toList inv
     cache %= IM.union (IM.fromList $ zip (IS.toList inv') $ repeat $ DontCache 0)
     cf <- do
-        x <- liftIO $ readFile cacheFile
-        case x `deepseq` reads x of
-            [(v,"")] -> return v
-            _ -> do
-                trace_ "outdated cache file deleted!"
-                liftIO $ writeFile cacheFile "fromList []"
-                return mempty
+        let newCache = liftIO $ do
+            writeFile cacheFile "fromList []"
+            return mempty
+        b <- liftIO $ doesFileExist cacheFile
+        if not b then newCache else do
+            x <- liftIO $ readFile cacheFile
+            case x `deepseq` reads x of
+                [(v,"")] -> return v
+                _ -> do
+                    trace_ "outdated cache file deleted!"
+                    newCache
 --    when (not $ unique [segAddr cs $ fromIntegral ip | (fromIntegral -> cs, ips) <- IM.toList cf, ip <- IS.toList ips]) $ error "corrupt cache"
     let fromIntegral' :: Int -> Maybe Word16
         fromIntegral' x | x == -1 = Nothing
