@@ -892,34 +892,8 @@ segAddr_ seg off = SegAddr seg off
 stackTop :: Part Word16
 stackTop = Heap16 $ segAddr_ (Get Ss) $ Get SP
 
-push :: Exp Word16 -> ExpM ()
-push x = do
-    modif SP $ Add $ C $ -2
-    Set stackTop x
-
-pop :: (Exp Word16 -> ExpM ()) -> ExpM ()
-pop cont = LetM (Get stackTop) $ \x -> do
-    modif SP $ Add $ C 2
-    cont x
-
 move a b = Set a $ Get b
 
-
-
-
-interrupt :: Exp Word16 -> Exp Word8 -> ExpM ()
-interrupt cs v = letM (mul (C 4) $ convert v) $ \v -> do
---    trace_ $ "interrupt " ++ showHex' 2 v
-    push $ Get Flags
-    push $ cs
-    push $ Get IP
-    Set IF $ C False
-    Jump' (Get $ Heap16 $ add (C 2) v) (Get $ Heap16 v)
-
-iret :: ExpM ()
-iret = pop $ \ip -> pop $ \cs -> do
-    pop (Set IF . Bit 9)
-    Jump' cs ip
-    
+maxInstLength = 7
 
 

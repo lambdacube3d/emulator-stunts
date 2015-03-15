@@ -24,6 +24,7 @@ import System.IO
 import System.IO.Unsafe
 import Sound.ALUT
 
+import Dos
 import Emulate
 import DosBox
 import Helper
@@ -52,7 +53,8 @@ main = withProgNameAndArgs runALUT $ \_ _ -> do
     forkIO $ void $ flip evalStateT st $ do
         config . verboseLevel .= 1 
         config . soundSource .= source
-        loadExe loadSegment game
+        getInst <- loadExe loadSegment game
+        loadCache getInst
         forever $ do
             sp <- use $ config . speed
             if sp > 0 then do

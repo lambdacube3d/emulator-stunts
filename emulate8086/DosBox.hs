@@ -23,6 +23,7 @@ import Foreign
 import MachineState
 import Helper
 import Emulate
+import Dos
 
 videoMem = 0xa0000
 dof = 320 * 200
