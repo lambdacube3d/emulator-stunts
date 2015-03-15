@@ -18,7 +18,7 @@ import Control.Monad.Except
 import Control.Lens as Lens
 import Control.Concurrent
 import Control.Concurrent.MVar
-import Test.QuickCheck hiding ((.&.))
+--import Test.QuickCheck hiding ((.&.))
 import System.Environment
 import System.IO
 import System.IO.Unsafe

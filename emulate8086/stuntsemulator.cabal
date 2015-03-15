@@ -1,0 +1,49 @@
+Name:          stuntsemulator
+Version:       0.1
+Cabal-Version: >= 1.2
+Synopsis:      A revival of the classic game Stunts (8086 CPU and DOS emulation)
+Category:      Graphics, Game
+Author:        Péter Diviánszky
+Maintainer:    divipp@gmail.com
+Copyright:     (c) 2014-2015, Péter Diviánszky and Csaba Hruska
+License:       BSD3
+License-File:  LICENSE
+Stability:     experimental
+Build-Type:    Simple
+Extra-Source-Files:
+  Helper.hs
+  Edsl.hs
+  DeBruijn.hs
+  MachineState.hs
+  Emulate.hs
+  Dos.hs
+  DosBox.hs
+
+Data-Files:
+  invalid.txt
+
+Executable stuntsemulator
+  HS-Source-Dirs: .
+  Main-IS:        Main.hs
+  GHC-Options:  -Wall -fno-warn-unused-do-bind
+                -fno-warn-name-shadowing
+                -fno-warn-type-defaults
+                -fspec-constr-count=6
+                -rtsopts
+  Build-Depends:  base >= 4 && < 5
+                , mtl
+                , transformers
+                , lens
+                , deepseq
+                , containers
+                , vector
+                , bytestring
+                , directory
+                , filepath
+                , Glob
+--                , cmdargs
+                , hdis86
+                , OpenGLRaw
+                , GLFW-b
+                , ALUT
+
