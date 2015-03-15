@@ -1,4 +1,3 @@
-{-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE TemplateHaskell #-}
 module MachineState where
 
@@ -12,9 +11,10 @@ import qualified Data.IntMap.Strict as IM
 import qualified Data.ByteString as BS
 import qualified Data.Vector.Storable.Mutable as U
 import Control.Monad.State
-import Control.Monad.Except
 import Control.Lens as Lens
 import Sound.ALUT
+
+----------------------------------------------
 
 data Request
     = AskKeyInterrupt Word16

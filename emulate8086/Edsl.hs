@@ -1,27 +1,7 @@
-{-# LANGUAGE DeriveGeneric #-}
--- {-# LANGUAGE DeriveAnyClass #-}
-{-# LANGUAGE NoMonomorphismRestriction #-}
-{-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE GADTs #-}
---{-# LANGUAGE ExistentialTypes #-}
-{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE RebindableSyntax #-}
-module Edsl
-    {-( compileInst, execInstruction'
-    , nextAddr
-    , reorderExp
-    , iret
-    , interrupt
-    , Part (..), Exp (..), ExpM (..), Halt (..)
-    , memIndex
-    , addressOf, addressOf'
-    , trace
-    )-} where
+module Edsl where
 
+import Prelude hiding ((>>), return)
 import Data.List
 import Data.Maybe
 import Data.Int
@@ -29,19 +9,10 @@ import Data.Word
 import Data.Bits
 import qualified Data.Set as S
 import Data.Monoid
-import Control.Applicative
-import Control.Monad ((>=>))
-import Control.Lens
 import Control.DeepSeq
-import GHC.Generics (Generic)
-import Prelude hiding ((>>), return)
-import Unsafe.Coerce
-
-import Hdis86 hiding (wordSize)
-import Hdis86.Incremental
+import Hdis86
 
 import Helper
-import MachineState
 
 ----------------------------------------
 

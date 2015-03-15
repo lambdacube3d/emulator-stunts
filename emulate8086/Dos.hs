@@ -1,73 +1,30 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE Rank2Types #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE NoMonomorphismRestriction #-}
-{-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE PatternGuards #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE FunctionalDependencies #-}
-{-# LANGUAGE LiberalTypeSynonyms #-}
-{-# LANGUAGE PackageImports #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE RecursiveDo #-}
 module Dos where
 
-import Numeric
-import Numeric.Lens
-import Data.Function
 import Data.Word
-import Data.Int
 import Data.Bits hiding (bit)
-import qualified Data.Bits as Bits
 import Data.Char
 import Data.List
-import Data.Maybe
 import Data.Monoid
-import Data.Typeable
---import qualified Data.FingerTree as F
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
-import qualified Data.Sequence as S
-import qualified Data.Set as Set
 import qualified Data.Map as M
-import qualified Data.IntSet as IS
 import qualified Data.IntMap.Strict as IM
 import qualified Data.Vector as V
-import qualified Data.Vector.Storable as US
 import qualified Data.Vector.Storable.Mutable as U
 import Control.Applicative
-import Control.Arrow
 import Control.Monad.State
-import Control.Monad.Except
-import Control.Monad.Reader
 import Control.Lens as Lens
 import Control.Concurrent
-import Control.Exception (evaluate)
 import Control.DeepSeq
 import System.Directory
 import System.FilePath (takeFileName)
-import "Glob" System.FilePath.Glob
---import Data.IORef
+import System.FilePath.Glob
 import Sound.ALUT (play, stop, sourceGain, pitch, ($=))
-
-import System.IO.Unsafe
-import Unsafe.Coerce
-import Debug.Trace
-
-import Hdis86 hiding (wordSize)
-import Hdis86.Pure
+import Hdis86
 
 import Helper
-import Edsl hiding (Flags, trace_, ips, sps, segAddr_, (>>), when, return, Info, addressOf)
-import qualified Edsl (Part_(Flags))
+import Edsl hiding (trace_, (>>), when, return, Info)
 import MachineState
 import DeBruijn
 
@@ -826,8 +783,6 @@ loadExe loadSegment gameExe = do
     exeStart = loadSegment ^. paragraph
     relocatedExe = relocate relocationTable loadSegment $ BS.drop headerSize gameExe
 
-    reladd = loadSegment ^. paragraph
-
     pspSegment = loadSegment - (pspSize ^. from paragraph)
     endseg = loadSegment + executableSize ^. from paragraph + additionalMemoryAllocated
 
@@ -835,9 +790,9 @@ loadExe loadSegment gameExe = do
         -- could be anything between additionalMemoryNeeded and maxAdditionalMemoryNeeded
 
     (0x5a4d: bytesInLastPage: pagesInExecutable: relocationEntries:
-     paragraphsInHeader: additionalMemoryNeeded: maxAdditionalMemoryNeeded: ssInit:
-     spInit: checksum: ipInit: csInit:
-     firstRelocationItemOffset: overlayNumber: headerLeft)
+     paragraphsInHeader: additionalMemoryNeeded: _maxAdditionalMemoryNeeded: ssInit:
+     spInit: _checksum: ipInit: csInit:
+     firstRelocationItemOffset: _overlayNumber: headerLeft)
         = map (\[low, high] -> (high, low) ^. combine) $ everyNth 2 $ BS.unpack $ gameExe
 
     headerSize = paragraphsInHeader ^. paragraph

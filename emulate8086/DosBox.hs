@@ -1,5 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE PackageImports #-}
 module DosBox
     ( drawWithFrameBuffer
     ) where
@@ -8,29 +6,26 @@ import Data.Bits
 import Data.Word
 import qualified Data.IntMap.Strict as IM
 import qualified Data.Vector as Vec
-import Data.Vector.Mutable as MVec
 import qualified Data.Vector.Storable.Mutable as U
---import Data.Vector.Storable as SVec
-import Control.Applicative
 import Control.Monad as Prelude
 import Control.Lens
 import Control.Concurrent
 import Graphics.Rendering.OpenGL.Raw.Core32
-import Graphics.Rendering.OpenGL.Raw.Compatibility30
-import "GLFW-b" Graphics.UI.GLFW as GLFW
+import Graphics.UI.GLFW as GLFW
 import Foreign
 
 import MachineState
 import Helper
-import Emulate
 import Dos
+
+------------------------------------------------
 
 videoMem = 0xa0000
 dof = 320 * 200
 
 drawWithFrameBuffer :: (Machine () -> IO ()) -> (Request -> IO ()) -> MVar MachineState -> IO () -> IO ()
 drawWithFrameBuffer changeSt interrupt stvar draw = do
-    GLFW.init
+    _ <- GLFW.init
     esds <- newMVar False
     vec2 <- U.new (320*200) :: IO (U.IOVector Word32)
     let winW = 960
@@ -104,7 +99,7 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
     (tex,fbo) <- mkBackBuffer
 
     tv <- newEmptyMVar
-    forkIO $ forever $ do
+    _ <- forkIO $ forever $ do
         threadDelay $ 1000000 `div` 20
         putMVar tv ()
     let

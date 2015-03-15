@@ -1,74 +1,13 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE Rank2Types #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE NoMonomorphismRestriction #-}
-{-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE PatternGuards #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE FunctionalDependencies #-}
-{-# LANGUAGE LiberalTypeSynonyms #-}
-{-# LANGUAGE PackageImports #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE GADTs #-}
-{-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE RecursiveDo #-}
 module DeBruijn where
 
-import Numeric
-import Numeric.Lens
-import Data.Function
 import Data.Word
-import Data.Int
 import Data.Bits hiding (bit)
-import qualified Data.Bits as Bits
-import Data.Char
-import Data.List
-import Data.Maybe
-import Data.Monoid
-import Data.Typeable
---import qualified Data.FingerTree as F
-import qualified Data.ByteString as BS
-import qualified Data.ByteString.Char8 as BSC
-import qualified Data.Sequence as S
-import qualified Data.Set as Set
-import qualified Data.Map as M
-import qualified Data.IntSet as IS
-import qualified Data.IntMap.Strict as IM
-import qualified Data.Vector as V
-import qualified Data.Vector.Storable as US
-import qualified Data.Vector.Storable.Mutable as U
-import Control.Applicative
-import Control.Arrow
-import Control.Monad.State
-import Control.Monad.Except
-import Control.Monad.Reader
-import Control.Lens as Lens
-import Control.Concurrent
-import Control.Exception (evaluate)
-import Control.DeepSeq
-import System.Directory
-import System.FilePath (takeFileName)
-import "Glob" System.FilePath.Glob
---import Data.IORef
-import Sound.ALUT (play, stop, sourceGain, pitch, ($=))
-
-import System.IO.Unsafe
 import Unsafe.Coerce
-import Debug.Trace
-
-import Hdis86 hiding (wordSize)
-import Hdis86.Pure
 
 import Helper
-import Edsl hiding (Flags, trace_, ips, sps, segAddr_, (>>), when, return, Info, addressOf)
-import qualified Edsl (Part_(Flags))
-import MachineState
+import Edsl
+
+--------------------------
 
 data List a = Con a (List a) | Nil
 

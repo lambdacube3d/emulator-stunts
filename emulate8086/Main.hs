@@ -1,27 +1,11 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE LambdaCase #-}
 import Data.Word
-import Data.Int
-import Data.Maybe
-import Data.Char
 import Data.Bits hiding (bit)
-import Data.IORef
 import qualified Data.ByteString as BS
-import qualified Data.Sequence as S
-import qualified Data.IntMap as IM
 import qualified Data.Vector as V
-import qualified Data.Vector.Storable.Mutable as U
-import Control.Applicative
---import Control.Arrow
 import Control.Monad.State
-import Control.Monad.Except
 import Control.Lens as Lens
 import Control.Concurrent
-import Control.Concurrent.MVar
---import Test.QuickCheck hiding ((.&.))
-import System.Environment
 import System.IO
-import System.IO.Unsafe
 import Sound.ALUT
 
 import Dos
@@ -29,7 +13,6 @@ import Emulate
 import DosBox
 import Helper
 import MachineState
---import Utils.Parse (getLabels)
 
 --------------------------------------------------------------------------------
 
@@ -50,7 +33,7 @@ main = withProgNameAndArgs runALUT $ \_ _ -> do
     game <- BS.readFile "../restunts/stunts/game.exe"
     st <- emptyState
     pmvar <- newMVar st
-    forkIO $ void $ flip evalStateT st $ do
+    _ <- forkIO $ void $ flip evalStateT st $ do
         config . verboseLevel .= 1 
         config . soundSource .= source
         getInst <- loadExe loadSegment game

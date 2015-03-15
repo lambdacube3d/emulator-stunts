@@ -25,11 +25,19 @@ Data-Files:
 Executable stuntsemulator
   HS-Source-Dirs: .
   Main-IS:        Main.hs
-  GHC-Options:  -Wall -fno-warn-unused-do-bind
-                -fno-warn-name-shadowing
+  GHC-Options:  -Wall
                 -fno-warn-type-defaults
-                -fspec-constr-count=6
+                -fno-warn-missing-signatures
+                -fno-warn-incomplete-patterns
+                -fno-warn-unused-matches
+                -fno-warn-name-shadowing
                 -rtsopts
+  Extensions:
+    NoMonomorphismRestriction, ScopedTypeVariables,
+    ViewPatterns, PatternGuards, LambdaCase, RecordWildCards, BangPatterns, RecursiveDo,
+    RankNTypes, GADTs, TypeFamilies, DataKinds,
+    MultiParamTypeClasses, FlexibleInstances, FlexibleContexts
+
   Build-Depends:  base >= 4 && < 5
                 , mtl
                 , transformers

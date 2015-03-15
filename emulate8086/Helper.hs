@@ -1,47 +1,13 @@
-{-# LANGUAGE FunctionalDependencies #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE Rank2Types #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE NoMonomorphismRestriction #-}
-{-# LANGUAGE ViewPatterns #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE UndecidableInstances #-}
 module Helper where
 
 import Numeric
-import Numeric.Lens
 import Data.Word
 import Data.Int
 import Data.Bits hiding (bit)
-import qualified Data.Bits as Bits
 import Data.Char
-import Data.List
-import Data.Maybe
-import Data.Monoid
-import Data.Functor.Compose
---import qualified Data.FingerTree as F
-import qualified Data.ByteString as BS
-import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Sequence as S
-import qualified Data.Set as Set
-import qualified Data.IntMap.Strict as IM
-import qualified Data.Vector as V
-import Control.Applicative
 import Control.Arrow
-import Control.Monad.State
-import Control.Monad.Except
-import Control.Monad.Writer
-import Control.Monad.Identity
 import Control.Lens as Lens
-import Control.Lens.Internal.Iso as Lens (Exchange (..))
-import Control.Lens.Internal.Indexed as Lens (Indexing (..))
 
 ----------------------------------------------
 
