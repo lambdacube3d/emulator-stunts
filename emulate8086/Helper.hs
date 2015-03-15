@@ -42,9 +42,6 @@ import Control.Monad.Identity
 import Control.Lens as Lens
 import Control.Lens.Internal.Iso as Lens (Exchange (..))
 import Control.Lens.Internal.Indexed as Lens (Indexing (..))
---import Control.Lens.Action.Internal as Lens
-
---import Word1
 
 ----------------------------------------------
 
@@ -101,11 +98,7 @@ uComb x y = lens ((^. x) &&& (^. y)) $ \a (b, c) -> set x b . set y c $ a
 
 --------------------------
 
-
 class (FiniteBits a, Integral a) => WordX a where
-    -- hack
-    asInt :: Iso' a (Maybe Integer)
-    asInt = iso (Just . toInteger) $ maybe (error "fromInteger'") fromInteger
 
 instance WordX Word8  where
 instance WordX Word16 where
@@ -113,11 +106,7 @@ instance WordX Word32 where
 instance WordX Word64 where
 instance WordX Word   where
 
-convWords :: (WordX a, WordX b) => a -> b
-convWords = (^. (asInt . from asInt))
-
-
---------------------------------- TODO: refactor?
+---------------------------------
 
 class (WordX a, Integral (Signed a), FiniteBits (Signed a)) => AsSigned a where
     type Signed a :: *
@@ -164,16 +153,9 @@ checkAlign n i
     | i ^. bits 0 n == 0 = i
     | otherwise = error $ "checkAlign: " ++ show n ++ " " ++ show i
 
-
 paragraph :: Iso' Word16 Int
 paragraph = convertingInt . shifting 4 . iso id (checkAlign 4)
 
 segAddr :: Word16 -> Word16 -> Int
 segAddr s w = fromIntegral s `shiftL` 4 + fromIntegral w
-
-showAddr :: Int -> String
-showAddr x = showHex' 5 (x ^. shifting (-3)) ++ concat ["," ++ showHex' 1 y | let y = x ^. bits 0 3, y /= 0]
-
---------------------------
-
 

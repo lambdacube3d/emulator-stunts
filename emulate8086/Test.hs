@@ -26,100 +26,12 @@ import Sound.ALUT
 
 import Emulate
 import DosBox
---import Word1
 import Helper
 import MachineState
 --import Utils.Parse (getLabels)
 
 --------------------------------------------------------------------------------
-{-
-testHelp n = unsafePerformIO $ loadTest <$> BS.readFile ("tests/" ++ n ++ ".bin")
 
--- http://orbides.1gb.ru/80186_tests.zip
-testTest = mapM_ testThis
-  [ "add"
-  , "bcdcnv"
-  , "bitwise"
-  , "cmpneg"
-  , "control"
-  , "datatrnf"
-  , "div"
-  , "interrupt"
-  , "jmpmov"
-  , "jump1"
-  , "jump2"
-  , "mul"
---  , "rep"
-  , "rotate"
-  , "segpr"
-  , "shifts"
---  , "strings"
-  , "sub"
-  ]
-
-testTest' = mapM_ testThis'
-  [ "add"
-  , "bcdcnv"
-  , "bitwise"
-  , "cmpneg"
-  , "control"
---  , "datatrnf"
-{-  , "div"
-  , "interrupt"
--}
-  , "jmpmov"
-{-
-  , "jump1"
-  , "jump2"
--}  , "mul"
---  , "rep"
-  , "rotate"
----  , "segpr"
-  , "shifts"
---  , "strings"
-  , "sub"
-  ]
-
-testThis n = testCommon "new"
-testThis' = testCommon "dosbox"
-
-showTest n = loadTest <$> BS.readFile ("tests/" ++ n ++ ".bin")
-
-testCommon pre n = do
-  putStr $ "Test " ++ n ++ ": "
-  m <- mkSteps . loadTest <$> BS.readFile ("tests/" ++ n ++ ".bin")
-  case m of
-    (CleanHalt,x) -> do
-      res <- case n of
-          "jmpmov" -> return $ BS.pack [0x01, 0x40]
-          _ -> BS.readFile $ "tests/" ++ pre ++ "_res_" ++ n ++ ".bin"
-      let v = x ^. heap . memSlice 0 (BS.length res ^. byte) . memBitChunks
-      putStrLn $ unwords $ concat $ mapWithPositions (notSimilar $ toRom res) v
-      when (n == "jmpmov" && x ^. ips /= Defined (0xf400d ^. byte)) $ putStrLn $ "jmpmov failed " ++ showAddr (fromDefined $ x ^. ips)
-    (h,_) -> putStrLn $ "Error " ++ show h
-
-takes :: [Int] -> [a] -> [[a]]
-takes [] _ = []
-takes (i:is) x = take i x: takes is (drop i x)
-
-notSimilar :: MemPiece -> Int -> Int -> BitChunk (Defined Word) -> [String]
-notSimilar _ _ _ (BitChunk _ Undefined) = []
-notSimilar ref off l a
-    | a == b   = []
-    | otherwise = [ showAddr off ++ ":" ++ show a ++ "/" ++ show b ]
-  where
-    b :: BitChunk (Defined Word)
-    b = bitChunk 0 l $ fromJust $ ref ^? memSlice off l . memBitChunks . bitChunks
-
-branchTest = loadCom <$> BS.readFile "tests/branch.com"
-main' = do
-    hSetBuffering stdout NoBuffering
-    print . fst . mkSteps =<< eaTest
-eaTest = loadCom <$> BS.readFile "tests/testea.com"
-
-comTest = unsafePerformIO $ loadCom <$> BS.readFile "bushes.com"
--}
---main = testTest'
 main = withProgNameAndArgs runALUT $ \_ _ -> do
 
     bData <- createBufferData (Square 440 0 0.1)
@@ -157,28 +69,6 @@ createBuff (BufferData m fmt f) x = do
     bufferData b $= BufferData m fmt (x*f)
     return b
 
-{-
-comTestMain = do
-    st <- loadCom <$> BS.readFile "bushes.com" >>= newIORef
-{-
-    framebuffer <- Vec.replicate (2^16) 0
-    Vec.write framebuffer (f initI) 1
-    Prelude.forM_ [0xfff4..0xffff] $ \i -> do
-        MVec.write framebuffer i 1
--}
-    let framebuffer = do
-            x <- readIORef st
-            let gs = x ^. heap16 0x6 . coerceS' "149" . paragraph
-                v = x ^. heap
---            assert "err" $ V.length v == 320 * 200
-            return $ \x y -> fromDefined $ v ^. byteAt (gs + 320 * y + x) 
-    drawWithFrameBuffer framebuffer $ do
-        x <- readIORef st
-        writeIORef st $ flip execState x $ runExceptT $ do
-            replicateM_ 10000 $ cachedStep
-            clearHist
-        putStrLn "."
--}
 --------------------------------------------------------------------------------
 
 loadSegment = 0x20e -- can be arbitrary?
