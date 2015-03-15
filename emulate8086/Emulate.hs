@@ -1171,32 +1171,11 @@ error' :: String -> Word8
 error' _ = 0
 memUndefined'' i = replicate i 0
 
+programSegmentPrefix' :: Int -> Word16 -> Word16 -> BS.ByteString -> Machine ()
+programSegmentPrefix' base envseg endseg args = do
 
-type MemPiece' = IM.IntMap Word8
-
-bytesAt_ :: Int -> Int -> Lens' MemPiece' [Word8]
-bytesAt_ i' j' = lens get set
-  where
-    set s m = IM.unions [s1, (IM.fromList . zip [i' ..] . pad (error "pad") j' . take j') m, s2] where
-        (s1, s') = IM.split i' s
-        (_, s2) = IM.split (i' + j' - 1) s'
-    get = IM.elems . fst . IM.split (i' + j') . snd . IM.split (i'-1)
-
-byteAt_ :: Int -> Lens' (IM.IntMap Word8) Word8
-byteAt_ i = lens (IM.! i') $ flip $ IM.insert i' where i' = i
-
-wordAt_ :: Int -> Lens' (IM.IntMap Word8) Word16
-wordAt_ i = uComb (byteAt_ (i + 1)) (byteAt_ i) . combine
-
-dwordAt_ :: Int -> Lens' (IM.IntMap Word8) Word32
-dwordAt_ i = uComb (wordAt_ (i + 2)) (wordAt_ i) . combine
-
-
-programSegmentPrefix' :: Word16 -> Word16 -> BS.ByteString -> [Word8]
-programSegmentPrefix' envseg endseg args = IM.elems $ flip execState (IM.fromList $ zip [0..] $ map (error' . ("psp uninitialized byte: " ++) . showHex' 2) [0..0xff] :: MemPiece') $ do
-
-    wordAt_ 0x00 .= "CP/M exit, always contain code 'int 20h'" @: 0x20CD
-    wordAt_ 0x02 .= "Segment of the first byte beyond the memory allocated to the program" @: endseg
+    wordAt_ 0x00 $ "CP/M exit, always contain code 'int 20h'" @: 0x20CD
+    wordAt_ 0x02 $ "Segment of the first byte beyond the memory allocated to the program" @: endseg
 --    bytesAt 0x05 5 .= [0xea, 0xff, 0xff, 0xad, 0xde]   -- FAR call to MSDOS function dispatcher (int 21h)?
 --    dwordAt 0x0a .= 0xf00020c8    -- Terminate address of previous program (old INT 22h)
 --    dwordAt 0x0e .= 0x01180000    -- Break address of previous program (old INT 23h)
@@ -1206,7 +1185,7 @@ programSegmentPrefix' envseg endseg args = IM.elems $ flip execState (IM.fromLis
     -- Job File Table (JFT) (internal)
 --    bytesAt 0x18 20 .= [0x01, 0x01, 0x01, 0x00, 0x02, 0x03] ++ repeat 0xff
 
-    wordAt_ 0x2c .= "Environment segment" @: envseg
+    wordAt_ 0x2c $ "Environment segment" @: envseg
 --    dwordAt 0x2e .= 0x0192ffe6 -- SS:SP on entry to last INT 21h call (internal)
 
 --    wordAt 0x32 .= 0x0014 -- JFT size (internal)
@@ -1215,7 +1194,7 @@ programSegmentPrefix' envseg endseg args = IM.elems $ flip execState (IM.fromLis
     -- 3Ch-3Fh     4 bytes     Reserved
 --    wordAt 0x40 .= 0x0005 -- DOS version to return (DOS 4 and later, alterable via SETVER in DOS 5 and later)
     -- 42h-4Fh     14 bytes     Reserved
-    bytesAt_ 0x50 3 .= [0xcd, 0x21, 0xcb] -- (code) Far call to DOS (always contain INT 21h + RETF)
+    bytesAt_ 0x50 3 [0xcd, 0x21, 0xcb] -- (code) Far call to DOS (always contain INT 21h + RETF)
     -- 53h-54h     2 bytes     Reserved
     -- 55h-5Bh     7 bytes     Reserved (can be used to make first FCB into an extended FCB)
 
@@ -1223,10 +1202,14 @@ programSegmentPrefix' envseg endseg args = IM.elems $ flip execState (IM.fromLis
     -- 6Ch-7Fh     20 bytes     Unopened Standard FCB 2 (overwritten if FCB 1 is opened)
 --    bytesAt 0x5c (16 + 20) .= repeat 0
 
-    byteAt_ 0x80 .= "args length" @: fromIntegral (min maxlength $ BS.length args)
-    bytesAt_ 0x81 (maxlength + 1) .= pad 0 (maxlength + 1) (take maxlength (BS.unpack args) ++ [0x0D])  -- Command line string
+    byteAt_ 0x80 $ "args length" @: fromIntegral (min maxlength $ BS.length args)
+    bytesAt_ 0x81 (maxlength + 1) $ pad 0 (maxlength + 1) (take maxlength (BS.unpack args) ++ [0x0D])  -- Command line string
 --    byteAt 0xff .= 0x36   -- dosbox specific?
   where
+    wordAt_ i = setWordAt System (i+base)
+    byteAt_ i = setByteAt System (i+base)
+    bytesAt_ i l = snd (bytesAt__ (i+base) l) 
+
     maxlength = 125
 
 pspSize = 256 :: Int
@@ -1265,6 +1248,8 @@ loadExe loadSegment gameExe = do
         setWordAt System (4*i) $ "interrupt lo" @: lo
         setWordAt System (4*i + 2) $ "interrupt hi" @: hi
         cache %= IM.insert (segAddr hi lo) (BuiltIn m)
+
+    programSegmentPrefix' (length rom' + 16) (length prelude' ^. from paragraph) endseg ""
 
     config . gameexe .= (exeStart, relocatedExe)
     trace_ "Loading cache"
@@ -1307,20 +1292,18 @@ loadExe loadSegment gameExe = do
     rom' = concat
             [ prelude'
             , envvars
-            , replicate' (loadSegment ^. paragraph - length prelude' - length envvars - length psp' - 16) 0
+            , replicate' (loadSegment ^. paragraph - length prelude' - length envvars - pspSize - 16) 0
             ]
     rom2' = concat
         [ rom'
         , replicate 16 0
-        , psp'
+        , replicate pspSize 0
         , BS.unpack $ relocatedExe
         , memUndefined'' $ additionalMemoryAllocated ^. paragraph
         ]
 
     exeStart = loadSegment ^. paragraph
     relocatedExe = relocate relocationTable loadSegment $ BS.drop headerSize gameExe
-
-    psp' = programSegmentPrefix' (length prelude' ^. from paragraph) endseg ""
 
     reladd = loadSegment ^. paragraph
 
