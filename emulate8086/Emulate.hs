@@ -220,16 +220,18 @@ invalidFile = "invalid.txt"
 cacheFile = "dontcache.txt"
 
 alter i f = IM.alter (Just . maybe (f mempty) f) i
+alter' (Just i) = alter $ fromIntegral i
+alter' Nothing = alter (2^(16 :: Int) :: Int)
 
 adjustCache = do
     trace_ "adjust cache"
     ch <- use cache
-    let p (Compiled cs ss _ _ _) = Just (cs, ss)
+    let p (Compiled cs ss es ds _ _ _) = Just (cs, ss, es, ds)
         p _ = Nothing
-        f (ss, cs, ip) = alter (fromIntegral ss) $ alter (fromIntegral cs) (IS.insert ip)
+        f (ip, (cs, ss, es, ds)) = alter (fromIntegral ss) $ alter (fromIntegral cs) $ alter' es $ alter' ds (IS.insert ip)
     liftIO $ do
         cf <- read <$> readFile cacheFile
-        let cf' = foldr f cf [(ss, cs, i - cs ^. paragraph) | (i, p -> Just (cs, ss)) <- IM.toList ch ] :: IM.IntMap (IM.IntMap IS.IntSet)
+        let cf' = foldr f cf [(i - cs ^. paragraph, t) | (i, p -> Just t@(cs, _, _, _)) <- IM.toList ch ] -- :: IM.IntMap (IM.IntMap IS.IntSet)
         cf' `deepseq` writeFile cacheFile (show cf')
 
 merge (x:xs) (y:ys) = case compare x y of
@@ -263,10 +265,10 @@ getFetcher = do
             i = ips - start
     return f
 
-fetchBlock_' ca f cs ss ip = do
+fetchBlock_' ca f cs ss es ds ip = do
     let (n, r, e) = fetchBlock_ (head . disassembleMetadata disasmConfig . f) cs ss ip
     liftIO $ evaluate n
-    return $ Compiled cs ss n r $ do
+    return $ Compiled cs ss es ds n r $ do
         evalExpM ca e
         b <- use $ config . showReads
         when b $ do
@@ -280,9 +282,11 @@ fetchBlock :: Cache -> Machine CacheEntry
 fetchBlock ca = do
     cs_ <- use cs
     ss_ <- use ss
+    es_ <- use es
+    ds_ <- use ds
     ip_ <- use ip
     f <- getFetcher
-    fetchBlock_' ca f cs_ ss_ ip_
+    fetchBlock_' ca f cs_ ss_ (Just es_) (Just ds_) ip_
 
 mkStep :: Machine Int
 mkStep = do
@@ -293,29 +297,33 @@ mkStep = do
     cv <- use $ cache . at ips
     case cv of
      Just v -> case v of
-      Compiled cs' ss' n len m -> do
+      Compiled cs' ss' es' ds' n len m -> do
         cs'' <- use cs
         when (cs' /= cs'') $ error "cs differs"
         ss'' <- use ss
         when (ss' /= ss'') $ error "ss differs"
+        es'' <- use es
+        ds'' <- use ds
+        let f a b = if a == Just b then a else Nothing
+        when (es' /= Just es'' || ds' /= Just ds'') $ cache . at ips .= Just (Compiled cs' ss' (f es' es'') (f ds' ds'') n len m)
         m
         return n
       BuiltIn m -> do
         m
         return 1
       DontCache _ -> do
-        Compiled _ _ n _ ch <- fetchBlock mempty
+        Compiled _ _ _ _ n _ ch <- fetchBlock mempty
         ch
         return n
      Nothing -> do
-        entry@(Compiled _ _ n reg ch) <- mdo
+        entry@(Compiled _ _ _ _ n reg ch) <- mdo
             e <- fetchBlock ca
             ca <- use cache
             return e
         h <- use heap''
         when (cacheOK ips) $ do
             cache %= IM.insert ips entry
-            adjustCache
+--            adjustCache
         ch
         return n
 
@@ -1259,14 +1267,18 @@ loadExe loadSegment gameExe = do
                 liftIO $ writeFile cacheFile "fromList []"
                 return mempty
 --    when (not $ unique [segAddr cs $ fromIntegral ip | (fromIntegral -> cs, ips) <- IM.toList cf, ip <- IS.toList ips]) $ error "corrupt cache"
+    let fromIntegral' x | x == (2^(16 :: Int) :: Int) = Nothing
+        fromIntegral' x = Just $ fromIntegral x
     cf' <- cf `deepseq` mdo
         cf' <- forM (IM.toList cf) $ \(fromIntegral -> ss, cf_) ->
-               forM (IM.toList cf_) $ \(fromIntegral -> cs, ips) ->
+               forM (IM.toList cf_) $ \(fromIntegral -> cs, cf__) ->
+               forM (IM.toList cf__) $ \(fromIntegral' -> es, cf__) ->
+               forM (IM.toList cf__) $ \(fromIntegral' -> ds, ips) ->
                forM (map fromIntegral $ IS.toList ips) $ \ip ->
-                 (,) (segAddr cs ip) <$> fetchBlock_' ca getInst cs ss ip
+                 (,) (segAddr cs ip) <$> fetchBlock_' ca getInst cs ss es ds ip
         ca <- use cache
         return cf'
-    cache %= IM.union (IM.fromList (filter (not . (`IS.member` inv') . fst) $ concat $ concat cf'))
+    cache %= IM.union (IM.fromList (filter (not . (`IS.member` inv') . fst) $ concat $ concat $ concat $ concat cf'))
     trace_ "cache loaded"
 
   where

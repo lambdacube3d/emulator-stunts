@@ -55,7 +55,7 @@ type UVec = U.IOVector Word8
 type Cache = IM.IntMap CacheEntry
 
 data CacheEntry
-    = Compiled !Word16{-cs-} !Word16{-ss-} !Int{-num of instr-} !Regions !(Machine ())
+    = Compiled !Word16{-cs-} !Word16{-ss-} !(Maybe Word16){-es-} !(Maybe Word16){-ds-} !Int{-num of instr-} !Regions !(Machine ())
     | BuiltIn !(Machine ())
     | DontCache !Int
 
