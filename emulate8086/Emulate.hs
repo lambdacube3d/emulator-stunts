@@ -403,7 +403,7 @@ data EExp :: List * -> * -> * where
     Signed' :: AsSigned a => EExp e a -> EExp e (Signed a)
     Extend' :: Extend a => EExp e a -> EExp e (X2 a)
     Convert' :: (Integral a, Num b) => EExp e a -> EExp e b
---    SegAddr' :: EExp e Word16 -> EExp e Word16 -> EExp e Int
+    SegAddr' :: EExp e Word16 -> EExp e Word16 -> EExp e Int
 
 data EExpM :: List * -> * -> * where
     LetM' :: EExp e a -> EExpM (Con a e) b -> EExpM e b
@@ -486,7 +486,7 @@ convExp_ lyt = g where
         Xor a b -> Xor' (g a) (g b)
         SetBit i a b -> SetBit' i (g a) (g b)
         SetHighBit a b -> SetHighBit' (g a) (g b)
---        SegAddr a b -> SegAddr' (g a) (g b)
+        SegAddr a b -> SegAddr' (g a) (g b)
         Not a -> Not' (g a)
         ShiftL a -> ShiftL' (g a)
         ShiftR a -> ShiftR' (g a)
@@ -559,8 +559,8 @@ evalExp_ = evalExp where
 
     C' a -> return a
     Get' p -> case p of
-        Heap16 x e -> liftM2 segAddr (evalExp x) (evalExp e) >>= getWordAt
-        Heap8 x e -> liftM2 segAddr (evalExp x) (evalExp e) >>= getByteAt
+        Heap16 e -> evalExp e >>= getWordAt
+        Heap8 e -> evalExp e >>= getByteAt
         p -> view $ _2 . evalPart_ p
 
     If' b x y -> evalExp b >>= iff (evalExp x) (evalExp y)
@@ -586,8 +586,8 @@ evalExp_ = evalExp where
 
     Signed' e -> asSigned <$> evalExp e    
     Extend' e -> extend <$> evalExp e    
---    SegAddr' (C' i) f -> (fromIntegral i `shiftL` 4 +) . fromIntegral <$> evalExp f
---    SegAddr' e f -> liftM2 segAddr (evalExp e) (evalExp f)
+    SegAddr' (C' i) f -> (fromIntegral i `shiftL` 4 +) . fromIntegral <$> evalExp f
+    SegAddr' e f -> liftM2 segAddr (evalExp e) (evalExp f)
     Convert' e -> fromIntegral <$> evalExp e    
 
     Tuple' a b -> liftM2 (,) (evalExp a) (evalExp b)
@@ -605,8 +605,8 @@ evalEExpM ca = evalExpM
     LetM' e f -> evalExp e >>= pushVal (evalExpM f)
     Seq' a b -> evalExpM a >> evalExpM b
     Set' p e' -> case p of 
-        Heap16 x e -> join $ lift <$> liftM2 setWordAt (liftM2 segAddr (evalExp x) (evalExp e)) (evalExp e')
-        Heap8 x e -> join $ lift <$> liftM2 setByteAt (liftM2 segAddr (evalExp x) (evalExp e)) (evalExp e')
+        Heap16 e -> join $ lift <$> liftM2 setWordAt (evalExp e) (evalExp e')
+        Heap8 e -> join $ lift <$> liftM2 setByteAt (evalExp e) (evalExp e')
         p -> evalExp e' >>= (evalPart_ p .=)
 {- temporarily comment out
     Jump'' (C' c) (C' i) | Just (Compiled cs' ss' _ _ _ _ m) <- IM.lookup (segAddr c i) ca
