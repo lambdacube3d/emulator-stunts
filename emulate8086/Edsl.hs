@@ -479,14 +479,15 @@ foldrExp f g x (Seq a b) = f a (foldrExp f g x b)
 foldrExp f g x (IfM a b c) = g a (foldrExp f g x b) (foldrExp f g x c)
 foldrExp f g x y = f y x
 
-fetchBlock_ fetch cs_ ss ip_ = (1, [(ips_, ips_ +1)], fetchBlock_' fetch cs_ ss ip_)
+--fetchBlock_ :: (Int -> Metadata) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM ()
+fetchBlock_ fetch cs_ ss es ds ip_ = (1, [(ips_, ips_ +1)], fetchBlock_' fetch cs_ ss es ds ip_)
   where
     ips_ = segAddr cs_ ip_
 
-    fetchBlock_' :: (Int -> Metadata) -> Word16 -> Word16 -> Word16 -> ExpM ()
-    fetchBlock_' fetch cs_ ss ip_ = do
+    fetchBlock_' :: (Int -> Metadata) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM ()
+    fetchBlock_' fetch cs_ ss es ds ip_ = do
         Set IP (Add (C $ fromIntegral $ mdLength md) (Get IP))
-        execInstruction' md (fetchBlock_' fetch cs_ ss) cs_ ss ip_
+        execInstruction' md (fetchBlock_' fetch cs_ ss es ds) cs_ ss es ds ip_
       where
         md = fetch $ segAddr cs_ ip_
 
@@ -507,8 +508,8 @@ operandSize = \case
     Imm (Immediate Bits16 v) -> Just 2
     _ -> Nothing
 
-execInstruction' :: Metadata -> (Word16 -> ExpM ()) -> Word16 -> Word16 -> Word16 -> ExpM ()
-execInstruction' mdat@Metadata{mdInst = i@Inst{..}} cont cs ss ip
+execInstruction' :: Metadata -> (Word16 -> ExpM ()) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM ()
+execInstruction' mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip
   = case filter nonSeg inPrefixes of
     [Rep, RepE]
         | inOpcode `elem` [Icmpsb, Icmpsw, Iscasb, Iscasw] -> cycle $ Get ZF      -- repe
@@ -516,10 +517,10 @@ execInstruction' mdat@Metadata{mdInst = i@Inst{..}} cont cs ss ip
     [RepNE]
         | inOpcode `elem` [Icmpsb, Icmpsw, Iscasb, Iscasw, Imovsb, Imovsw, Ilodsb, Ilodsw, Istosb, Istosw]
             -> cycle $ Not $ Get ZF
-    [] -> body cont cs ss ip
+    [] -> body cont cs ss es ds ip
   where
     body = compileInst (mdat { mdInst = i { inPrefixes = filter (not . rep) inPrefixes }})
-    body' = body (const Nop) cs ss ip
+    body' = body (const Nop) cs ss es ds ip
 
     cycle' = c $ do
         Replicate (Convert $ Get CX) body'
@@ -539,8 +540,8 @@ nonSeg = \case
     x -> True
 
 
-compileInst :: Metadata -> (Word16 -> ExpM ()) -> Word16 -> Word16 -> Word16 -> ExpM ()
-compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss ip = case inOpcode of
+compileInst :: Metadata -> (Word16 -> ExpM ()) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM ()
+compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpcode of
 
     _ | length inOperands > 2 -> error "more than 2 operands are not supported"
 
@@ -591,6 +592,14 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss ip = case inOpcode of
     Iloope  -> loop $ Get ZF
     Iloopnz -> loop $ Not $ Get ZF
 
+    -- hack for stunts!
+    Ipop | op1 == Reg (RegSeg DS) -> pop $ Set Ds
+         | op1 == Reg (RegSeg ES) -> pop $ Set Es
+    Imov | op1 == Reg (RegSeg DS) -> Set Ds $ getWordOperand segmentPrefix op2
+         | op1 == Reg (RegSeg ES) -> Set Es $ getWordOperand segmentPrefix op2
+         | op1 == Reg (RegSeg SS) -> Set Ss $ getWordOperand segmentPrefix op2
+
+
     Ipush   -> c $ push getOp1w
     Ipop    -> c $ pop setOp1w
     Ipusha  -> c $ mconcat $ map (push . Get) [AX,CX,DX,BX,SP,BP,SI,DI]
@@ -610,14 +619,12 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss ip = case inOpcode of
 
     Inop  -> cc
 
-    Ixlatb -> c $ Set (Low AX) $ Get $ Heap8 $ segAddr_ (maybe (Get Ds) (getReg . RegSeg) segmentPrefix) $ Add (Extend $ Get $ Low AX) (Get BX)
+    Ixlatb -> c $ Set (Low AX) $ Get $ Heap8 $ segAddr_ (maybe gds (getReg . RegSeg) segmentPrefix) $ Add (Extend $ Get $ Low AX) (Get BX)
 
     Ilea -> c $ setOp1w op2addr'
-    _ | inOpcode `elem` [Iles, Ilds] -> c $ letM (addr op2) $ \ad -> do
+    _ | inOpcode `elem` [Iles, Ilds] -> letM (addr op2) $ \ad -> do
         setOp1w $ Get $ Heap16 ad
         Set (case inOpcode of Iles -> Es; Ilds -> Ds) $ Get $ Heap16 $ add (C 2) ad
-
-    Imov | op1 == Reg (RegSeg SS) -> Set Ss $ getWordOperand segmentPrefix op2 --hack!
 
     _ -> case sizeByte of
         1 -> c $ withSize getByteOperand byteOperand (Low AX) (High AX) AX
@@ -778,13 +785,18 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss ip = case inOpcode of
         RegIP     -> error "segOf RegIP"
         Reg16 RSP -> C ss
         Reg16 RBP -> C ss
-        _         -> Get Ds
+        _         -> gds
+
+    gds = maybe (Get Ds) C ds
 
     getReg :: Register -> Exp Word16
     getReg = \case
         RegNone -> C 0
-        RegSeg SS -> C ss
-        RegSeg CS -> C cs
+        RegSeg s -> case s of
+            SS -> C ss
+            CS -> C cs
+            ES -> maybe (Get Es) C es
+            DS -> gds
         r -> Get $ reg r
 
     reg :: Register -> Part Word16
@@ -798,11 +810,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss ip = case inOpcode of
             RDI -> DI
             RBP -> BP
             RSP -> SP
-        RegSeg r -> case r of
-            ES -> Es
-            DS -> Ds
-            SS -> error "Ss is written"
-            CS -> error "CS is written"
+        RegSeg r -> error $ show r ++ " is written: " ++ show mdat
         RegIP -> IP
         x -> error $ "reg: " ++ show x
 

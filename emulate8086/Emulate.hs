@@ -221,14 +221,14 @@ cacheFile = "dontcache.txt"
 
 alter i f = IM.alter (Just . maybe (f mempty) f) i
 alter' (Just i) = alter $ fromIntegral i
-alter' Nothing = alter (2^(16 :: Int) :: Int)
+alter' Nothing = alter (-1)
 
 adjustCache = do
     trace_ "adjust cache"
     ch <- use cache
     let p (Compiled cs ss es ds _ _ _) = Just (cs, ss, es, ds)
         p _ = Nothing
-        f (ip, (cs, ss, es, ds)) = alter (fromIntegral ss) $ alter (fromIntegral cs) $ alter' es $ alter' ds (IS.insert ip)
+        f (ip, (cs, ss, es, ds)) = alter (fromIntegral ss) $ alter' ds $ alter (fromIntegral cs) $ alter' es $ IS.insert ip
     liftIO $ do
         cf <- read <$> readFile cacheFile
         let cf' = foldr f cf [(i - cs ^. paragraph, t) | (i, p -> Just t@(cs, _, _, _)) <- IM.toList ch ] -- :: IM.IntMap (IM.IntMap IS.IntSet)
@@ -266,7 +266,7 @@ getFetcher = do
     return f
 
 fetchBlock_' ca f cs ss es ds ip = do
-    let (n, r, e) = fetchBlock_ (head . disassembleMetadata disasmConfig . f) cs ss ip
+    let (n, r, e) = fetchBlock_ (head . disassembleMetadata disasmConfig . f) cs ss es ds ip
     liftIO $ evaluate n
     return $ Compiled cs ss es ds n r $ do
         evalExpM ca e
@@ -280,13 +280,16 @@ fetchBlock_' ca f cs ss es ds ip = do
 
 fetchBlock :: Cache -> Machine CacheEntry
 fetchBlock ca = do
-    cs_ <- use cs
-    ss_ <- use ss
     es_ <- use es
     ds_ <- use ds
+    fetchBlock'' (Just es_) (Just ds_) ca
+
+fetchBlock'' es ds ca = do
+    cs_ <- use cs
+    ss_ <- use ss
     ip_ <- use ip
     f <- getFetcher
-    fetchBlock_' ca f cs_ ss_ (Just es_) (Just ds_) ip_
+    fetchBlock_' ca f cs_ ss_ es ds ip_
 
 mkStep :: Machine Int
 mkStep = do
@@ -294,6 +297,15 @@ mkStep = do
     cs_ <- use cs
 
     let ips = segAddr cs_ ip_
+        compile fe = do
+            entry@(Compiled _ _ _ _ n reg ch) <- mdo
+                e <- fe ca
+                ca <- use cache
+                return e
+            when (cacheOK ips) $ cache %= IM.insert ips entry
+            ch
+            return n
+
     cv <- use $ cache . at ips
     case cv of
      Just v -> case v of
@@ -305,9 +317,12 @@ mkStep = do
         es'' <- use es
         ds'' <- use ds
         let f a b = if a == Just b then a else Nothing
-        when (es' /= Just es'' || ds' /= Just ds'') $ cache . at ips .= Just (Compiled cs' ss' (f es' es'') (f ds' ds'') n len m)
-        m
-        return n
+        if (maybe False (/= es'') es' || maybe False (/=ds'') ds') then do
+            trace_ "recompile"
+            compile $ fetchBlock'' (f es' es'') (f ds' ds'')
+          else do
+            m
+            return n
       BuiltIn m -> do
         m
         return 1
@@ -315,17 +330,7 @@ mkStep = do
         Compiled _ _ _ _ n _ ch <- fetchBlock mempty
         ch
         return n
-     Nothing -> do
-        entry@(Compiled _ _ _ _ n reg ch) <- mdo
-            e <- fetchBlock ca
-            ca <- use cache
-            return e
-        h <- use heap''
-        when (cacheOK ips) $ do
-            cache %= IM.insert ips entry
---            adjustCache
-        ch
-        return n
+     Nothing -> compile fetchBlock
 
 -- ad-hoc hacking for stunts!
 cacheOK ips = ips < 0x39000 -- || ips >= 0x3a700
@@ -1267,14 +1272,14 @@ loadExe loadSegment gameExe = do
                 liftIO $ writeFile cacheFile "fromList []"
                 return mempty
 --    when (not $ unique [segAddr cs $ fromIntegral ip | (fromIntegral -> cs, ips) <- IM.toList cf, ip <- IS.toList ips]) $ error "corrupt cache"
-    let fromIntegral' x | x == (2^(16 :: Int) :: Int) = Nothing
+    let fromIntegral' x | x == -1 = Nothing
         fromIntegral' x = Just $ fromIntegral x
     cf' <- cf `deepseq` mdo
-        cf' <- forM (IM.toList cf) $ \(fromIntegral -> ss, cf_) ->
-               forM (IM.toList cf_) $ \(fromIntegral -> cs, cf__) ->
-               forM (IM.toList cf__) $ \(fromIntegral' -> es, cf__) ->
-               forM (IM.toList cf__) $ \(fromIntegral' -> ds, ips) ->
-               forM (map fromIntegral $ IS.toList ips) $ \ip ->
+        cf' <- forM (IM.toList cf) $ \(fromIntegral  -> ss, cf) ->
+               forM (IM.toList cf) $ \(fromIntegral' -> ds, cf) ->
+               forM (IM.toList cf) $ \(fromIntegral  -> cs, cf) ->
+               forM (IM.toList cf) $ \(fromIntegral' -> es, cf) ->
+               forM (map fromIntegral $ IS.toList cf) $ \ip ->
                  (,) (segAddr cs ip) <$> fetchBlock_' ca getInst cs ss es ds ip
         ca <- use cache
         return cf'
