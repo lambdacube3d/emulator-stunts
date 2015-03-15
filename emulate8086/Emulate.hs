@@ -66,8 +66,8 @@ import Hdis86 hiding (wordSize)
 import Hdis86.Pure
 
 import Helper
-import Edsl hiding (Flags, trace_, ips, sps, segAddr_, addressOf, (>>), when, return, Info)
-import qualified Edsl (addressOf, Part_(Flags))
+import Edsl hiding (Flags, trace_, ips, sps, segAddr_, (>>), when, return, Info, addressOf)
+import qualified Edsl (Part_(Flags))
 import MachineState
 
 ---------------------------------------------- memory allocation
@@ -213,20 +213,23 @@ ch = cx . high:: MachinePart Word8
 ifff "" = []
 ifff x = [x]
 
-addressOf a b = evalExp' $ Edsl.addressOf a b
+addressOf Nothing RDX = liftM2 segAddr (use ds) (use dx)
+addressOf (Just ES) RDX = liftM2 segAddr (use es) (use dx)
 
 invalidFile = "invalid.txt"
 cacheFile = "dontcache.txt"
 
+alter i f = IM.alter (Just . maybe (f mempty) f) i
+
 adjustCache = do
     trace_ "adjust cache"
     ch <- use cache
-    let p (Compiled cs _ _ _) = Just cs
+    let p (Compiled cs ss _ _ _) = Just (cs, ss)
         p _ = Nothing
-        f (cs, ip) = IM.alter (Just . maybe (IS.singleton ip) (IS.insert ip)) (fromIntegral cs)
+        f (ss, cs, ip) = alter (fromIntegral ss) $ alter (fromIntegral cs) (IS.insert ip)
     liftIO $ do
         cf <- read <$> readFile cacheFile
-        let cf' = foldr f cf [(cs, i - cs ^. paragraph) | (i, p -> Just cs) <- IM.toList ch ] :: IM.IntMap IS.IntSet
+        let cf' = foldr f cf [(ss, cs, i - cs ^. paragraph) | (i, p -> Just (cs, ss)) <- IM.toList ch ] :: IM.IntMap (IM.IntMap IS.IntSet)
         cf' `deepseq` writeFile cacheFile (show cf')
 
 merge (x:xs) (y:ys) = case compare x y of
@@ -260,10 +263,10 @@ getFetcher = do
             i = ips - start
     return f
 
-fetchBlock_' ca f cs ip = do
-    let (n, r, e) = fetchBlock_ (head . disassembleMetadata disasmConfig . f) cs ip
+fetchBlock_' ca f cs ss ip = do
+    let (n, r, e) = fetchBlock_ (head . disassembleMetadata disasmConfig . f) cs ss ip
     liftIO $ evaluate n
-    return $ Compiled cs n r $ do
+    return $ Compiled cs ss n r $ do
         evalExpM ca e
         b <- use $ config . showReads
         when b $ do
@@ -276,9 +279,10 @@ fetchBlock_' ca f cs ip = do
 fetchBlock :: Cache -> Machine CacheEntry
 fetchBlock ca = do
     cs_ <- use cs
+    ss_ <- use ss
     ip_ <- use ip
     f <- getFetcher
-    fetchBlock_' ca f cs_ ip_
+    fetchBlock_' ca f cs_ ss_ ip_
 
 mkStep :: Machine Int
 mkStep = do
@@ -289,22 +293,22 @@ mkStep = do
     cv <- use $ cache . at ips
     case cv of
      Just v -> case v of
-      Compiled cs' n len m -> do
+      Compiled cs' ss' n len m -> do
         cs'' <- use cs
         when (cs' /= cs'') $ error "cs differs"
---        let n' = n + 1
- --       cache . _1 . at ips .= (n' `seq` Just (n', len, m))
+        ss'' <- use ss
+        when (ss' /= ss'') $ error "ss differs"
         m
         return n
       BuiltIn m -> do
         m
         return 1
       DontCache _ -> do
-        Compiled _ n _ ch <- fetchBlock mempty
+        Compiled _ _ n _ ch <- fetchBlock mempty
         ch
         return n
      Nothing -> do
-        entry@(Compiled _ n reg ch) <- mdo
+        entry@(Compiled _ _ n reg ch) <- mdo
             e <- fetchBlock ca
             ca <- use cache
             return e
@@ -386,7 +390,7 @@ data EExp :: List * -> * -> * where
     Signed' :: AsSigned a => EExp e a -> EExp e (Signed a)
     Extend' :: Extend a => EExp e a -> EExp e (X2 a)
     Convert' :: (Integral a, Num b) => EExp e a -> EExp e b
-    SegAddr' :: Part_ (EExp e) Word16 -> EExp e Word16 -> EExp e Int
+    SegAddr' :: EExp e Word16 -> EExp e Word16 -> EExp e Int
 
 data EExpM :: List * -> * -> * where
     LetM' :: EExp e a -> EExpM (Con a e) b -> EExpM e b
@@ -469,7 +473,7 @@ convExp_ lyt = g where
         Xor a b -> Xor' (g a) (g b)
         SetBit i a b -> SetBit' i (g a) (g b)
         SetHighBit a b -> SetHighBit' (g a) (g b)
-        SegAddr a b -> SegAddr' (convPart lyt a) (g b)
+        SegAddr a b -> SegAddr' (g a) (g b)
         Not a -> Not' (g a)
         ShiftL a -> ShiftL' (g a)
         ShiftR a -> ShiftR' (g a)
@@ -569,7 +573,7 @@ evalExp_ = evalExp where
 
     Signed' e -> asSigned <$> evalExp e    
     Extend' e -> extend <$> evalExp e    
-    SegAddr' e f -> liftM2 segAddr (view $ _2 . evalPart_ e) (evalExp f)
+    SegAddr' e f -> liftM2 segAddr (evalExp e) (evalExp f)
     Convert' e -> fromIntegral <$> evalExp e    
 
     Tuple' a b -> liftM2 (,) (evalExp a) (evalExp b)
@@ -590,12 +594,15 @@ evalEExpM ca = evalExpM
         Heap16 e -> join $ lift <$> liftM2 setWordAt (evalExp e) (evalExp e')
         Heap8 e -> join $ lift <$> liftM2 setByteAt (evalExp e) (evalExp e')
         p -> evalExp e' >>= (evalPart_ p .=)
-    Jump'' (C' c) (C' i) | Just (Compiled cs' _ _ m) <- IM.lookup (segAddr c i) ca
+{- temporarily comment out
+    Jump'' (C' c) (C' i) | Just (Compiled cs' ss' _ _ m) <- IM.lookup (segAddr c i) ca
                        , cs' == c -> lift $ do
                             checkInt 1
-                            cs .= c
+--                            cs .= c
                             ip .= i
+--                            ss .= ss'  -- ?
                             m
+-}
     Jump'' c i -> join $ liftM2 (\c i -> cs .= c >> ip .= i) (evalExp c) (evalExp i)
     Nop' -> return ()
 
@@ -784,7 +791,7 @@ origInterrupt = M.fromList
                 first_DAC_register <- use bx -- (0-00ffH)
                 number_of_registers <- use cx -- (0-00ffH)
                 -- ES:DX addr of a table of R,G,B values (it will be CX*3 bytes long)
-                addr <- addressOf (Just ES) $ memIndex RDX
+                addr <- addressOf (Just ES) RDX
                 colors <- fst $ bytesAt__ addr $ 3 * fromIntegral number_of_registers
                 config . palette %= \cs -> cs V.//
                     zip [fromIntegral first_DAC_register .. fromIntegral (first_DAC_register + number_of_registers - 1)]
@@ -840,7 +847,7 @@ origInterrupt = M.fromList
 
         0x1a -> do
             trace_ "Set Disk Transfer Address (DTA)"
-            addr <- addressOf Nothing (memIndex RDX)
+            addr <- addressOf Nothing RDX
             dta .= addr
 
         0x25 -> do
@@ -897,7 +904,7 @@ origInterrupt = M.fromList
             (fn, seek) <- (IM.! handle) <$> use files
             num <- fromIntegral <$> use cx
             trace_ $ "Read " ++ showHex' 4 handle ++ ":" ++ fn ++ " " ++ showHex' 4 num
-            loc <- addressOf Nothing $ memIndex RDX
+            loc <- addressOf Nothing RDX
             s <- liftIO $ BS.take num . BS.drop seek <$> BS.readFile fn
             let len = BS.length s
             files %= flip IM.adjust handle (\(fn, p) -> (fn, p+len))
@@ -909,7 +916,7 @@ origInterrupt = M.fromList
             handle <- fromIntegral <$> use bx
             trace_ $ "Write to " ++ showHex' 4 handle
             num <- fromIntegral <$> use cx
-            loc <- addressOf Nothing $ memIndex RDX
+            loc <- addressOf Nothing RDX
             case handle of
               1 -> trace_ . ("STDOUT: " ++) . map (chr . fromIntegral) =<< fst (bytesAt__ loc num)
               2 -> trace_ . ("STDERR: " ++) . map (chr . fromIntegral) =<< fst (bytesAt__ loc num)
@@ -1091,7 +1098,7 @@ origInterrupt = M.fromList
         returnOK
 
     getFileName = do
-        addr <- addressOf Nothing $ memIndex RDX
+        addr <- addressOf Nothing RDX
         fname <- fst $ bytesAt__ addr 40
         let f = map (toUpper . chr . fromIntegral) $ takeWhile (/=0) fname
         trace_ f
@@ -1251,12 +1258,15 @@ loadExe loadSegment gameExe = do
                 trace_ "outdated cache file deleted!"
                 liftIO $ writeFile cacheFile "fromList []"
                 return mempty
-    when (not $ unique [segAddr cs $ fromIntegral ip | (fromIntegral -> cs, ips) <- IM.toList cf, ip <- IS.toList ips]) $ error "corrupt cache"
+--    when (not $ unique [segAddr cs $ fromIntegral ip | (fromIntegral -> cs, ips) <- IM.toList cf, ip <- IS.toList ips]) $ error "corrupt cache"
     cf' <- cf `deepseq` mdo
-        cf' <- forM (IM.toList cf) $ \(fromIntegral -> cs, ips) -> forM (map fromIntegral $ IS.toList ips) $ \ip -> (,) (segAddr cs ip) <$> fetchBlock_' ca getInst cs ip
+        cf' <- forM (IM.toList cf) $ \(fromIntegral -> ss, cf_) ->
+               forM (IM.toList cf_) $ \(fromIntegral -> cs, ips) ->
+               forM (map fromIntegral $ IS.toList ips) $ \ip ->
+                 (,) (segAddr cs ip) <$> fetchBlock_' ca getInst cs ss ip
         ca <- use cache
         return cf'
-    cache %= IM.union (IM.fromList (filter (not . (`IS.member` inv') . fst) $ concat cf'))
+    cache %= IM.union (IM.fromList (filter (not . (`IS.member` inv') . fst) $ concat $ concat cf'))
     trace_ "cache loaded"
 
   where
