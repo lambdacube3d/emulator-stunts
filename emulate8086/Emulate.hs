@@ -115,19 +115,28 @@ ip = regs . ip_
 sp = regs . sp_
 bp = regs . bp_
 
-uRead :: MachineState -> Int -> IO Word8
-uRead h i = do
+data Info
+    = System
+    | forall e . Program (EExp e Int)
+
+info :: Info -> a -> a -> a -> a
+info System s1 s2 s3 = s1
+info (Program (SegAddr' (C' _) (C' _))) s1 s2 s3 = s2
+info _ s1 s2 s3 = s3
+
+uRead :: Info -> MachineState -> Int -> IO Word8
+uRead inf h i = do
     when (h ^. config . showReads') $ do
         let off = h ^. config . showOffset
         let j = i - off
         when (0 <= j && j < 320 * 200) $ do
             let v = h ^. config . showBuffer
             x <- U.unsafeRead v j
-            U.unsafeWrite v j $ x .|. 0x0000ff00
+            U.unsafeWrite v j $ x .|. info inf 0xff00ff00 0x00008000 0x0000ff00
     U.unsafeRead (h ^. heap'') i
 
-uWrite :: Int -> Word8 -> Machine ()
-uWrite i v = do
+uWrite :: Info -> Int -> Word8 -> Machine ()
+uWrite inf i v = do
     h <- use heap''
     liftIO $ U.unsafeWrite h i v
     b <- use $ config . showReads
@@ -138,34 +147,34 @@ uWrite i v = do
             v <- use $ config . showBuffer
             liftIO $ do
                 x <- U.unsafeRead v j
-                U.unsafeWrite v j $ x .|. 0x00ff0000
+                U.unsafeWrite v j $ x .|. info inf 0xffff0000 0x00800000 0x00ff0000
 
 bytesAt__ :: Int -> Int -> MachinePart' [Word8]
 bytesAt__ i' j' = (get_, set)
   where
-    set ws = zipWithM_ uWrite [i'..]
+    set ws = zipWithM_ (uWrite System) [i'..]
         $ (pad (error "pad") j' . take j') ws
-    get_ = get >>= \h -> liftIO $ mapM (uRead h) [i'..i'+j'-1]
+    get_ = get >>= \h -> liftIO $ mapM (uRead System h) [i'..i'+j'-1]
 
-byteAt__ :: Int -> Machine Word8
-byteAt__ i = get >>= \h -> liftIO $ uRead h i
+byteAt__ :: Info -> Int -> Machine Word8
+byteAt__ inf i = get >>= \h -> liftIO $ uRead inf h i
 
-getByteAt i = view _2 >>= \h -> liftIO $ uRead h i
+getByteAt inf i = view _2 >>= \h -> liftIO $ uRead inf h i
 
-setByteAt :: Int -> Word8 -> Machine ()
-setByteAt i v = uWrite i v
+setByteAt :: Info -> Int -> Word8 -> Machine ()
+setByteAt inf i v = uWrite inf i v
 
-wordAt__ :: Int -> Machine Word16
-wordAt__ i = get >>= \h -> liftIO $ liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead h (i+1)) (uRead h i)
+wordAt__ :: Info -> Int -> Machine Word16
+wordAt__ inf i = get >>= \h -> liftIO $ liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead inf h (i+1)) (uRead inf h i)
 
-getWordAt i = view _2 >>= \h -> liftIO $ liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead h (i+1)) (uRead h i)
+getWordAt inf i = view _2 >>= \h -> liftIO $ liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead inf h (i+1)) (uRead inf h i)
 
-setWordAt :: Int -> Word16 -> Machine ()
-setWordAt i v = uWrite i (fromIntegral v) >> uWrite (i+1) (fromIntegral $ v `shiftR` 8)
+setWordAt :: Info -> Int -> Word16 -> Machine ()
+setWordAt inf i v = uWrite inf i (fromIntegral v) >> uWrite inf (i+1) (fromIntegral $ v `shiftR` 8)
 
-dwordAt__ :: Int -> MachinePart' Word32
-dwordAt__ i = ( liftM2 (\hi lo -> fromIntegral hi `shiftL` 16 .|. fromIntegral lo) (wordAt__ $ i+2) (wordAt__ i)
-             , \v -> setWordAt (i) (fromIntegral v) >> setWordAt (i+2) (fromIntegral $ v `shiftR` 16))
+dwordAt__ :: Info -> Int -> MachinePart' Word32
+dwordAt__ inf i = ( liftM2 (\hi lo -> fromIntegral hi `shiftL` 16 .|. fromIntegral lo) (wordAt__ inf $ i+2) (wordAt__ inf i)
+             , \v -> setWordAt inf i (fromIntegral v) >> setWordAt inf (i+2) (fromIntegral $ v `shiftR` 16))
 
 
 flags :: MachinePart Word16
@@ -219,19 +228,20 @@ addressOf (Just ES) RDX = liftM2 segAddr (use es) (use dx)
 invalidFile = "invalid.txt"
 cacheFile = "dontcache.txt"
 
-alter i f = IM.alter (Just . maybe (f mempty) f) i
-alter' (Just i) = alter $ fromIntegral i
-alter' Nothing = alter (-1)
+--alter i f = IM.alter (Just . maybe (f mempty) f) i
+alter' :: Maybe Word16 -> Int
+alter' (Just i) = fromIntegral i
+alter' Nothing = -1
 
 adjustCache = do
     trace_ "adjust cache"
     ch <- use cache
     let p (Compiled cs ss es ds _ _ _) = Just (cs, ss, es, ds)
         p _ = Nothing
-        f (ip, (cs, ss, es, ds)) = alter (fromIntegral ss) $ alter' ds $ alter (fromIntegral cs) $ alter' es $ IS.insert ip
     liftIO $ do
         cf <- read <$> readFile cacheFile
-        let cf' = foldr f cf [(i - cs ^. paragraph, t) | (i, p -> Just t@(cs, _, _, _)) <- IM.toList ch ] -- :: IM.IntMap (IM.IntMap IS.IntSet)
+        let cf' = foldr (uncurry IM.insert) cf
+                [(i, (cs, ss, alter' es, alter' ds)) | (i, p -> Just t@(cs, ss, es, ds)) <- IM.toList ch ]
         cf' `deepseq` writeFile cacheFile (show cf')
 
 merge (x:xs) (y:ys) = case compare x y of
@@ -559,8 +569,8 @@ evalExp_ = evalExp where
 
     C' a -> return a
     Get' p -> case p of
-        Heap16 e -> evalExp e >>= getWordAt
-        Heap8 e -> evalExp e >>= getByteAt
+        Heap16 e -> evalExp e >>= getWordAt (Program e)
+        Heap8 e -> evalExp e >>= getByteAt (Program e)
         p -> view $ _2 . evalPart_ p
 
     If' b x y -> evalExp b >>= iff (evalExp x) (evalExp y)
@@ -605,8 +615,8 @@ evalEExpM ca = evalExpM
     LetM' e f -> evalExp e >>= pushVal (evalExpM f)
     Seq' a b -> evalExpM a >> evalExpM b
     Set' p e' -> case p of 
-        Heap16 e -> join $ lift <$> liftM2 setWordAt (evalExp e) (evalExp e')
-        Heap8 e -> join $ lift <$> liftM2 setByteAt (evalExp e) (evalExp e')
+        Heap16 e -> join $ lift <$> liftM2 (setWordAt $ Program e) (evalExp e) (evalExp e')
+        Heap8 e -> join $ lift <$> liftM2 (setByteAt $ Program e) (evalExp e) (evalExp e')
         p -> evalExp e' >>= (evalPart_ p .=)
 {- temporarily comment out
     Jump'' (C' c) (C' i) | Just (Compiled cs' ss' _ _ _ _ m) <- IM.lookup (segAddr c i) ca
@@ -865,8 +875,8 @@ origInterrupt = M.fromList
         0x25 -> do
             v <- fromIntegral <$> use al     -- interrupt vector number
             trace_ $ "Set Interrupt Vector " ++ showHex' 2 v
-            use dx >>= setWordAt (4*v)     -- DS:DX = pointer to interrupt handler
-            use ds >>= setWordAt (4*v + 2)
+            use dx >>= setWordAt System (4*v)     -- DS:DX = pointer to interrupt handler
+            use ds >>= setWordAt System (4*v + 2)
 
         0x30 -> do
             trace_ "Get DOS version"
@@ -880,8 +890,8 @@ origInterrupt = M.fromList
         0x35 -> do
             v <- fromIntegral <$> use al
             trace_ $ "Get Interrupt Vector " ++ showHex' 2 v
-            wordAt__ (4*v) >>= (bx .=)
-            wordAt__ (4*v + 2) >>= (es .=)   -- ES:BX = pointer to interrupt handler
+            wordAt__ System (4*v) >>= (bx .=)
+            wordAt__ System (4*v + 2) >>= (es .=)   -- ES:BX = pointer to interrupt handler
 
         0x3c -> do
             trace_ "Create File"
@@ -1024,12 +1034,12 @@ origInterrupt = M.fromList
               Just (f, s) -> do
                 trace_ $ "found: " ++ show f
                 snd (bytesAt__ (ad + 0x02) 13 {- !!! -}) $ pad 0 13 (map (fromIntegral . ord) (strip $ takeFileName f_) ++ [0])
-                setByteAt (ad + 0x15) $ "attribute of matching file" @: fromIntegral attribute_used_during_search
-                setWordAt (ad + 0x16) $ "file time" @: 0 -- TODO
-                setWordAt (ad + 0x18) $ "file date" @: 0 -- TODO
-                snd (dwordAt__ $ ad + 0x1a) $ fromIntegral (BS.length s)
+                setByteAt System (ad + 0x15) $ "attribute of matching file" @: fromIntegral attribute_used_during_search
+                setWordAt System (ad + 0x16) $ "file time" @: 0 -- TODO
+                setWordAt System (ad + 0x18) $ "file date" @: 0 -- TODO
+                snd (dwordAt__ System $ ad + 0x1a) $ fromIntegral (BS.length s)
                 snd (bytesAt__ (ad + 0x1e) 13) $ pad 0 13 (map (fromIntegral . ord) (strip $ takeFileName f) ++ [0])
-                setByteAt (ad + 0x00) 1
+                setByteAt System (ad + 0x00) 1
                 ax .= 0 -- ?
                 returnOK
               Nothing -> dosFail 0x02  -- File not found
@@ -1039,7 +1049,7 @@ origInterrupt = M.fromList
             fname <- fst $ bytesAt__ (ad + 0x02) 13
             let f_ = map (chr . fromIntegral) $ takeWhile (/=0) fname
             trace_ $ "Find next matching file " ++ show f_
-            n <- byteAt__ $ ad + 0x00
+            n <- byteAt__ System $ ad + 0x00
             s <- do
                     b <- liftIO $ globDir1 (compile $ map toUpper f_) "../original"
                     case drop (fromIntegral n) b of
@@ -1050,11 +1060,11 @@ origInterrupt = M.fromList
             case s of
               Just (f, s) -> do
                 trace_ $ "found: " ++ show f
-                setWordAt (ad + 0x16) $ "file time" @: 0 -- TODO
-                setWordAt (ad + 0x18) $ "file date" @: 0 -- TODO
-                snd (dwordAt__ $ ad + 0x1a) $ fromIntegral (BS.length s)
+                setWordAt System (ad + 0x16) $ "file time" @: 0 -- TODO
+                setWordAt System (ad + 0x18) $ "file date" @: 0 -- TODO
+                snd (dwordAt__ System $ ad + 0x1a) $ fromIntegral (BS.length s)
                 snd (bytesAt__ (ad + 0x1e) 13) $ pad 0 13 (map (fromIntegral . ord) (strip $ takeFileName f) ++ [0])
-                setByteAt (ad + 0x00) $ n+1
+                setByteAt System (ad + 0x00) $ n+1
                 ax .= 0 -- ?
                 returnOK
               Nothing -> dosFail 0x02
@@ -1231,7 +1241,7 @@ replicate' n x = replicate n x
 loadExe :: Word16 -> BS.ByteString -> Machine ()
 loadExe loadSegment gameExe = do
     heap .= ( [(length rom', length rom2')], 0xa0000 - 16)
-    zipWithM_ setByteAt [0..] rom2'
+    zipWithM_ (setByteAt System) [0..] rom2'
     ss .=  (ssInit + loadSegment)
     sp .=  spInit
     cs .=  (csInit + loadSegment)
@@ -1248,12 +1258,12 @@ loadExe loadSegment gameExe = do
     liftIO $ print $ showHex' 5 $ loadSegment ^. paragraph
     liftIO $ print $ showHex' 5 headerSize
 
-    setWordAt (0x410) $ "equipment word" @: 0xd426 --- 0x4463   --- ???
-    setByteAt (0x417) $ "keyboard shift flag 1" @: 0x20
+    setWordAt System (0x410) $ "equipment word" @: 0xd426 --- 0x4463   --- ???
+    setByteAt System (0x417) $ "keyboard shift flag 1" @: 0x20
 
     forM_ [(fromIntegral a, b, m) | (b, (a, m)) <- M.toList origInterrupt] $ \(i, (hi, lo), m) -> do
-        setWordAt (4*i) $ "interrupt lo" @: lo
-        setWordAt (4*i + 2) $ "interrupt hi" @: hi
+        setWordAt System (4*i) $ "interrupt lo" @: lo
+        setWordAt System (4*i + 2) $ "interrupt hi" @: hi
         cache %= IM.insert (segAddr hi lo) (BuiltIn m)
 
     config . gameexe .= (exeStart, relocatedExe)
@@ -1271,18 +1281,17 @@ loadExe loadSegment gameExe = do
                 liftIO $ writeFile cacheFile "fromList []"
                 return mempty
 --    when (not $ unique [segAddr cs $ fromIntegral ip | (fromIntegral -> cs, ips) <- IM.toList cf, ip <- IS.toList ips]) $ error "corrupt cache"
-    let fromIntegral' x | x == -1 = Nothing
+    let fromIntegral' :: Int -> Maybe Word16
+        fromIntegral' x | x == -1 = Nothing
         fromIntegral' x = Just $ fromIntegral x
+        fromIntegral_ :: Int -> Word16
+        fromIntegral_ = fromIntegral
     cf' <- cf `deepseq` mdo
-        cf' <- forM (IM.toList cf) $ \(fromIntegral  -> ss, cf) ->
-               forM (IM.toList cf) $ \(fromIntegral' -> ds, cf) ->
-               forM (IM.toList cf) $ \(fromIntegral  -> cs, cf) ->
-               forM (IM.toList cf) $ \(fromIntegral' -> es, cf) ->
-               forM (map fromIntegral $ IS.toList cf) $ \ip ->
-                 (,) (segAddr cs ip) <$> fetchBlock_' ca getInst cs ss es ds ip
+        cf' <- forM (IM.toList cf) $ \(ip, (fromIntegral_ -> cs, fromIntegral_ -> ss, fromIntegral' -> es, fromIntegral' -> ds)) ->
+                 (,) ip <$> fetchBlock_' ca getInst cs ss es ds (fromIntegral $ ip - cs ^. paragraph)
         ca <- use cache
         return cf'
-    cache %= IM.union (IM.fromList (filter (not . (`IS.member` inv') . fst) $ concat $ concat $ concat $ concat cf'))
+    cache %= IM.union (IM.fromList (filter (not . (`IS.member` inv') . fst) $ cf'))
     trace_ "cache loaded"
 
   where
