@@ -591,8 +591,8 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss ip = case inOpcode of
     Iloope  -> loop $ Get ZF
     Iloopnz -> loop $ Not $ Get ZF
 
-    Ipush   -> c $ push $ getOp1w
-    Ipop    -> c $ pop $ setOp1w
+    Ipush   -> c $ push getOp1w
+    Ipop    -> c $ pop setOp1w
     Ipusha  -> c $ mconcat $ map (push . Get) [AX,CX,DX,BX,SP,BP,SI,DI]
     Ipopa   -> c $ mconcat $ map pop [Set DI,Set SI,Set BP,const Nop,Set BX,Set DX,Set CX,Set AX]
     Ipushfw -> c $ push $ Get Flags
@@ -616,6 +616,8 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss ip = case inOpcode of
     _ | inOpcode `elem` [Iles, Ilds] -> c $ letM (addr op2) $ \ad -> do
         setOp1w $ Get $ Heap16 ad
         Set (case inOpcode of Iles -> Es; Ilds -> Ds) $ Get $ Heap16 $ add (C 2) ad
+
+    Imov | op1 == Reg (RegSeg SS) -> Set Ss $ getWordOperand segmentPrefix op2 --hack!
 
     _ -> case sizeByte of
         1 -> c $ withSize getByteOperand byteOperand (Low AX) (High AX) AX
@@ -774,13 +776,14 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss ip = case inOpcode of
 
     getSegOf = \case
         RegIP     -> error "segOf RegIP"
-        Reg16 RSP -> Get Ss
-        Reg16 RBP -> Get Ss
+        Reg16 RSP -> C ss
+        Reg16 RBP -> C ss
         _         -> Get Ds
 
     getReg :: Register -> Exp Word16
     getReg = \case
         RegNone -> C 0
+        RegSeg SS -> C ss
         RegSeg CS -> C cs
         r -> Get $ reg r
 
@@ -798,7 +801,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss ip = case inOpcode of
         RegSeg r -> case r of
             ES -> Es
             DS -> Ds
-            SS -> Ss
+            SS -> error "Ss is written"
             CS -> error "CS is written"
         RegIP -> IP
         x -> error $ "reg: " ++ show x
@@ -834,7 +837,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss ip = case inOpcode of
         Imm i  -> C $ imm' i
         Jump i -> Add (C $ imm i) (Get IP)
         Reg r  -> getReg r
-        x -> Get $ wordOperand segmentPrefix x
+        Mem m  -> Get $ Heap16 $ addressOf segmentPrefix m
 
     wordOperand :: Maybe Segment -> Operand -> Part Word16
     wordOperand segmentPrefix = \case
@@ -849,15 +852,35 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss ip = case inOpcode of
 
     memIndex r = Memory undefined (Reg16 r) RegNone 0 $ Immediate Bits0 0
 
+    stackTop :: Part Word16
+    stackTop = Heap16 $ segAddr_ (C ss) $ Get SP
+
+    push :: Exp Word16 -> ExpM ()
+    push x = do
+        modif SP $ Add $ C $ -2
+        Set stackTop x
+
+    pop :: (Exp Word16 -> ExpM ()) -> ExpM ()
+    pop cont = LetM (Get stackTop) $ \x -> do
+        modif SP $ Add $ C 2
+        cont x
+
+    interrupt :: Exp Word16 -> Exp Word8 -> ExpM ()
+    interrupt cs v = letM (mul (C 4) $ convert v) $ \v -> do
+    --    trace_ $ "interrupt " ++ showHex' 2 v
+        push $ Get Flags
+        push $ cs
+        push $ Get IP
+        Set IF $ C False
+        Jump' (Get $ Heap16 $ add (C 2) v) (Get $ Heap16 v)
+
+
 segAddr_ :: Exp Word16 -> Exp Word16 -> Exp Int
 segAddr_ (C s) (C o) = C $ segAddr s o
 segAddr_ seg off = SegAddr seg off
 
-sps :: Exp Int
-sps = segAddr_ (Get Ss) $ Get SP
-
 stackTop :: Part Word16
-stackTop = Heap16 sps
+stackTop = Heap16 $ segAddr_ (Get Ss) $ Get SP
 
 push :: Exp Word16 -> ExpM ()
 push x = do
