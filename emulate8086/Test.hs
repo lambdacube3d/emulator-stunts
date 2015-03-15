@@ -29,7 +29,7 @@ import DosBox
 --import Word1
 import Helper
 import MachineState
-import Parse (getLabels)
+--import Utils.Parse (getLabels)
 
 --------------------------------------------------------------------------------
 {-
