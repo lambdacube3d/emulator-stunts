@@ -8,6 +8,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NoMonomorphismRestriction #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE FunctionalDependencies #-}
@@ -16,6 +17,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE RecursiveDo #-}
 module Emulate where
 
 import Numeric
@@ -258,11 +260,11 @@ getFetcher = do
             i = ips - start
     return f
 
-fetchBlock_' f cs ip = do
+fetchBlock_' ca f cs ip = do
     let (n, r, e) = fetchBlock_ (head . disassembleMetadata disasmConfig . f) cs ip
     liftIO $ evaluate n
     return $ Compiled cs n r $ do
-        evalExpM e
+        evalExpM ca e
         b <- use $ config . showReads
         when b $ do
             v <- use $ config . showBuffer
@@ -271,12 +273,12 @@ fetchBlock_' f cs ip = do
                 x <- U.unsafeRead v i
                 U.unsafeWrite v i $ x .|. 0xff000000
 
-fetchBlock :: Machine CacheEntry
-fetchBlock = do
+fetchBlock :: Cache -> Machine CacheEntry
+fetchBlock ca = do
     cs_ <- use cs
     ip_ <- use ip
     f <- getFetcher
-    fetchBlock_' f cs_ ip_
+    fetchBlock_' ca f cs_ ip_
 
 mkStep :: Machine Int
 mkStep = do
@@ -298,11 +300,14 @@ mkStep = do
         m
         return 1
       DontCache _ -> do
-        Compiled _ n _ ch <- fetchBlock
+        Compiled _ n _ ch <- fetchBlock mempty
         ch
         return n
      Nothing -> do
-        entry@(Compiled _ n reg ch) <- fetchBlock
+        entry@(Compiled _ n reg ch) <- mdo
+            e <- fetchBlock ca
+            ca <- use cache
+            return e
         h <- use heap''
         when (cacheOK ips) $ do
             cache %= IM.insert ips entry
@@ -426,7 +431,7 @@ prjIx 0 (PushLayout _ ix) = unsafeCoerce ix --fromJust (gcast ix)
                               -- can't go wrong unless the library is wrong!
 prjIx n (PushLayout l _)  = prjIx (n - 1) l
 
-interrupt'' n = flip runReaderT (Push Empty n) $ evalEExpM int
+interrupt'' n = flip runReaderT (Push Empty n) $ evalEExpM mempty int
    where
     int :: EExpM (Con Word8 Nil) ()
     int = case convExpM $ LetM (C (0 :: Word8)) (interrupt $ Get Cs) of
@@ -571,29 +576,38 @@ evalExp_ = evalExp where
     Fst' p -> fst <$> evalExp p
     Snd' p -> snd <$> evalExp p
 
-evalEExpM :: EExpM e a -> Machine' e a
-evalEExpM = evalExpM where
+evalExpM :: Cache -> ExpM a -> Machine a
+evalExpM ca e = flip runReaderT Empty $ evalEExpM ca (convExpM e)
 
+evalEExpM :: Cache -> EExpM e a -> Machine' e a
+evalEExpM ca = evalExpM
+  where
   evalExpM :: EExpM e a -> Machine' e a
   evalExpM = \case
-    LetM' e f -> evalExp e >>= pushVal (evalEExpM f)
+    LetM' e f -> evalExp e >>= pushVal (evalExpM f)
     Seq' a b -> evalExpM a >> evalExpM b
     Set' p e' -> case p of 
         Heap16 e -> join $ lift <$> liftM2 setWordAt (evalExp e) (evalExp e')
         Heap8 e -> join $ lift <$> liftM2 setByteAt (evalExp e) (evalExp e')
         p -> evalExp e' >>= (evalPart_ p .=)
+    Jump'' (C' c) (C' i) | Just (Compiled cs' _ _ m) <- IM.lookup (segAddr c i) ca
+                       , cs' == c -> lift $ do
+                            checkInt 1
+                            cs .= c
+                            ip .= i
+                            m
     Jump'' c i -> join $ liftM2 (\c i -> cs .= c >> ip .= i) (evalExp c) (evalExp i)
     Nop' -> return ()
 
     IfM' b x y -> evalExp b >>= iff (evalExpM x) (evalExpM y)
 
-    Input' a f -> evalExp a >>= lift . input >>= pushVal (evalEExpM f)
+    Input' a f -> evalExp a >>= lift . input >>= pushVal (evalExpM f)
     QuotRem' a b c f -> do
         x <- evalExp a
         y <- evalExp b
         case quotRemSafe x y of
             Nothing -> evalExpM c
-            Just (z,v) -> pushVal (evalEExpM f) (z, v)
+            Just (z,v) -> pushVal (evalExpM f) (z, v)
 
 
     Replicate' n e -> join $ liftM2 replicateM_ (evalExp n) (return $ evalExpM e)
@@ -613,14 +627,11 @@ cyc2 a b m = do
 pushVal :: Machine' (Con b e) a -> b -> Machine' e a
 pushVal m v = ReaderT $ runReaderT m . (`Push` v)
 
-evalExpM :: ExpM a -> Machine a
-evalExpM e = flip runReaderT Empty $ evalEExpM (convExpM e)
-
 checkInt n = do
   ns <- use $ config . stepsCounter
   let !ns' = ns + n
   config . stepsCounter .= ns'
-  let ma = complement 0x3ff
+  let ma = complement 0xff
   when (ns' .&. ma /= ns .&. ma) $ do
     i <- use interruptF
     when i $ do
@@ -1070,7 +1081,7 @@ origInterrupt = M.fromList
   where 
     item :: Word8 -> (Word16, Word16) -> Machine () -> ((Word16, Word16), (Word8, Machine ()))
     item a k m = (k, (a, m >> iret'))
-    iret' = evalExpM iret
+    iret' = evalExpM mempty iret
 
     newHandle fn = do
         handle <- max 5 . imMax <$> use files
@@ -1240,7 +1251,10 @@ loadExe loadSegment gameExe = do
                 trace_ "outdated cache file deleted!"
                 liftIO $ writeFile cacheFile "fromList []"
                 return mempty
-    cf' <- cf `deepseq` (forM (IM.toList cf) $ \(fromIntegral -> cs, ips) -> forM (map fromIntegral $ IS.toList ips) $ \ip -> (,) (segAddr cs ip) <$> fetchBlock_' getInst cs ip)
+    cf' <- cf `deepseq` mdo
+        cf' <- forM (IM.toList cf) $ \(fromIntegral -> cs, ips) -> forM (map fromIntegral $ IS.toList ips) $ \ip -> (,) (segAddr cs ip) <$> fetchBlock_' ca getInst cs ip
+        ca <- use cache
+        return cf'
     cache %= IM.union (IM.fromList (filter (not . (`IS.member` inv') . fst) $ concat cf'))
     trace_ "cache loaded"
 
