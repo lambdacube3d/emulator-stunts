@@ -586,6 +586,7 @@ evalExp_ = evalExp where
 
     Signed' e -> asSigned <$> evalExp e    
     Extend' e -> extend <$> evalExp e    
+    SegAddr' (C' i) f -> (fromIntegral i `shiftL` 4 +) . fromIntegral <$> evalExp f
     SegAddr' e f -> liftM2 segAddr (evalExp e) (evalExp f)
     Convert' e -> fromIntegral <$> evalExp e    
 
@@ -608,12 +609,10 @@ evalEExpM ca = evalExpM
         Heap8 e -> join $ lift <$> liftM2 setByteAt (evalExp e) (evalExp e')
         p -> evalExp e' >>= (evalPart_ p .=)
 {- temporarily comment out
-    Jump'' (C' c) (C' i) | Just (Compiled cs' ss' _ _ m) <- IM.lookup (segAddr c i) ca
+    Jump'' (C' c) (C' i) | Just (Compiled cs' ss' _ _ _ _ m) <- IM.lookup (segAddr c i) ca
                        , cs' == c -> lift $ do
                             checkInt 1
---                            cs .= c
                             ip .= i
---                            ss .= ss'  -- ?
                             m
 -}
     Jump'' c i -> join $ liftM2 (\c i -> cs .= c >> ip .= i) (evalExp c) (evalExp i)
