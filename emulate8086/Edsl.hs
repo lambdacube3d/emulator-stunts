@@ -786,7 +786,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ip = case inOpcode of
         divide :: (Integral a, Integral c, Integral (X2 c)) => (Exp a -> Exp c) -> (Exp (X2 a) -> Exp (X2 c)) -> ExpM ()
         divide asSigned asSigned' =
             QuotRem (asSigned' $ Get axd) (convert $ asSigned op1v)
-                (interrupt (C cs) $ C 0) $ \(d, m) -> do
+                (error "divide by 0" {-trace_ "int(/0)" >> interrupt (C cs) (C 0)-}) $ \(d, m) -> do
                     Set alx $ Convert d
                     Set ahd $ Convert m
 

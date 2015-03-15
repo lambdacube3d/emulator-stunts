@@ -1251,6 +1251,7 @@ loadExe loadSegment gameExe = do
                 trace_ "outdated cache file deleted!"
                 liftIO $ writeFile cacheFile "fromList []"
                 return mempty
+    when (not $ unique [segAddr cs $ fromIntegral ip | (fromIntegral -> cs, ips) <- IM.toList cf, ip <- IS.toList ips]) $ error "corrupt cache"
     cf' <- cf `deepseq` mdo
         cf' <- forM (IM.toList cf) $ \(fromIntegral -> cs, ips) -> forM (map fromIntegral $ IS.toList ips) $ \ip -> (,) (segAddr cs ip) <$> fetchBlock_' ca getInst cs ip
         ca <- use cache
@@ -1304,6 +1305,8 @@ loadExe loadSegment gameExe = do
 
     relocationTable = sort $ take (fromIntegral relocationEntries)
         $ map (\[a,b]-> segAddr b a) $ everyNth 2 $ drop (fromIntegral firstRelocationItemOffset `div` 2 - 14) headerLeft
+
+unique xs = length xs == length (nub xs)
 
 relocate :: [Int] -> Word16 -> BS.ByteString -> BS.ByteString
 relocate table loc exe = BS.concat $ fst: map add (bss ++ [last])
