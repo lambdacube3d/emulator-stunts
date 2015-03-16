@@ -51,11 +51,24 @@ getFetcher = do
             i = ips - start
     return f
 
+-- TODO: tye the knot
+evalBlocks cs' ip' e = case IM.lookup (fromIntegral ip') e of
+    Just x -> do
+        evalExpM mempty x
+{- TODO
+        cs_ <- use cs
+        ip_ <- use ip
+        when (cs_ == cs') $ do
+            checkInt 1
+            evalBlocks cs' ip_ e
+-}
+    Nothing -> return ()
+
 fetchBlock_' ca f cs ss es ds ip = do
     let (n, r, e) = fetchBlock_ (head . disassembleMetadata disasmConfig . f) cs ss es ds ip
     _ <- liftIO $ evaluate n
     return $ Compiled cs ss es ds n r $ do
-        _ <- evalExpM ca e
+        _ <- evalBlocks cs ip e
         b <- use $ config . showReads
         when b $ do
             v <- use $ config . showBuffer

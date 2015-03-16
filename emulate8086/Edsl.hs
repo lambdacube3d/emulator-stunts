@@ -6,6 +6,7 @@ import Data.Int
 import Data.Word
 import Data.Bits
 import qualified Data.Set as S
+import qualified Data.IntMap.Strict as IM
 import Control.Monad
 import Hdis86
 import Debug.Trace
@@ -437,9 +438,13 @@ foldrExp f g x (Seq a b) = f a (foldrExp f g x b)
 foldrExp f g x (IfM a b c) = g a (foldrExp f g x b) (foldrExp f g x c)
 foldrExp f g x y = f y x
 -}
+
+-- instruction blocks
+type Blocks = IM.IntMap (ExpM Jump')
+
 --fetchBlock_ :: (Int -> Metadata) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM ()
 fetchBlock_ fetch cs ss es ds ip
-    = (1, [(ips, ips +1)], fetchBlock' fetch cs ip ss (maybe (Get Es) C es) (maybe (Get Ds) C ds))
+    = (1, [(ips, ips +1)], IM.singleton (fromIntegral ip) $ fetchBlock' fetch cs ip ss (maybe (Get Es) C es) (maybe (Get Ds) C ds))
   where
     ips = segAddr cs ip
 
