@@ -1,7 +1,6 @@
-{-# LANGUAGE RebindableSyntax #-}
+{-# LANGUAGE EmptyDataDecls #-}
 module Edsl where
 
-import Prelude hiding ((>>), return)
 import Data.List
 import Data.Maybe
 import Data.Int
@@ -9,29 +8,12 @@ import Data.Word
 import Data.Bits
 import qualified Data.Set as S
 import Data.Monoid
+import Control.Monad
 import Hdis86
 
 import Helper
 
 ----------------------------------------
-
-infixr 1 >>, `Seq`
-(>>) :: ExpM () -> ExpM () -> ExpM ()
-(>>) = (<>)
-
-return :: () -> ExpM ()
-return () = mempty
-
-ifThenElse :: Bool -> a -> a -> a
-ifThenElse True a _ = a
-ifThenElse _ _ b = b
-
-instance Monoid (ExpM ()) where
-    Nop `mappend` e   = e
-    e   `mappend` Nop = e
-    Seq a b `mappend` e  = Seq a (b `mappend` e)
-    e1      `mappend` e2 = Seq e1 e2
-    mempty = Nop
 
 type Part = Part_ Exp
 
@@ -137,21 +119,47 @@ full = S.fromList [ Heap',
       IP', AL', BL', CL', DL', AH', BH', CH', DH', SI', DI', BP', SP', Es', Ds', Ss', Cs', CF', PF', ZF', SF', IF', DF', OF'
         ]
 
-data ExpM a where
-    Seq :: ExpM b -> ExpM c -> ExpM c
-    Nop :: ExpM ()
-    Jump' :: Exp Word16 -> Exp Word16 -> ExpM ()
+data Jump' where
 
-    Set :: Part a -> Exp a -> ExpM ()
+data ExpM e where
+    Stop :: e -> ExpM e
+    Set :: Part a -> Exp a -> ExpM e -> ExpM e
 
-    LetM :: Exp a -> (Exp a -> ExpM b) -> ExpM b
-    IfM :: Exp Bool -> ExpM a -> ExpM a -> ExpM a
-    Replicate :: Integral a => Exp a -> Exp Bool -> ExpM () -> (Exp a -> ExpM ()) -> ExpM ()
+    Jump' :: Exp Word16 -> Exp Word16 -> ExpM Jump'
+    LetM :: Exp a -> (Exp a -> ExpM e) -> ExpM e  -- -> ExpM e
+    IfM :: Exp Bool -> ExpM e -> ExpM e -> ExpM e
+    Replicate :: Integral a => Exp a -> Exp Bool -> ExpM () -> (Exp a -> ExpM e) -> ExpM e
 
-    Input :: Exp Word16 -> (Exp Word16 -> ExpM ()) -> ExpM ()
-    Output :: Exp Word16 -> Exp Word16 -> ExpM ()
+    Input :: Exp Word16 -> (Exp Word16 -> ExpM e) -> ExpM e
+    Output :: Exp Word16 -> Exp Word16 -> ExpM e -> ExpM e
 
-modif p f = Set p $ f $ Get p
+set :: Part a -> Exp a -> ExpM ()
+set x y = Set x y (return ())
+
+ifM (C c) a b = if c then a else b
+ifM x a b = IfM x a b
+
+when' :: Exp Bool -> ExpM () -> ExpM ()
+when' b x = ifM b x (return ())
+
+letM :: Exp a -> (Exp a -> ExpM e) -> ExpM e
+letM (C c) f = f (C c)
+letM x f = LetM x f
+
+output a b = Output a b (return ())
+
+
+instance Monad ExpM where
+    return = Stop
+    a >>= f = case a of
+        Stop x -> f x
+        Set a b e -> Set a b $ e >>= f
+--        LetM e x g -> LetM e x $ g >>= f
+        LetM e g -> LetM e $ g >=> f
+        IfM b x y -> IfM b (x >>= f) (y >>= f)
+        Replicate n b m g -> Replicate n b m $ g >=> f
+        Input e g -> Input e $ g >=> f
+        Output a b e -> Output a b $ e >>= f
 
 data Exp a where
     Var :: Int -> Exp a
@@ -182,7 +190,7 @@ data Exp a where
     Convert :: (Integral a, Num b) => Exp a -> Exp b
     SegAddr :: Exp Word16 -> Exp Word16 -> Exp Int
 
-uSet f = Nop --Set f $ C False
+uSet f = return () --Set f $ C False
 unTup x = (fst' x, snd' x)
 
 instance Num Bool where
@@ -201,12 +209,6 @@ instance Integral Bool where
     a `quotRem` 1 = (a, 0)
     a `quotRem` 0 = error $ "quotRem " ++ show a ++ " 0 :: Bool"
 
-
-ifM (C c) a b = if c then a else b
-ifM x a b = IfM x a b
-
-letM (C c) f = f (C c)
-letM x f = LetM x f
 
 add (C 0) x = x
 add x (C 0) = x
@@ -243,12 +245,6 @@ convert e = Convert e
 iterate' (C 0) f e = e
 iterate' (C 1) f e = f e
 iterate' n f e = Iterate n f e
-
-when :: Bool -> ExpM () -> ExpM ()
-when b x = if b then x else mempty
-
-when' :: Exp Bool -> ExpM () -> ExpM ()
-when' b x = ifM b x mempty
 
 extend' :: Extend a => Exp a -> Exp (X2 a)
 extend' (C x) = C $ extend x
@@ -434,18 +430,18 @@ reorderExp =  uncurry final . foldrExp f (\b x y -> ([], IfM b (fin x) (fin y)))
 
 disj a b = S.null $ S.intersection a b
 
-
+{-
 foldrExp :: (forall b . ExpM b -> a -> a) -> (forall b . Exp Bool -> a -> a -> a) -> a -> ExpM b -> a
 foldrExp f g x (Seq a b) = f a (foldrExp f g x b)
 foldrExp f g x (IfM a b c) = g a (foldrExp f g x b) (foldrExp f g x c)
 foldrExp f g x y = f y x
-
+-}
 --fetchBlock_ :: (Int -> Metadata) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM ()
 fetchBlock_ fetch cs_ ss es ds ip_ = (1, [(ips_, ips_ +1)], fetchBlock_' fetch cs_ ss es ds ip_)
   where
     ips_ = segAddr cs_ ip_
 
-    fetchBlock_' :: (Int -> Metadata) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM ()
+    fetchBlock_' :: (Int -> Metadata) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM Jump'
     fetchBlock_' fetch cs_ ss es ds ip_ =
         execInstruction' md (fetchBlock_' fetch cs_ ss es ds) cs_ ss es ds ip_
       where
@@ -468,7 +464,7 @@ operandSize = \case
     Imm (Immediate Bits16 v) -> Just 2
     _ -> Nothing
 
-execInstruction' :: Metadata -> (Word16 -> ExpM ()) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM ()
+execInstruction' :: Metadata -> (Word16 -> ExpM Jump') -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM Jump'
 execInstruction' mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip
   = case filter rep inPrefixes of
     [Rep, RepE]
@@ -480,16 +476,17 @@ execInstruction' mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip
     [] -> body cont cs ss es ds ip
   where
     body = compileInst (mdat { mdInst = i { inPrefixes = filter (not . rep) inPrefixes }})
-    body' = body (const Nop) cs ss es ds ip
+    body' = body (const $ return undefined) cs ss es ds ip
 
-    cycle :: Exp Bool -> ExpM ()
-    cycle cond = c $ Replicate (Get CX) cond body' $ Set CX
+    cycle :: Exp Bool -> ExpM Jump'
+    cycle cond = Replicate (Get CX) cond (body' >> return ()) (set CX) >> cc
 
     rep = (`elem` [Rep, RepE, RepNE])
-    c m = m >> cc
     cc = cont $ ip + fromIntegral (mdLength mdat)
 
-compileInst :: Metadata -> (Word16 -> ExpM ()) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM ()
+jump a b = Jump' a b
+
+compileInst :: Metadata -> (Word16 -> ExpM Jump') -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM Jump'
 compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpcode of
 
     _ | length inOperands > 2 -> error "more than 2 operands are not supported"
@@ -499,7 +496,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
             when (inOpcode == Icall) $ do
                 when far $ push $ C cs
                 push $ C nextip
-            Jump' cs' ip'
+            jump cs' ip'
       case op1 of
         Ptr (Pointer seg (Immediate Bits16 v)) -> jmp True (C $ fromIntegral seg) (C $ fromIntegral v)
         Mem _ -> addr2 op1 $ \(ad, ad2) -> jmp far (if far then ad2 else C cs) ad
@@ -507,14 +504,14 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
 
     _ | inOpcode `elem` [Iret, Iretf, Iiretw] -> pop $ \ip -> do
         let m = do
-                when (inOpcode == Iiretw) $ pop $ Set Flags
+                when (inOpcode == Iiretw) $ pop $ set Flags
                 when (length inOperands == 1) $ modif SP $ Add (getOp1w)
         if (inOpcode `elem` [Iretf, Iiretw])
-            then pop $ \cs' -> m >> Jump' cs' ip
-            else m >> Jump' (C cs) ip
+            then pop $ \cs' -> m >> jump cs' ip
+            else m >> jump (C cs) ip
 
     Iint  -> interrupt (C cs) $ getByteOperand segmentPrefix op1
-    Iinto -> when' (Get OF) (interrupt (C cs) $ C 4)
+    Iinto -> ifM (Get OF) (interrupt (C cs) $ C 4) end
 
     Ihlt  -> interrupt (C cs) $ C 0x20
 
@@ -542,38 +539,38 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
     Iloopnz -> loop $ Not $ Get ZF
 
     -- hack for stunts!
-    Ipop | op1 == Reg (RegSeg DS) -> stop $ pop $ Set Ds
-         | op1 == Reg (RegSeg ES) -> stop $ pop $ Set Es
-    Imov | op1 == Reg (RegSeg DS) -> stop $ Set Ds $ getWordOperand segmentPrefix op2
-         | op1 == Reg (RegSeg ES) -> stop $ Set Es $ getWordOperand segmentPrefix op2
-         | op1 == Reg (RegSeg SS) -> stop $ Set Ss $ getWordOperand segmentPrefix op2
+    Ipop | op1 == Reg (RegSeg DS) -> stop $ pop $ set Ds
+         | op1 == Reg (RegSeg ES) -> stop $ pop $ set Es
+    Imov | op1 == Reg (RegSeg DS) -> stop $ set Ds $ getWordOperand segmentPrefix op2
+         | op1 == Reg (RegSeg ES) -> stop $ set Es $ getWordOperand segmentPrefix op2
+         | op1 == Reg (RegSeg SS) -> stop $ set Ss $ getWordOperand segmentPrefix op2
 
 
     Ipush   -> c $ push getOp1w
     Ipop    -> c $ pop setOp1w
-    Ipusha  -> c $ mconcat $ map (push . Get) [AX,CX,DX,BX,SP,BP,SI,DI]
-    Ipopa   -> c $ mconcat $ map pop [Set DI,Set SI,Set BP,const Nop,Set BX,Set DX,Set CX,Set AX]
+    Ipusha  -> c $ mapM_ (push . Get) [AX,CX,DX,BX,SP,BP,SI,DI]
+    Ipopa   -> c $ mapM_ pop [set DI,set SI,set BP,const $ return (),set BX,set DX,set CX,set AX]
     Ipushfw -> c $ push $ Get Flags
-    Ipopfw  -> c $ pop $ Set Flags
-    Isahf -> c $ Set (Low  AX) $ Get $ Low Flags
-    Ilahf -> c $ Set (High AX) $ Get $ Low Flags
+    Ipopfw  -> c $ pop $ set Flags
+    Isahf -> c $ set (Low  AX) $ Get $ Low Flags
+    Ilahf -> c $ set (High AX) $ Get $ Low Flags
 
-    Iclc  -> c $ Set CF $ C False
+    Iclc  -> c $ set CF $ C False
     Icmc  -> c $ modif CF Not
-    Istc  -> c $ Set CF $ C True
-    Icld  -> c $ Set DF $ C False
-    Istd  -> c $ Set DF $ C True
-    Icli  -> c $ Set IF $ C False
-    Isti  -> c $ Set IF $ C True
+    Istc  -> c $ set CF $ C True
+    Icld  -> c $ set DF $ C False
+    Istd  -> c $ set DF $ C True
+    Icli  -> c $ set IF $ C False
+    Isti  -> c $ set IF $ C True
 
     Inop  -> cc
 
-    Ixlatb -> c $ Set (Low AX) $ Get $ Heap8 $ segAddr_ (maybe gds (getReg . RegSeg) segmentPrefix) $ Add (Extend $ Get $ Low AX) (Get BX)
+    Ixlatb -> c $ set (Low AX) $ Get $ Heap8 $ segAddr_ (maybe gds (getReg . RegSeg) segmentPrefix) $ Add (Extend $ Get $ Low AX) (Get BX)
 
     Ilea -> c $ setOp1w op2addr'
     _ | inOpcode `elem` [Iles, Ilds] -> stop $ addr2 op2 $ \(ad, ad2) -> do
         setOp1w ad
-        Set (case inOpcode of Iles -> Es; Ilds -> Ds) ad2
+        set (case inOpcode of Iles -> Es; Ilds -> Ds) ad2
 
     _ -> case sizeByte of
         1 -> c $ withSize getByteOperand byteOperand (Low AX) (High AX) AX
@@ -587,10 +584,10 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
         -> Part (X2 a)
         -> ExpM ()
     withSize getTr tr_ alx ahd axd = case inOpcode of
-        Imov  -> Set op1' op2v
+        Imov  -> set op1' op2v
         Ixchg -> LetM op1v $ \o1 -> do
-            Set op1' op2v
-            Set op2' o1
+            set op1' op2v
+            set op2' o1
         Inot  -> modif op1' Not
 
         Isal  -> shiftOp $ \_ x -> (HighBit x, ShiftL x)
@@ -620,7 +617,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
         Imul  -> multiply id
         Iimul -> multiply signed
 
-        _ | inOpcode `elem` [Icwd, Icbw] -> Set axd $ Convert $ Signed $ Get alx
+        _ | inOpcode `elem` [Icwd, Icbw] -> set axd $ Convert $ Signed $ Get alx
           | inOpcode `elem` [Istosb, Istosw] -> move di'' alx >> adjustIndex DI
           | inOpcode `elem` [Ilodsb, Ilodsw] -> move alx si'' >> adjustIndex SI
           | inOpcode `elem` [Imovsb, Imovsw] -> move di'' si'' >> adjustIndex SI >> adjustIndex DI
@@ -632,8 +629,8 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
             adjustIndex SI
             adjustIndex DI
 
-        Iin  -> Input (getWordOperand segmentPrefix op2) $ Set op1' . Convert
-        Iout -> Output (getWordOperand segmentPrefix op1) $ convert op2v
+        Iin  -> Input (getWordOperand segmentPrefix op2) $ set op1' . Convert
+        Iout -> output (getWordOperand segmentPrefix op1) $ convert op2v
 
       where
         si'', di'' :: Part a
@@ -650,32 +647,32 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
         divide :: (Integral a, Integral c, Integral (X2 c)) => (Exp a -> Exp c) -> (Exp (X2 a) -> Exp (X2 c)) -> ExpM ()
         divide asSigned asSigned' =
             LetM (QuotRem (asSigned' $ Get axd) (convert $ asSigned op1v)) $ \t -> do
-                    Set alx $ Convert $ Fst t
-                    Set ahd $ Convert $ Snd t
+                    set alx $ Convert $ Fst t
+                    set ahd $ Convert $ Snd t
 
         multiply :: forall c . (Extend c, FiniteBits (X2 c)) => (Exp a -> Exp c) -> ExpM ()
         multiply asSigned =
             LetM (Mul (Extend $ asSigned $ Get alx) (extend' $ asSigned op1v)) $ \r ->
             LetM (Not $ Eq r $ Extend (Convert r :: Exp c)) $ \c -> do
-                Set axd $ Convert r
-                Set CF c
-                Set OF c
+                set axd $ Convert r
+                set CF c
+                set OF c
                 uSet SF
                 uSet PF
-                Set ZF $ C False    -- needed for Stunts
+                set ZF $ C False    -- needed for Stunts
 
         shiftOp :: (forall b . (AsSigned b) => Exp Bool -> Exp b -> (Exp Bool, Exp b)) -> ExpM ()
         shiftOp op = do
             letM (and' (C 0x1f) $ getByteOperand segmentPrefix op2) $ \n -> do
             when' (not' $ eq' (C 0) n) $ letM (iterate' (convert n) (uncurry Tuple . uncurry op . unTup) $ Tuple (Get CF) op1v) $ \t -> do
                 let r = snd' t
-                Set CF $ fst' t
-                Set op1' r
+                set CF $ fst' t
+                set op1' r
                 when (inOpcode `elem` [Isal, Isar, Ishl, Ishr]) $ do
-                    Set ZF $ Eq (C 0) r
-                    Set SF $ HighBit r
+                    set ZF $ Eq (C 0) r
+                    set SF $ HighBit r
                     uSet OF
-                    Set PF $ EvenParity $ Convert r
+                    set PF $ EvenParity $ Convert r
                 when (inOpcode `elem` [Ircl, Ircr, Irol, Iror]) $ do
                     uSet ZF
                     uSet SF
@@ -689,18 +686,19 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
         twoOp_ store op op1 op2 = LetM (Get op1) $ \a -> letM op2 $ \b -> letM (op a b) $ \r -> do
 
             when (inOpcode `notElem` [Idec, Iinc]) $
-                Set CF $ Not $ Eq (Convert r) $ op (Convert a :: Exp Int) (convert b)
-            Set OF $ Not $ Eq (Convert $ Signed r) $ op (Convert $ Signed a :: Exp Int) (convert $ signed b)
+                set CF $ Not $ Eq (Convert r) $ op (Convert a :: Exp Int) (convert b)
+            set OF $ Not $ Eq (Convert $ Signed r) $ op (Convert $ Signed a :: Exp Int) (convert $ signed b)
 
-            Set ZF $ Eq (C 0) r
-            Set SF $ HighBit r
-            Set PF $ EvenParity $ Convert r
+            set ZF $ Eq (C 0) r
+            set SF $ HighBit r
+            set PF $ EvenParity $ Convert r
 
-            when store $ Set op1 r
+            when store $ set op1 r
 
     c m = m >> cc
     cc = cont nextip
-    stop m = m >> Jump' (C cs) (C nextip)
+    stop m = m >> end
+    end = jump (C cs) (C nextip)
     nextip = ip + fromIntegral (mdLength mdat)
 
     far = " far " `isInfixOf` mdAssembly mdat
@@ -711,15 +709,15 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
         modif CX $ Add $ C $ -1
         condJump $ and'' cond (Not $ Eq (C 0) (Get CX))
 
-    condJump :: Exp Bool -> ExpM ()
-    condJump b = ifM b (Jump' (C cs) getOp1w) cc
+    condJump :: Exp Bool -> ExpM Jump'
+    condJump b = ifM b (jump (C cs) getOp1w) cc
 
     sizeByte :: Word16
     sizeByte = fromIntegral $ sizeByte_ i
 
     ~(op1: ~(op2:_)) = inOperands
     getOp1w = getWordOperand segmentPrefix op1
-    setOp1w = Set $ wordOperand segmentPrefix op1
+    setOp1w = set $ wordOperand segmentPrefix op1
     op2addr' = case op2 of Mem m -> addressOf' m
 
     segmentPrefix :: Maybe Segment
@@ -812,27 +810,29 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
     push :: Exp Word16 -> ExpM ()
     push x = do
         modif SP $ Add $ C $ -2
-        Set stackTop x
+        set stackTop x
 
-    pop :: (Exp Word16 -> ExpM ()) -> ExpM ()
+    pop :: (Exp Word16 -> ExpM e) -> ExpM e
     pop cont = LetM (Get stackTop) $ \x -> do
         modif SP $ Add $ C 2
         cont x
 
-    interrupt :: Exp Word16 -> Exp Word8 -> ExpM ()
+    interrupt :: Exp Word16 -> Exp Word8 -> ExpM Jump'
     interrupt cs v = letM (mul (C 4) $ convert v) $ \v -> do
     --    trace_ $ "interrupt " ++ showHex' 2 v
         push $ Get Flags
         push $ cs
         push $ C nextip
-        Set IF $ C False
-        Jump' (Get $ Heap16 $ add (C 2) v) (Get $ Heap16 v)
+        set IF $ C False
+        jump (Get $ Heap16 $ add (C 2) v) (Get $ Heap16 v)
 
     segAddr_ :: Exp Word16 -> Exp Word16 -> Exp Int
     segAddr_ (C s) (C o) = C $ segAddr s o
     segAddr_ seg off = SegAddr seg off
 
-    move a b = Set a $ Get b
+    move a b = set a $ Get b
+
+    modif p f = set p $ f $ Get p
 
 maxInstLength = 7
 

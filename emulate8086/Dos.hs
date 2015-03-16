@@ -24,7 +24,7 @@ import Sound.ALUT (play, stop, sourceGain, pitch, ($=))
 import Hdis86
 
 import Helper
-import Edsl hiding (trace_, (>>), when, return, Info)
+import Edsl hiding (Info)
 import MachineState
 import DeBruijn
 

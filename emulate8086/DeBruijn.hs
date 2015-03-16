@@ -47,16 +47,17 @@ data EExp :: List * -> * -> * where
 
 data EExpM :: List * -> * -> * where
     LetM' :: EExp e a -> EExpM (Con a e) b -> EExpM e b
-    Input' :: EExp e Word16 -> EExpM (Con Word16 e) () -> EExpM e ()
+    Input' :: EExp e Word16 -> EExpM (Con Word16 e) x -> EExpM e x
 
     Seq' :: EExpM e b -> EExpM e c -> EExpM e c
     IfM' :: EExp e Bool -> EExpM e a -> EExpM e a -> EExpM e a
-    Replicate' :: Integral a => EExp e a -> EExp e Bool -> EExpM e () -> EExpM (Con a e) () -> EExpM e ()
+    Replicate' :: Integral a => EExp e a -> EExp e Bool -> EExpM e () -> EExpM (Con a e) x -> EExpM e x
 
+    Stop' :: a -> EExpM e a
     Nop' :: EExpM e ()
     Trace' :: String -> EExpM e ()
     Set' :: Part_ (EExp e) a -> EExp e a -> EExpM e ()
-    Jump'' :: EExp e Word16 -> EExp e Word16 -> EExpM e ()
+    Jump'' :: EExp e Word16 -> EExp e Word16 -> EExpM e Jump'
     Output' :: EExp e Word16 -> EExp e Word16 -> EExpM e ()
 
 data Layout :: List * -> List * -> * where
@@ -139,15 +140,16 @@ convExpM = f EmptyLayout where
         LetM e g -> LetM' (q e) $ f (inc lyt `PushLayout` VarZ) $ g $ Var (size lyt)
         Input e g -> Input' (q e) $ f (inc lyt `PushLayout` VarZ) $ g $ Var (size lyt)
 
-        Seq a b -> Seq' (k a) (k b)
+--        Seq a b -> Seq' (k a) (k b)
         IfM a b c -> IfM' (q a) (k b) (k c)
         Replicate n b a g -> Replicate' (q n) (q b) (k a) $ f (inc lyt `PushLayout` VarZ) $ g $ Var (size lyt)
-        Nop -> Nop'
+--        Nop -> Nop'
         Jump' cs ip -> Jump'' (q cs) (q ip) --Seq' (Set' (convPart lyt Cs) (q cs)) (Set' (convPart lyt IP) (q ip))
-        Set Cs _ -> error "convExpM: set cs"
+        Set Cs _ _ -> error "convExpM: set cs"
 --        Set IP _ -> error "convExpM: set ip"
-        Set p e -> Set' (convPart lyt p) (q e)
-        Output a b -> Output' (q a) (q b)
+        Set p e cont -> Set' (convPart lyt p) (q e) `Seq'` k cont
+        Output a b cont -> Output' (q a) (q b) `Seq'` k cont
+        Stop a -> Stop' a
 
 convPart :: Layout e e -> Part_ Exp a -> Part_ (EExp e) a
 convPart lyt = mapPart (convExp_ lyt)

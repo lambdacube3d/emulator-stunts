@@ -24,7 +24,7 @@ import System.IO.Unsafe
 import Hdis86
 
 import Helper
-import Edsl hiding ((>>), when, return)
+import Edsl
 import MachineState
 import DeBruijn
 import Dos
@@ -55,7 +55,7 @@ fetchBlock_' ca f cs ss es ds ip = do
     let (n, r, e) = fetchBlock_ (head . disassembleMetadata disasmConfig . f) cs ss es ds ip
     _ <- liftIO $ evaluate n
     return $ Compiled cs ss es ds n r $ do
-        evalExpM ca e
+        _ <- evalExpM ca e
         b <- use $ config . showReads
         when b $ do
             v <- use $ config . showBuffer
@@ -228,7 +228,7 @@ evalExp_ = evalExp where
     Fst' p -> fst <$> evalExp p
     Snd' p -> snd <$> evalExp p
 
-evalExpM :: Cache -> ExpM a -> Machine a
+evalExpM :: Cache -> ExpM Jump' -> Machine Jump'
 evalExpM ca e = flip runReaderT Empty $ evalEExpM ca (convExpM e)
 
 evalEExpM :: Cache -> EExpM e a -> Machine' e a
@@ -249,7 +249,8 @@ evalEExpM ca = evalExpM
                             ip .= i
                             m
 -}
-    Jump'' c i -> join $ liftM2 (\c i -> cs .= c >> ip .= i) (evalExp c) (evalExp i)
+    Jump'' c i -> join $ liftM2 (\c i -> cs .= c >> ip .= i >> return undefined) (evalExp c) (evalExp i)
+    Stop' a -> return a
     Nop' -> return ()
 
     IfM' b x y -> evalExp b >>= iff (evalExpM x) (evalExpM y)
