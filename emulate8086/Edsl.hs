@@ -6,7 +6,6 @@ import Data.Int
 import Data.Word
 import Data.Bits
 import qualified Data.Set as S
-import Data.Monoid
 import Control.Monad
 import Hdis86
 
@@ -438,11 +437,10 @@ foldrExp f g x (IfM a b c) = g a (foldrExp f g x b) (foldrExp f g x c)
 foldrExp f g x y = f y x
 -}
 --fetchBlock_ :: (Int -> Metadata) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM ()
-fetchBlock_ fetch cs_ ss es ds ip_ = (1, [(ips_, ips_ +1)], fetchBlock_' fetch cs_ ss es ds ip_)
+fetchBlock_ fetch cs_ ss es ds ip_ = (1, [(ips_, ips_ +1)], fetchBlock_' fetch cs_ ss (maybe (Get Es) C es) (maybe (Get Ds) C ds) ip_)
   where
     ips_ = segAddr cs_ ip_
 
-    fetchBlock_' :: (Int -> Metadata) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM Jump'
     fetchBlock_' fetch cs_ ss es ds ip_ =
         execInstruction' md (fetchBlock_' fetch cs_ ss es ds) cs_ ss es ds ip_
       where
@@ -466,30 +464,8 @@ operandSize = \case
     Imm (Immediate Bits16 v) -> Just 2
     _ -> Nothing
 
-execInstruction' :: Metadata -> (Word16 -> ExpM Jump') -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM Jump'
-execInstruction' mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip
-  = case filter rep inPrefixes of
-    [Rep, RepE]
-        | inOpcode `elem` [Icmpsb, Icmpsw, Iscasb, Iscasw] -> cycle $ Get ZF      -- repe
-        | inOpcode `elem` [Imovsb, Imovsw, Ilodsb, Ilodsw, Istosb, Istosw] -> cycle $ C True      -- rep
-    [RepNE]
-        | inOpcode `elem` [Icmpsb, Icmpsw, Iscasb, Iscasw, Imovsb, Imovsw, Ilodsb, Ilodsw, Istosb, Istosw]
-            -> cycle $ Not $ Get ZF
-    [] -> body cont cs ss es ds ip
-  where
-    body = compileInst (mdat { mdInst = i { inPrefixes = filter (not . rep) inPrefixes }})
-    body' = body (const $ return undefined) cs ss es ds ip
-
-    cycle :: Exp Bool -> ExpM Jump'
-    cycle cond = Replicate (Get CX) cond (body' >> return ()) (set CX) >> cc
-
-    rep = (`elem` [Rep, RepE, RepNE])
-    cc = cont $ ip + fromIntegral (mdLength mdat)
-
-jump a b = Jump' a b
-
-compileInst :: Metadata -> (Word16 -> ExpM Jump') -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM Jump'
-compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpcode of
+execInstruction' :: Metadata -> (Word16 -> ExpM Jump') -> Word16 -> Word16 -> Exp Word16 -> Exp Word16 -> Word16 -> ExpM Jump'
+execInstruction' mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpcode of
 
     _ | length inOperands > 2 -> error "more than 2 operands are not supported"
 
@@ -501,16 +477,19 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
             jump cs' ip'
       case op1 of
         Ptr (Pointer seg (Immediate Bits16 v)) -> jmp True (C $ fromIntegral seg) (C $ fromIntegral v)
-        Mem _ -> addr2 op1 $ \(ad, ad2) -> jmp far (if far then ad2 else C cs) ad
-        _     -> jmp False (C cs) getOp1w
+        Mem _ -> addr2 op1 $ \ad ad2 -> jmp far (if far then ad2 else C cs) ad
+        _     -> jmp False (C cs) (getWordOperand op1)
 
-    _ | inOpcode `elem` [Iret, Iretf, Iiretw] -> pop $ \ip -> do
-        let m = do
-                when (inOpcode == Iiretw) $ pop $ set Flags
-                when (length inOperands == 1) $ modif SP $ Add getOp1w
-        if (inOpcode `elem` [Iretf, Iiretw])
-            then pop $ \cs' -> m >> jump cs' ip
-            else m >> jump (C cs) ip
+    Iret -> pop $ \ip -> do
+        when (length inOperands == 1) $ modif SP $ Add (getWordOperand op1)
+        jump (C cs) ip
+    Iretf -> pop $ \ip -> pop $ \cs' -> do
+        when (length inOperands == 1) $ modif SP $ Add (getWordOperand op1)
+        jump cs' ip
+    Iiretw -> pop $ \ip -> pop $ \cs' -> do
+        pop $ set Flags
+        when (length inOperands == 1) $ modif SP $ Add (getWordOperand op1)
+        jump cs' ip
 
     Iint  -> interrupt $ getByteOperand op1
     Iinto -> ifM (Get OF) (interrupt $ C 4) end
@@ -547,9 +526,10 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
          | op1 == Reg (RegSeg ES) -> stop $ set Es $ getWordOperand op2
          | op1 == Reg (RegSeg SS) -> stop $ set Ss $ getWordOperand op2
 
+    Inop  -> cc
 
-    Ipush   -> c $ push getOp1w
-    Ipop    -> c $ pop setOp1w
+    Ipush   -> c $ push (getWordOperand op1)
+    Ipop    -> c $ pop $ set (wordOperand op1)
     Ipusha  -> c $ mapM_ (push . Get) [AX,CX,DX,BX,SP,BP,SI,DI]
     Ipopa   -> c $ mapM_ pop [set DI,set SI,set BP,const $ return (),set BX,set DX,set CX,set AX]
     Ipushfw -> c $ push $ Get Flags
@@ -565,18 +545,16 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
     Icli  -> c $ set IF $ C False
     Isti  -> c $ set IF $ C True
 
-    Inop  -> cc
-
     Ixlatb -> c $ set (Low AX) $ Get $ Heap8 $ segAddr_ (segmentPrefix DS) $ Add (Extend $ Get $ Low AX) (Get BX)
 
-    Ilea -> c $ setOp1w op2addr'
-    _ | inOpcode `elem` [Iles, Ilds] -> stop $ addr2 op2 $ \(ad, ad2) -> do
-        setOp1w ad
+    Ilea -> c $ set (wordOperand op1) $ addressOf' (unMem op2)
+    _ | inOpcode `elem` [Iles, Ilds] -> stop $ addr2 op2 $ \ad ad2 -> do
+        set (wordOperand op1) ad
         set (case inOpcode of Iles -> Es; Ilds -> Ds) ad2
 
-    _ -> case sizeByte of
-        1 -> c $ withSize getByteOperand byteOperand (Low AX) (High AX) AX
-        2 -> c $ withSize getWordOperand wordOperand AX DX DXAX
+    _ -> c $ cycle $ case sizeByte of
+        1 -> withSize getByteOperand byteOperand (Low AX) (High AX) AX
+        2 -> withSize getWordOperand wordOperand AX DX DXAX
   where
     withSize :: forall a . (AsSigned a, Extend a, Extend (Signed a), AsSigned (X2 a), X2 (Signed a) ~ Signed (X2 a))
         => (Operand -> Exp a)
@@ -699,6 +677,21 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
 
             when store $ set op1 r
 
+    cycle body = case filter rep inPrefixes of
+        [Rep, RepE]
+            | inOpcode `elem` [Icmpsb, Icmpsw, Iscasb, Iscasw] -> cyc $ Get ZF      -- repe
+            | inOpcode `elem` [Imovsb, Imovsw, Ilodsb, Ilodsw, Istosb, Istosw] -> cyc $ C True      -- rep
+        [RepNE]
+            | inOpcode `elem` [Icmpsb, Icmpsw, Iscasb, Iscasw, Imovsb, Imovsw, Ilodsb, Ilodsw, Istosb, Istosw]
+                -> cyc $ Not $ Get ZF
+        [] -> body
+      where
+        cyc cond = Replicate (Get CX) cond body (set CX)
+
+    rep = (`elem` [Rep, RepE, RepNE])
+
+    jump a b = Jump' a b
+
     c m = m >> cc
     cc = cont nextip
     stop m = m >> end
@@ -707,22 +700,20 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
 
     far = " far " `isInfixOf` mdAssembly mdat
 
-    addr2 (Mem m) f = letM (addressOf m) $ \ad -> f (Get $ Heap16 ad, Get $ Heap16 $ Add (C 2) ad)
+    addr2 m f = letM (addressOf $ unMem m) $ \ad -> f (Get $ Heap16 ad) (Get $ Heap16 $ Add (C 2) ad)
 
     loop cond = do
         modif CX $ Add $ C $ -1
         condJump $ and'' cond $ Not $ Eq (C 0) (Get CX)
 
     condJump :: Exp Bool -> ExpM Jump'
-    condJump b = ifM b (jump (C cs) getOp1w) cc
+    condJump b = ifM b (jump (C cs) (getWordOperand op1)) cc
 
     sizeByte :: Word16
     sizeByte = fromIntegral $ sizeByte_ i
 
     ~(op1: ~(op2:_)) = inOperands
-    getOp1w = getWordOperand op1
-    setOp1w = set $ wordOperand op1
-    op2addr' = case op2 of Mem m -> addressOf' m
+    unMem (Mem m) = m
 
     getReg :: Register -> Exp Word16
     getReg = \case
@@ -731,8 +722,8 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
         RegSeg s -> case s of
             SS -> C ss
             CS -> C cs
-            ES -> maybe (Get Es) C es
-            DS -> maybe (Get Ds) C ds
+            ES -> es
+            DS -> ds
         r -> Get $ reg r
 
     reg :: Register -> Part Word16
@@ -748,7 +739,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
             RSP -> SP
         x -> error $ "reg: " ++ show x
 
-    segmentPrefix s' = getReg $ RegSeg $ case inPrefixes of
+    segmentPrefix s' = getReg $ RegSeg $ case filter (not . rep) inPrefixes of
         [Seg s] -> s
         [] -> s'
 
