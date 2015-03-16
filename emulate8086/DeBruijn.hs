@@ -31,6 +31,7 @@ data EExp :: List * -> * -> * where
 
     Eq' :: Eq a => EExp e a -> EExp e a -> EExp e Bool
     Sub', Add', Mul' :: Num a => EExp e a -> EExp e a -> EExp e a
+    QuotRem' :: Integral a => EExp e a -> EExp e a -> EExp e (a, a)
     And', Or', Xor' :: Bits a => EExp e a -> EExp e a -> EExp e a
     Not', ShiftL', ShiftR', RotateL', RotateR' :: Bits a => EExp e a -> EExp e a
     Bit' :: Bits a => Int -> EExp e a -> EExp e Bool
@@ -46,7 +47,6 @@ data EExp :: List * -> * -> * where
 
 data EExpM :: List * -> * -> * where
     LetM' :: EExp e a -> EExpM (Con a e) b -> EExpM e b
-    QuotRem' :: Integral a => EExp e a -> EExp e a -> EExpM e b -> EExpM (Con (a,a) e) b -> EExpM e b
     Input' :: EExp e Word16 -> EExpM (Con Word16 e) () -> EExpM e ()
 
     Seq' :: EExpM e b -> EExpM e c -> EExpM e c
@@ -106,6 +106,7 @@ convExp_ lyt = g where
         Sub a b -> Sub' (g a) (g b)
         Add a b -> Add' (g a) (g b)
         Mul a b -> Mul' (g a) (g b)
+        QuotRem a b -> QuotRem' (g a) (g b)
         And a b -> And' (g a) (g b)
         Or a b -> Or' (g a) (g b)
         Xor a b -> Xor' (g a) (g b)
@@ -137,7 +138,6 @@ convExpM = f EmptyLayout where
       k :: forall a . ExpM a -> EExpM e a
       k = \case
         LetM e g -> LetM' (q e) $ f (inc lyt `PushLayout` VarZ) $ g $ Var (size lyt)
-        QuotRem a b x g -> QuotRem' (q a) (q b) (k x) $ f (inc lyt `PushLayout` VarZ) $ g $ unTup $ Var (size lyt)
         Input e g -> Input' (q e) $ f (inc lyt `PushLayout` VarZ) $ g $ Var (size lyt)
 
         Seq a b -> Seq' (k a) (k b)
@@ -145,7 +145,6 @@ convExpM = f EmptyLayout where
         Replicate n a -> Replicate' (q n) (k a)
         Cyc2 e f a -> Cyc2' (q e) (q f) (k a)
         Nop -> Nop'
-        Trace s -> Trace' s
         Jump' cs ip -> Jump'' (q cs) (q ip) --Seq' (Set' (convPart lyt Cs) (q cs)) (Set' (convPart lyt IP) (q ip))
         Set Cs _ -> error "convExpM: set cs"
 --        Set IP _ -> error "convExpM: set ip"

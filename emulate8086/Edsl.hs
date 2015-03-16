@@ -141,22 +141,17 @@ full = S.fromList [ Heap',
 data ExpM a where
     Seq :: ExpM b -> ExpM c -> ExpM c
     Nop :: ExpM ()
-
-    Set :: Part a -> Exp a -> ExpM ()
     Jump' :: Exp Word16 -> Exp Word16 -> ExpM ()
 
-    LetM :: Exp a -> (Exp a -> ExpM b) -> ExpM b
-    LetMM :: ExpM a -> (ExpM a -> ExpM b) -> ExpM b
-    IfM :: Exp Bool -> ExpM a -> ExpM a -> ExpM a
+    Set :: Part a -> Exp a -> ExpM ()
 
-    QuotRem :: Integral a => Exp a -> Exp a -> ExpM b -> ((Exp a, Exp a) -> ExpM b) -> ExpM b
-    Replicate :: Exp Int -> ExpM () -> ExpM ()
+    LetM :: Exp a -> (Exp a -> ExpM b) -> ExpM b
+    IfM :: Exp Bool -> ExpM a -> ExpM a -> ExpM a
     Cyc2 :: Exp Bool -> Exp Bool -> ExpM () -> ExpM ()
+    Replicate :: Exp Int -> ExpM () -> ExpM ()
 
     Input :: Exp Word16 -> (Exp Word16 -> ExpM ()) -> ExpM ()
     Output :: Exp Word16 -> Exp Word16 -> ExpM ()
-
-    Trace :: String -> ExpM ()
 --    deriving (Generic)
 
 instance NFData (ExpM a) where
@@ -181,6 +176,7 @@ data Exp a where
 
     Eq :: Eq a => Exp a -> Exp a -> Exp Bool
     Sub, Add, Mul :: Num a => Exp a -> Exp a -> Exp a
+    QuotRem :: Integral a => Exp a -> Exp a -> Exp (a, a)
     And, Or, Xor :: Bits a => Exp a -> Exp a -> Exp a
     Not, ShiftL, ShiftR, RotateL, RotateR :: Bits a => Exp a -> Exp a
     Bit :: Bits a => Int -> Exp a -> Exp Bool
@@ -193,8 +189,6 @@ data Exp a where
     Extend :: Extend a => Exp a -> Exp (X2 a)
     Convert :: (Integral a, Num b) => Exp a -> Exp b
     SegAddr :: Exp Word16 -> Exp Word16 -> Exp Int
-
-trace_ = Trace
 
 uSet f = Nop --Set f $ C False
 unTup x = (fst' x, snd' x)
@@ -664,10 +658,9 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
 
         divide :: (Integral a, Integral c, Integral (X2 c)) => (Exp a -> Exp c) -> (Exp (X2 a) -> Exp (X2 c)) -> ExpM ()
         divide asSigned asSigned' =
-            QuotRem (asSigned' $ Get axd) (convert $ asSigned op1v)
-                (error "divide by 0" {-trace_ "int(/0)" >> interrupt (C cs) (C 0)-}) $ \(d, m) -> do
-                    Set alx $ Convert d
-                    Set ahd $ Convert m
+            LetM (QuotRem (asSigned' $ Get axd) (convert $ asSigned op1v)) $ \t -> do
+                    Set alx $ Convert $ Fst t
+                    Set ahd $ Convert $ Snd t
 
         multiply :: forall c . (Extend c, FiniteBits (X2 c)) => (Exp a -> Exp c) -> ExpM ()
         multiply asSigned =

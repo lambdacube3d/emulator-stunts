@@ -207,6 +207,7 @@ evalExp_ = evalExp where
     Sub' a b -> liftM2 (-) (evalExp a) (evalExp b)
     Add' a b -> liftM2 (+) (evalExp a) (evalExp b)
     Mul' a b -> liftM2 (*) (evalExp a) (evalExp b)
+    QuotRem' a b -> liftM2 quotRem (evalExp a) (evalExp b)
     And' a b -> liftM2 (.&.) (evalExp a) (evalExp b)
     Or'  a b -> liftM2 (.|.) (evalExp a) (evalExp b)
     Xor' a b -> liftM2 xor (evalExp a) (evalExp b)
@@ -254,13 +255,6 @@ evalEExpM ca = evalExpM
     IfM' b x y -> evalExp b >>= iff (evalExpM x) (evalExpM y)
 
     Input' a f -> evalExp a >>= lift . input >>= pushVal (evalExpM f)
-    QuotRem' a b c f -> do
-        x <- evalExp a
-        y <- evalExp b
-        case quotRemSafe x y of
-            Nothing -> evalExpM c
-            Just (z,v) -> pushVal (evalExpM f) (z, v)
-
 
     Replicate' n e -> join $ liftM2 replicateM_ (evalExp n) (return $ evalExpM e)
     Cyc2' a b e -> cyc2 (evalExp a) (evalExp b) (evalExpM e)
