@@ -437,35 +437,15 @@ foldrExp f g x (IfM a b c) = g a (foldrExp f g x b) (foldrExp f g x c)
 foldrExp f g x y = f y x
 -}
 --fetchBlock_ :: (Int -> Metadata) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM ()
-fetchBlock_ fetch cs_ ss es ds ip_ = (1, [(ips_, ips_ +1)], fetchBlock_' fetch cs_ ss (maybe (Get Es) C es) (maybe (Get Ds) C ds) ip_)
+fetchBlock_ fetch cs_ ss es ds ip_
+    = (1, [(ips_, ips_ +1)], fetchBlock' fetch cs_ ss (maybe (Get Es) C es) (maybe (Get Ds) C ds) ip_)
   where
     ips_ = segAddr cs_ ip_
 
-    fetchBlock_' fetch cs_ ss es ds ip_ =
-        execInstruction' md (fetchBlock_' fetch cs_ ss es ds) cs_ ss es ds ip_
-      where
-        md = fetch $ segAddr cs_ ip_
-
 --------------------------------------------------------------------------------
 
-sizeByte_ i@Inst{..} = case inOpcode of
-    Iin  -> fromJust $ operandSize $ inOperands !! 0
-    Iout -> fromJust $ operandSize $ inOperands !! 1
-    _   | inOpcode `elem` [Icbw, Icmpsb, Imovsb, Istosb, Ilodsb, Iscasb, Ilahf] -> 1
-        | inOpcode `elem` [Icwd, Icmpsw, Imovsw, Istosw, Ilodsw, Iscasw] -> 2
-        | otherwise -> fromMaybe (error $ "size: " ++ show i) $ listToMaybe $ catMaybes $ map operandSize inOperands
-
-operandSize = \case
-    Reg (Reg16 _)   -> Just 2
-    Reg (Reg8 _ _)  -> Just 1
-    Mem (Memory Bits8 _ _ _ _)  -> Just 1
-    Mem (Memory Bits16 _ _ _ _) -> Just 2
-    Imm (Immediate Bits8 v)  -> Just 1
-    Imm (Immediate Bits16 v) -> Just 2
-    _ -> Nothing
-
-execInstruction' :: Metadata -> (Word16 -> ExpM Jump') -> Word16 -> Word16 -> Exp Word16 -> Exp Word16 -> Word16 -> ExpM Jump'
-execInstruction' mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpcode of
+fetchBlock' :: (Int -> Metadata) -> Word16 -> Word16 -> Exp Word16 -> Exp Word16 -> Word16 -> ExpM Jump'
+fetchBlock' fetch cs ss es ds ip = case inOpcode of
 
     _ | length inOperands > 2 -> error "more than 2 operands are not supported"
 
@@ -556,6 +536,16 @@ execInstruction' mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case i
         1 -> withSize getByteOperand byteOperand (Low AX) (High AX) AX
         2 -> withSize getWordOperand wordOperand AX DX DXAX
   where
+    Metadata{..} = fetch $ segAddr cs ip
+    Inst{..} = mdInst
+    ~(op1: ~(op2:_)) = inOperands
+    nextip = ip + fromIntegral mdLength
+
+    c m = m >> cc
+    cc = fetchBlock' fetch cs ss es ds nextip
+    stop m = m >> end
+    end = jump (C cs) (C nextip)
+
     withSize :: forall a . (AsSigned a, Extend a, Extend (Signed a), AsSigned (X2 a), X2 (Signed a) ~ Signed (X2 a))
         => (Operand -> Exp a)
         -> (Operand -> Part a)
@@ -692,13 +682,7 @@ execInstruction' mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case i
 
     jump a b = Jump' a b
 
-    c m = m >> cc
-    cc = cont nextip
-    stop m = m >> end
-    end = jump (C cs) (C nextip)
-    nextip = ip + fromIntegral (mdLength mdat)
-
-    far = " far " `isInfixOf` mdAssembly mdat
+    far = " far " `isInfixOf` mdAssembly
 
     addr2 m f = letM (addressOf $ unMem m) $ \ad -> f (Get $ Heap16 ad) (Get $ Heap16 $ Add (C 2) ad)
 
@@ -710,9 +694,22 @@ execInstruction' mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case i
     condJump b = ifM b (jump (C cs) (getWordOperand op1)) cc
 
     sizeByte :: Word16
-    sizeByte = fromIntegral $ sizeByte_ i
+    sizeByte = case inOpcode of
+        Iin  -> fromJust $ operandSize op1
+        Iout -> fromJust $ operandSize op2
+        _   | inOpcode `elem` [Icbw, Icmpsb, Imovsb, Istosb, Ilodsb, Iscasb, Ilahf] -> 1
+            | inOpcode `elem` [Icwd, Icmpsw, Imovsw, Istosw, Ilodsw, Iscasw] -> 2
+            | otherwise -> fromMaybe (error $ "size: " ++ show mdInst) $ listToMaybe $ catMaybes $ map operandSize inOperands
 
-    ~(op1: ~(op2:_)) = inOperands
+    operandSize = \case
+        Reg (Reg16 _)   -> Just 2
+        Reg (Reg8 _ _)  -> Just 1
+        Mem (Memory Bits8 _ _ _ _)  -> Just 1
+        Mem (Memory Bits16 _ _ _ _) -> Just 2
+        Imm (Immediate Bits8 v)  -> Just 1
+        Imm (Immediate Bits16 v) -> Just 2
+        _ -> Nothing
+
     unMem (Mem m) = m
 
     getReg :: Register -> Exp Word16
