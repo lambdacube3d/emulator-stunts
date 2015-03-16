@@ -228,8 +228,8 @@ evalExp_ = evalExp where
     Fst' p -> fst <$> evalExp p
     Snd' p -> snd <$> evalExp p
 
-evalExpM :: Cache -> ExpM Jump' -> Machine Jump'
-evalExpM ca e = flip runReaderT Empty $ evalEExpM ca (convExpM e)
+evalExpM :: Cache -> ExpM Jump' -> Machine ()
+evalExpM ca e = flip runReaderT Empty $ evalEExpM ca (convExpM e) >>= \(JumpAddr c i) -> cs .= c >> ip .= i
 
 evalEExpM :: Cache -> EExpM e a -> Machine' e a
 evalEExpM ca = evalExpM
@@ -249,7 +249,7 @@ evalEExpM ca = evalExpM
                             ip .= i
                             m
 -}
-    Jump'' c i -> join $ liftM2 (\c i -> cs .= c >> ip .= i >> return undefined) (evalExp c) (evalExp i)
+    Jump'' c i -> liftM2 JumpAddr (evalExp c) (evalExp i)
     Stop' a -> return a
     Nop' -> return ()
 

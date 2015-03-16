@@ -1,4 +1,3 @@
-{-# LANGUAGE EmptyDataDecls #-}
 module Edsl where
 
 import Data.List
@@ -119,7 +118,7 @@ full = S.fromList [ Heap',
       IP', AL', BL', CL', DL', AH', BH', CH', DH', SI', DI', BP', SP', Es', Ds', Ss', Cs', CF', PF', ZF', SF', IF', DF', OF'
         ]
 
-data Jump' where
+data Jump' = JumpAddr Word16 Word16
 
 data ExpM e where
     Stop :: e -> ExpM e
