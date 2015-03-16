@@ -437,15 +437,15 @@ foldrExp f g x (IfM a b c) = g a (foldrExp f g x b) (foldrExp f g x c)
 foldrExp f g x y = f y x
 -}
 --fetchBlock_ :: (Int -> Metadata) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM ()
-fetchBlock_ fetch cs_ ss es ds ip_
-    = (1, [(ips_, ips_ +1)], fetchBlock' fetch cs_ ss (maybe (Get Es) C es) (maybe (Get Ds) C ds) ip_)
+fetchBlock_ fetch cs ss es ds ip
+    = (1, [(ips, ips +1)], fetchBlock' fetch cs ip ss (maybe (Get Es) C es) (maybe (Get Ds) C ds))
   where
-    ips_ = segAddr cs_ ip_
+    ips = segAddr cs ip
 
 --------------------------------------------------------------------------------
 
-fetchBlock' :: (Int -> Metadata) -> Word16 -> Word16 -> Exp Word16 -> Exp Word16 -> Word16 -> ExpM Jump'
-fetchBlock' fetch cs ss es ds ip = case inOpcode of
+fetchBlock' :: (Int -> Metadata) -> Word16 -> Word16 -> Word16 -> Exp Word16 -> Exp Word16 -> ExpM Jump'
+fetchBlock' fetch cs ip ss es ds = case inOpcode of
 
     _ | length inOperands > 2 -> error "more than 2 operands are not supported"
 
@@ -500,10 +500,10 @@ fetchBlock' fetch cs ss es ds ip = case inOpcode of
     Iloopnz -> loop $ Not $ Get ZF
 
     -- hack for stunts!
-    Ipop | op1 == Reg (RegSeg DS) -> stop $ pop $ set Ds
-         | op1 == Reg (RegSeg ES) -> stop $ pop $ set Es
-    Imov | op1 == Reg (RegSeg DS) -> stop $ set Ds $ getWordOperand op2
-         | op1 == Reg (RegSeg ES) -> stop $ set Es $ getWordOperand op2
+    Ipop | op1 == Reg (RegSeg DS) -> cont' es (Get Ds) $ pop $ set Ds
+         | op1 == Reg (RegSeg ES) -> cont' (Get Es) ds $ pop $ set Es
+    Imov | op1 == Reg (RegSeg DS) -> cont' es (Get Ds) $ set Ds $ getWordOperand op2
+         | op1 == Reg (RegSeg ES) -> cont' (Get Es) ds $ set Es $ getWordOperand op2
          | op1 == Reg (RegSeg SS) -> stop $ set Ss $ getWordOperand op2
 
     Inop  -> cc
@@ -542,7 +542,10 @@ fetchBlock' fetch cs ss es ds ip = case inOpcode of
     nextip = ip + fromIntegral mdLength
 
     c m = m >> cc
-    cc = fetchBlock' fetch cs ss es ds nextip
+    cc = cont es ds
+    cont = fetchBlock' fetch cs nextip ss
+    cont' es ds m = m >> cont es ds
+
     stop m = m >> end
     end = jump (C cs) (C nextip)
 
