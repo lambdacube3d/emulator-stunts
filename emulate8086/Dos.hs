@@ -51,7 +51,7 @@ modifyAllocated addr req (alloc, endf) = head $ concatMap f $ getOut $ zip alloc
 
 type MachinePart' a = (Machine a, a -> Machine ())
 
-(@:) :: (WordX a) => BS.ByteString -> a ->  a
+(@:) :: BS.ByteString -> a ->  a
 b @: x = x
 infix 5 @:
 

@@ -62,19 +62,9 @@ seqList = iso toList S.fromList where
 uComb :: Lens' a b -> Lens' a c -> Lens' a (b, c)
 uComb x y = lens ((^. x) &&& (^. y)) $ \a (b, c) -> set x b . set y c $ a
 
---------------------------
-
-class (FiniteBits a, Integral a) => WordX a where
-
-instance WordX Word8  where
-instance WordX Word16 where
-instance WordX Word32 where
-instance WordX Word64 where
-instance WordX Word   where
-
 ---------------------------------
 
-class (WordX a, Integral (Signed a), FiniteBits (Signed a)) => AsSigned a where
+class (Integral a, FiniteBits a, Integral (Signed a), FiniteBits (Signed a)) => AsSigned a where
     type Signed a :: *
 
 instance AsSigned Word8  where    type Signed Word8  = Int8
