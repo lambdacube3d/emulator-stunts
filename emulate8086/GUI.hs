@@ -1,4 +1,4 @@
-module DosBox
+module GUI
     ( drawWithFrameBuffer
     ) where
 

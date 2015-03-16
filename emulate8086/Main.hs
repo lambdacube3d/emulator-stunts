@@ -7,7 +7,7 @@ import Sound.ALUT
 
 import Dos
 import Emulate
-import DosBox
+import GUI
 import MachineState
 
 --------------------------------------------------------------------------------
