@@ -507,7 +507,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
     _ | inOpcode `elem` [Iret, Iretf, Iiretw] -> pop $ \ip -> do
         let m = do
                 when (inOpcode == Iiretw) $ pop $ set Flags
-                when (length inOperands == 1) $ modif SP $ Add (getOp1w)
+                when (length inOperands == 1) $ modif SP $ Add getOp1w
         if (inOpcode `elem` [Iretf, Iiretw])
             then pop $ \cs' -> m >> jump cs' ip
             else m >> jump (C cs) ip
@@ -775,6 +775,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
 
     byteOperand :: Operand -> Part Word8
     byteOperand = \case
+        Mem m -> Heap8 $ addressOf m
         Reg r -> case r of
             Reg8 r L -> case r of
                 RAX -> Low AX
@@ -786,7 +787,6 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
                 RBX -> High BX
                 RCX -> High CX
                 RDX -> High DX
-        Mem m -> Heap8 $ addressOf m
 
     getWordOperand = \case
         Imm i  -> C $ imm' i
@@ -805,18 +805,15 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
     imm' (Immediate Bits8 i) = fromIntegral (fromIntegral i :: Int8)
     imm' i = imm i
 
-    stackTop :: Part Word16
-    stackTop = Heap16 $ segAddr_ (C ss) $ Get SP
-
     push :: Exp Word16 -> ExpM ()
-    push x = do
-        modif SP $ Add $ C $ -2
-        set stackTop x
+    push x = letM (Add (C $ -2) (Get SP)) $ \sp -> do
+        set SP sp
+        set (Heap16 $ segAddr_ (C ss) sp) x
 
     pop :: (Exp Word16 -> ExpM e) -> ExpM e
-    pop cont = LetM (Get stackTop) $ \x -> do
-        modif SP $ Add $ C 2
-        cont x
+    pop cont = LetM (Get SP) $ \sp -> do
+        set SP $ Add (C 2) sp
+        cont $ Get $ Heap16 $ segAddr_ (C ss) sp
 
     interrupt :: Exp Word8 -> ExpM Jump'
     interrupt v = letM (mul (C 4) $ convert v) $ \v -> do
