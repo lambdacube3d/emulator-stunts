@@ -22,6 +22,7 @@ import System.FilePath (takeFileName)
 import System.FilePath.Glob
 import Sound.ALUT (play, stop, sourceGain, pitch, ($=))
 import Hdis86
+import Debug.Trace
 
 import Helper
 import Edsl hiding (Info)
@@ -65,7 +66,7 @@ dx = regs . dx_
 si = regs . si_
 di = regs . di_
 cs = regs . cs_
-ss = regs . ss_
+ss = regs . ss_ . iso id (trace " set ss ")
 ds = regs . ds_
 es = regs . es_
 ip = regs . ip_

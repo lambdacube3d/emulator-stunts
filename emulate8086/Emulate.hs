@@ -314,18 +314,7 @@ loadCache getInst = do
     config . invalid .= inv
     let inv' = IS.fromList $ map (uncurry segAddr) $ Set.toList inv
     cache %= IM.union (IM.fromList $ zip (IS.toList inv') $ repeat $ DontCache 0)
-    cf <- do
-        let newCache = liftIO $ do
-            writeFile cacheFile "fromList []"
-            return mempty
-        b <- liftIO $ doesFileExist cacheFile
-        if not b then newCache else do
-            x <- liftIO $ readFile cacheFile
-            case x `deepseq` reads x of
-                [(v,"")] -> return v
-                _ -> do
-                    trace_ "outdated cache file deleted!"
-                    newCache
+    cf <- liftIO readCache
 --    when (not $ unique [segAddr cs $ fromIntegral ip | (fromIntegral -> cs, ips) <- IM.toList cf, ip <- IS.toList ips]) $ error "corrupt cache"
     let fromIntegral' :: Int -> Maybe Word16
         fromIntegral' x | x == -1 = Nothing
@@ -339,5 +328,19 @@ loadCache getInst = do
         return cf'
     cache %= IM.union (IM.fromList (filter (not . (`IS.member` inv') . fst) $ cf'))
     trace_ "cache loaded"
+
+readCache :: IO (IM.IntMap (Int,Int,Int,Int))
+readCache = do
+    let newCache = do
+        writeFile cacheFile "fromList []"
+        return mempty
+    b <- doesFileExist cacheFile
+    if not b then newCache else do
+        x <- readFile cacheFile
+        case x `deepseq` reads x of
+            [(v,"")] -> return v
+            _ -> do
+                putStrLn "outdated cache file deleted!"
+                newCache
 
 

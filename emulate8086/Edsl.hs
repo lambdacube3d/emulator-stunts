@@ -8,6 +8,7 @@ import Data.Bits
 import qualified Data.Set as S
 import Control.Monad
 import Hdis86
+import Debug.Trace
 
 import Helper
 
@@ -495,7 +496,7 @@ fetchBlock' fetch cs ip ss es ds = case inOpcode of
     Iloope  -> loop $ Get ZF
     Iloopnz -> loop $ Not $ Get ZF
 
-    -- hack for stunts!
+    -- hack for stunts!  TODO: do it in a postprocessing phase?
     Ipop | op1 == Reg (RegSeg DS) -> cont' es (Get Ds) $ pop >>= set Ds
          | op1 == Reg (RegSeg ES) -> cont' (Get Es) ds $ pop >>= set Es
     Imov | op1 == Reg (RegSeg DS) -> cont' es (Get Ds) $ set Ds $ getWordOperand op2
