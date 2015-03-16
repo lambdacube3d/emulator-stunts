@@ -51,8 +51,7 @@ data EExpM :: List * -> * -> * where
 
     Seq' :: EExpM e b -> EExpM e c -> EExpM e c
     IfM' :: EExp e Bool -> EExpM e a -> EExpM e a -> EExpM e a
-    Replicate' :: EExp e Int -> EExpM e () -> EExpM e ()
-    Cyc2' :: EExp e Bool -> EExp e Bool -> EExpM e () -> EExpM e ()
+    Replicate' :: Integral a => EExp e a -> EExp e Bool -> EExpM e () -> EExpM (Con a e) () -> EExpM e ()
 
     Nop' :: EExpM e ()
     Trace' :: String -> EExpM e ()
@@ -142,8 +141,7 @@ convExpM = f EmptyLayout where
 
         Seq a b -> Seq' (k a) (k b)
         IfM a b c -> IfM' (q a) (k b) (k c)
-        Replicate n a -> Replicate' (q n) (k a)
-        Cyc2 e f a -> Cyc2' (q e) (q f) (k a)
+        Replicate n b a g -> Replicate' (q n) (q b) (k a) $ f (inc lyt `PushLayout` VarZ) $ g $ Var (size lyt)
         Nop -> Nop'
         Jump' cs ip -> Jump'' (q cs) (q ip) --Seq' (Set' (convPart lyt Cs) (q cs)) (Set' (convPart lyt IP) (q ip))
         Set Cs _ -> error "convExpM: set cs"

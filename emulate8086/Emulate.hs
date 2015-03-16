@@ -24,7 +24,7 @@ import System.IO.Unsafe
 import Hdis86
 
 import Helper
-import Edsl hiding (trace_, (>>), when, return)
+import Edsl hiding ((>>), when, return)
 import MachineState
 import DeBruijn
 import Dos
@@ -256,19 +256,18 @@ evalEExpM ca = evalExpM
 
     Input' a f -> evalExp a >>= lift . input >>= pushVal (evalExpM f)
 
-    Replicate' n e -> join $ liftM2 replicateM_ (evalExp n) (return $ evalExpM e)
-    Cyc2' a b e -> cyc2 (evalExp a) (evalExp b) (evalExpM e)
+    Replicate' n b e f -> evalExp n >>= replicateM' (evalExp b) (evalExpM e) >>= pushVal (evalExpM f)
 
     Output' a b -> join $ lift <$> liftM2 output' (evalExp a) (evalExp b)
 
     Trace' a -> lift $ trace_ a
 
-cyc2 a b m = do
-    x <- a
-    when x $ do
-        _ <- m
-        y <- b
-        when y $ cyc2 a b m
+replicateM' _ _ 0 = return 0
+replicateM' b m n = do
+    () <- m
+    y <- b
+    let !n' = n - 1
+    if y then replicateM' b m n' else return n'
 
 pushVal :: Machine' (Con b e) a -> b -> Machine' e a
 pushVal m v = ReaderT $ runReaderT m . (`Push` v)

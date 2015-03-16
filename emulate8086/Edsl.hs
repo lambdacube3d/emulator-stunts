@@ -9,7 +9,6 @@ import Data.Word
 import Data.Bits
 import qualified Data.Set as S
 import Data.Monoid
-import Control.DeepSeq
 import Hdis86
 
 import Helper
@@ -147,17 +146,10 @@ data ExpM a where
 
     LetM :: Exp a -> (Exp a -> ExpM b) -> ExpM b
     IfM :: Exp Bool -> ExpM a -> ExpM a -> ExpM a
-    Cyc2 :: Exp Bool -> Exp Bool -> ExpM () -> ExpM ()
-    Replicate :: Exp Int -> ExpM () -> ExpM ()
+    Replicate :: Integral a => Exp a -> Exp Bool -> ExpM () -> (Exp a -> ExpM ()) -> ExpM ()
 
     Input :: Exp Word16 -> (Exp Word16 -> ExpM ()) -> ExpM ()
     Output :: Exp Word16 -> Exp Word16 -> ExpM ()
---    deriving (Generic)
-
-instance NFData (ExpM a) where
-
---    IOCall :: IO a -> ExpM a
---    SetMachine :: Lens' MachineState a -> Exp a -> ExpM ()
 
 modif p f = Set p $ f $ Get p
 
@@ -225,8 +217,13 @@ add a b = Add a b
 mul (C c) (C c') = C $ c * c'
 mul a b = Mul a b
 
+and' (C 0) _ = C 0
 and' (C c) (C c') = C $ c .&. c'
 and' a b = And a b
+
+and'' (C False) _ = C False
+and'' (C True) b = b
+and'' a b = And a b
 
 not' (C c) = C $ complement c
 not' b = Not b
@@ -476,7 +473,7 @@ execInstruction' mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip
   = case filter rep inPrefixes of
     [Rep, RepE]
         | inOpcode `elem` [Icmpsb, Icmpsw, Iscasb, Iscasw] -> cycle $ Get ZF      -- repe
-        | inOpcode `elem` [Imovsb, Imovsw, Ilodsb, Ilodsw, Istosb, Istosw] -> cycle'      -- rep
+        | inOpcode `elem` [Imovsb, Imovsw, Ilodsb, Ilodsw, Istosb, Istosw] -> cycle $ C True      -- rep
     [RepNE]
         | inOpcode `elem` [Icmpsb, Icmpsw, Iscasb, Iscasw, Imovsb, Imovsw, Ilodsb, Ilodsw, Istosb, Istosw]
             -> cycle $ Not $ Get ZF
@@ -485,14 +482,8 @@ execInstruction' mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip
     body = compileInst (mdat { mdInst = i { inPrefixes = filter (not . rep) inPrefixes }})
     body' = body (const Nop) cs ss es ds ip
 
-    cycle' = c $ do
-        Replicate (Convert $ Get CX) body'
-        Set CX $ C 0
-
     cycle :: Exp Bool -> ExpM ()
-    cycle cond = c $ Cyc2 (Not $ Eq (C 0) $ Get CX) cond $ do
-        body'
-        modif CX $ Add $ C $ -1
+    cycle cond = c $ Replicate (Get CX) cond body' $ Set CX
 
     rep = (`elem` [Rep, RepE, RepNE])
     c m = m >> cc
@@ -718,7 +709,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
 
     loop cond = do
         modif CX $ Add $ C $ -1
-        condJump $ And (Not $ Eq (C 0) (Get CX)) cond
+        condJump $ and'' cond (Not $ Eq (C 0) (Get CX))
 
     condJump :: Exp Bool -> ExpM ()
     condJump b = ifM b (Jump' (C cs) getOp1w) cc
