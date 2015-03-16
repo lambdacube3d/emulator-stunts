@@ -508,9 +508,9 @@ execInstruction' mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip
     c m = m >> cc
     cc = cont $ ip + fromIntegral (mdLength mdat)
 
-nonSeg = \case
-    Seg _ -> False
-    x -> True
+    nonSeg = \case
+        Seg _ -> False
+        x -> True
 
 
 compileInst :: Metadata -> (Word16 -> ExpM ()) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM ()
@@ -522,7 +522,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
       let jmp far cs' ip' = do
             when (inOpcode == Icall) $ do
                 when far $ push $ C cs
-                push $ Get IP
+                push $ C nextip
             Jump' cs' ip'
       case op1 of
         Ptr (Pointer seg (Immediate Bits16 v)) -> jmp True (C $ fromIntegral seg) (C $ fromIntegral v)
@@ -727,7 +727,8 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
             when store $ Set op1 r
 
     c m = m >> cc
-    cc = cont $ ip + fromIntegral (mdLength mdat)
+    cc = cont nextip
+    nextip = ip + fromIntegral (mdLength mdat)
 
     far = " far " `isInfixOf` mdAssembly mdat
 
@@ -765,6 +766,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
     getReg :: Register -> Exp Word16
     getReg = \case
         RegNone -> C 0
+        RegIP -> C nextip
         RegSeg s -> case s of
             SS -> C ss
             CS -> C cs
@@ -783,8 +785,6 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
             RDI -> DI
             RBP -> BP
             RSP -> SP
-        RegSeg r -> error $ show r ++ " is written: " ++ show mdat
-        RegIP -> IP
         x -> error $ "reg: " ++ show x
 
     addressOf :: Maybe Segment -> Memory -> Exp Int
@@ -816,7 +816,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
 
     getWordOperand segmentPrefix = \case
         Imm i  -> C $ imm' i
-        Jump i -> Add (C $ imm i) (Get IP)
+        Jump i -> C $ imm i + nextip
         Reg r  -> getReg r
         Mem m  -> Get $ Heap16 $ addressOf segmentPrefix m
 
@@ -851,19 +851,15 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
     --    trace_ $ "interrupt " ++ showHex' 2 v
         push $ Get Flags
         push $ cs
-        push $ Get IP
+        push $ C nextip
         Set IF $ C False
         Jump' (Get $ Heap16 $ add (C 2) v) (Get $ Heap16 v)
 
+    segAddr_ :: Exp Word16 -> Exp Word16 -> Exp Int
+    segAddr_ (C s) (C o) = C $ segAddr s o
+    segAddr_ seg off = SegAddr seg off
 
-segAddr_ :: Exp Word16 -> Exp Word16 -> Exp Int
-segAddr_ (C s) (C o) = C $ segAddr s o
-segAddr_ seg off = SegAddr seg off
-
-stackTop :: Part Word16
-stackTop = Heap16 $ segAddr_ (Get Ss) $ Get SP
-
-move a b = Set a $ Get b
+    move a b = Set a $ Get b
 
 maxInstLength = 7
 
