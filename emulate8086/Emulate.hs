@@ -237,11 +237,10 @@ evalEExpM ca = evalExpM
   evalExpM :: EExpM e a -> Machine' e a
   evalExpM = \case
     LetM' e f -> evalExp e >>= pushVal (evalExpM f)
-    Seq' a b -> evalExpM a >> evalExpM b
-    Set' p e' -> case p of 
-        Heap16 e -> join $ lift <$> liftM2 (setWordAt $ Program e) (evalExp e) (evalExp e')
-        Heap8 e -> join $ lift <$> liftM2 (setByteAt $ Program e) (evalExp e) (evalExp e')
-        p -> evalExp e' >>= (evalPart_ p .=)
+    Set' p e' c -> case p of 
+        Heap16 e -> join (lift <$> liftM2 (setWordAt $ Program e) (evalExp e) (evalExp e')) >> evalExpM c
+        Heap8 e -> join (lift <$> liftM2 (setByteAt $ Program e) (evalExp e) (evalExp e')) >> evalExpM c
+        p -> evalExp e' >>= (evalPart_ p .=) >> evalExpM c
 {- temporarily comment out
     Jump'' (C' c) (C' i) | Just (Compiled cs' ss' _ _ _ _ m) <- IM.lookup (segAddr c i) ca
                        , cs' == c -> lift $ do
@@ -251,7 +250,6 @@ evalEExpM ca = evalExpM
 -}
     Jump'' c i -> liftM2 JumpAddr (evalExp c) (evalExp i)
     Stop' a -> return a
-    Nop' -> return ()
 
     IfM' b x y -> evalExp b >>= iff (evalExpM x) (evalExpM y)
 
@@ -259,9 +257,7 @@ evalEExpM ca = evalExpM
 
     Replicate' n b e f -> evalExp n >>= replicateM' (evalExp b) (evalExpM e) >>= pushVal (evalExpM f)
 
-    Output' a b -> join $ lift <$> liftM2 output' (evalExp a) (evalExp b)
-
-    Trace' a -> lift $ trace_ a
+    Output' a b c -> join (lift <$> liftM2 output' (evalExp a) (evalExp b)) >> evalExpM c
 
 replicateM' _ _ 0 = return 0
 replicateM' b m n = do

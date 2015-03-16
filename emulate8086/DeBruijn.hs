@@ -46,19 +46,16 @@ data EExp :: List * -> * -> * where
     SegAddr' :: EExp e Word16 -> EExp e Word16 -> EExp e Int
 
 data EExpM :: List * -> * -> * where
-    LetM' :: EExp e a -> EExpM (Con a e) b -> EExpM e b
-    Input' :: EExp e Word16 -> EExpM (Con Word16 e) x -> EExpM e x
+    Stop' :: a -> EExpM e a
+    Set' :: Part_ (EExp e) a -> EExp e a -> EExpM e x -> EExpM e x
 
-    Seq' :: EExpM e b -> EExpM e c -> EExpM e c
+    Jump'' :: EExp e Word16 -> EExp e Word16 -> EExpM e Jump'
+    LetM' :: EExp e a -> EExpM (Con a e) b -> EExpM e b
     IfM' :: EExp e Bool -> EExpM e a -> EExpM e a -> EExpM e a
     Replicate' :: Integral a => EExp e a -> EExp e Bool -> EExpM e () -> EExpM (Con a e) x -> EExpM e x
 
-    Stop' :: a -> EExpM e a
-    Nop' :: EExpM e ()
-    Trace' :: String -> EExpM e ()
-    Set' :: Part_ (EExp e) a -> EExp e a -> EExpM e ()
-    Jump'' :: EExp e Word16 -> EExp e Word16 -> EExpM e Jump'
-    Output' :: EExp e Word16 -> EExp e Word16 -> EExpM e ()
+    Input' :: EExp e Word16 -> EExpM (Con Word16 e) x -> EExpM e x
+    Output' :: EExp e Word16 -> EExp e Word16 -> EExpM e x -> EExpM e x
 
 data Layout :: List * -> List * -> * where
   EmptyLayout :: Layout env Nil
@@ -147,8 +144,8 @@ convExpM = f EmptyLayout where
         Jump' cs ip -> Jump'' (q cs) (q ip) --Seq' (Set' (convPart lyt Cs) (q cs)) (Set' (convPart lyt IP) (q ip))
         Set Cs _ _ -> error "convExpM: set cs"
 --        Set IP _ -> error "convExpM: set ip"
-        Set p e cont -> Set' (convPart lyt p) (q e) `Seq'` k cont
-        Output a b cont -> Output' (q a) (q b) `Seq'` k cont
+        Set p e cont -> Set' (convPart lyt p) (q e) $ k cont
+        Output a b cont -> Output' (q a) (q b) $ k cont
         Stop a -> Stop' a
 
 convPart :: Layout e e -> Part_ Exp a -> Part_ (EExp e) a
