@@ -760,6 +760,13 @@ loadExe loadSegment gameExe = do
 
     config . gameexe .= (exeStart, relocatedExe)
 
+    -- hack for stunts: skip the first few instructions to ensure constant ss value during run
+    ip .=  0x004f
+    si .=  0x0d20
+    di .=  0x2d85
+    sp .=  0xcc5e
+    ss .=  0x2d85
+    
     return getInst
 
   where

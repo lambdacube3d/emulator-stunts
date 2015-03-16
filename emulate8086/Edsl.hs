@@ -501,7 +501,6 @@ fetchBlock' fetch cs ip ss es ds = case inOpcode of
          | op1 == Reg (RegSeg ES) -> cont' (Get Es) ds $ pop >>= set Es
     Imov | op1 == Reg (RegSeg DS) -> cont' es (Get Ds) $ set Ds $ getWordOperand op2
          | op1 == Reg (RegSeg ES) -> cont' (Get Es) ds $ set Es $ getWordOperand op2
-         | op1 == Reg (RegSeg SS) -> stop $ set Ss $ getWordOperand op2
 
     Inop  -> cc
 
