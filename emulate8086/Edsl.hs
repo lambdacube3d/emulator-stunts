@@ -5,11 +5,10 @@ import Data.Maybe
 import Data.Int
 import Data.Word
 import Data.Bits
-import qualified Data.Set as S
 import qualified Data.IntMap.Strict as IM
 import Control.Monad
 import Hdis86
-import Debug.Trace
+--import Debug.Trace
 
 import Helper
 
@@ -58,67 +57,6 @@ mapPart f = \case
     Flags -> Flags
     DXAX -> DXAX
 
-
-
-data Part'
-    = Heap'
-    | IP' | AL' | BL' | CL' | DL' | AH' | BH' | CH' | DH' 
-    | SI' | DI' | BP' | SP' | Es' | Ds' | Ss' | Cs' | CF' | PF' | ZF' | SF' | IF' | DF' | OF'
-    deriving (Eq, Ord)
-
-data Eqq a b where
-    Eqq :: (a ~ b) => Eqq a b
-    NotEq :: Eqq a b
-{-
-same :: Part a -> Part b -> Eqq a b
-same a b | keyOf a == keyOf b = unsafeCoerce Eqq
-         | otherwise = NotEq
-
-keyOf :: Part a -> S.Set Part'
-keyOf = \case
-    AX -> S.fromList [AL', AH']
-    BX -> S.fromList [BL', BH']
-    CX -> S.fromList [CL', CH']
-    DX -> S.fromList [DL', DH']
-    IP -> S.singleton IP'
-    SI -> S.singleton SI'
-    DI -> S.singleton DI'
-    BP -> S.singleton BP'
-    SP -> S.singleton SP'
-    Es -> S.singleton Es'
-    Ds -> S.singleton Ds'
-    Cs -> S.singleton Cs'
-    Ss -> S.singleton Ss'
-    CF -> S.singleton CF'
-    PF -> S.singleton PF'
-    AF -> S.singleton AF'
-    ZF -> S.singleton ZF'
-    SF -> S.singleton SF'
-    IF -> S.singleton IF'
-    DF -> S.singleton DF'
-    OF -> S.singleton OF'
-    Flags -> S.fromList [CF', PF', AF', ZF', SF', IF', DF', OF']
-    DXAX  -> S.fromList [AL', AH', DL', DH']
-    Low AX -> S.singleton AL'
-    Low BX -> S.singleton BL'
-    Low CX -> S.singleton CL'
-    Low DX -> S.singleton DL'
-    Low  a -> keyOf a
-    High AX -> S.singleton AH'
-    High BX -> S.singleton BH'
-    High CX -> S.singleton CH'
-    High DX -> S.singleton DH'
-    High a  -> keyOf a
-    Heap8 _  -> S.singleton Heap'
-    Heap16 _ -> S.singleton Heap'
---    _ -> full --Heap8' i
---    Heap16
--}
-full :: Inf
-full = S.fromList [ Heap',
-      IP', AL', BL', CL', DL', AH', BH', CH', DH', SI', DI', BP', SP', Es', Ds', Ss', Cs', CF', PF', ZF', SF', IF', DF', OF'
-        ]
-
 data Jump' = JumpAddr Word16 Word16
 
 data ExpM e where
@@ -127,7 +65,7 @@ data ExpM e where
 
     Jump' :: Exp Word16 -> Exp Word16 -> ExpM Jump'
     -- constrained let type (with more efficient interpretation) 
-    LetMC :: Exp a -> (Exp a -> ExpM ()) -> ExpM e -> ExpM e
+    -- LetMC :: Exp a -> (Exp a -> ExpM ()) -> ExpM e -> ExpM e
     LetM :: Exp a -> (Exp a -> ExpM e) -> ExpM e
     IfM :: Exp Bool -> ExpM e -> ExpM e -> ExpM e
     Replicate :: Integral a => Exp a -> Exp Bool -> ExpM () -> (Exp a -> ExpM e) -> ExpM e
@@ -156,7 +94,7 @@ instance Monad ExpM where
     a >>= f = case a of
         Stop x -> f x
         Set a b e -> Set a b $ e >>= f
-        LetMC e x g -> LetMC e x $ g >>= f
+        -- LetMC e x g -> LetMC e x $ g >>= f
         LetM e g -> LetM e $ g >=> f
         IfM b x y -> IfM b (x >>= f) (y >>= f)
         Replicate n b m g -> Replicate n b m $ g >=> f
@@ -256,188 +194,6 @@ signed (C x) = C $ asSigned x
 signed e = Signed e
 
 --------------------------------------------------------------------------------
-
--- get / set / mod / neutral / Interrupt
-
-type Inf = S.Set Part'
-type Info = (Inf, Inf)
-
-{-
-mparts :: ExpM b -> Info
-mparts = \case
-    Seq a b -> mparts a |+| mparts b
-    IfM e a b -> eparts' e |+| mparts a |+| mparts b
-    LetM e f -> mparts $ f e
-    Replicate e x -> eparts' e |+| mparts x
-    Cyc2 a b x -> eparts' a |+| eparts' b |+| mparts x
-    Set x y -> (keyOf x, eparts y)
-    Jump' x y -> eparts' x |+| eparts' y |+| (keyOf Cs |.| keyOf IP, mempty)
-    Nop -> mempty
-    Trace{} -> mempty
-    QuotRem{} -> (full, full)
-    Input{} -> (full, full)
-    Output{} -> (full, full)
---    _ -> (full, full)
-
-eparts' = (,) mempty . eparts
-
-(a,b) |+| (c,d) = (S.union a c, S.union b d)
-(|.|) = S.union
-
-eparts :: Exp b -> S.Set Part'
-eparts = \case
-    C{} -> mempty
-
-    Let e f -> eparts $ f e
-    Tuple a b -> eparts a |.| eparts b
-    Fst e -> eparts e
-    Snd e -> eparts e
-    If e a b -> eparts e |.| eparts a |.| eparts b
-
-    Get x -> keyOf x
-
-    Eq a b -> eparts a |.| eparts b
-    Sub a b -> eparts a |.| eparts b
-    Add a b -> eparts a |.| eparts b
-    Mul a b -> eparts a |.| eparts b
-    And a b -> eparts a |.| eparts b
-    Or a b -> eparts a |.| eparts b
-    Xor a b -> eparts a |.| eparts b
-    Not e -> eparts e
-    ShiftL e -> eparts e
-    ShiftR e -> eparts e
-    RotateL e -> eparts e
-    RotateR e -> eparts e
-    Bit _ e -> eparts e
-    SetBit _ e b -> eparts e |.| eparts b
-    HighBit e -> eparts e
-    SetHighBit a e -> eparts a |.| eparts e
-    EvenParity e -> eparts e
-
-    Signed e -> eparts e
-    Extend e -> eparts e
-    Convert e -> eparts e
-    SegAddr a b -> eparts a |.| eparts b
-
-    Iterate{}   -> full
--}
-{-
-reple :: forall a . Part a -> Exp a -> (forall b . Exp b -> Exp b)
-reple k e' = eparts where
-
-  eparts :: forall b . Exp b -> Exp b
-  eparts = \case
-
-{-
-    Let e f -> Let (eparts e) $ 
---    Let :: Exp a -> (Exp a -> Exp b) -> Exp b
---    Iterate :: Exp Int -> (Exp a -> Exp a) -> Exp a -> Exp a
-    --Iterate e f x -> Iterate --
--}
-    Tuple a b -> eparts a `Tuple` eparts b
-    Fst e -> Fst $ eparts e
-    Snd e -> Snd $ eparts e
-    If e a b -> If (eparts e) (eparts a) (eparts b)
-
-    x@(Get k') -> case same k' k of
-        Eqq -> e'
-        _ -> x
-
-    Eq a b -> eparts a `Eq` eparts b
-    Sub a b -> eparts a `Sub` eparts b
-    Add a b -> eparts a `Add` eparts b
-    Mul a b -> eparts a `Mul` eparts b
-    And a b -> eparts a `And` eparts b
-    Or a b -> eparts a `Or` eparts b
-    Xor a b -> eparts a `Xor` eparts b
-    Not e -> Not $ eparts e
-    ShiftL e -> ShiftL $ eparts e
-    ShiftR e -> ShiftR $ eparts e
-    RotateL e -> RotateL $ eparts e
-    RotateR e -> RotateR $ eparts e
-    Bit i e -> Bit i $ eparts e
-    SetBit i e b -> SetBit i (eparts e) (eparts b)
-    HighBit e -> HighBit $ eparts e
-    SetHighBit a e -> eparts a `SetHighBit` eparts e
-    EvenParity e -> EvenParity $ eparts e
-
-    Signed e -> Signed $ eparts e
-    Extend e -> Extend $ eparts e
-    Convert e -> Convert $ eparts e
-    SegAddr a b ->  `SegAddr` eparts b
-    e -> e
--}
-{-
-repl' IP e m@(Set IP (Add v (Get IP))) = Set IP (add v e)
-repl' IP e m@(Set IP (Add v (Get IP)) `Seq` m') = Set IP (add v e) `Seq` m'
-repl' k e m = Set k e `Seq` m
-
-
-repl' :: Part a -> Exp a -> ExpM () -> ExpM ()
--}
-{-
-repl k e = \case
-    p@(Set k' e') -> case same k k' of
-        Eqq -> Set k $ reple k e e'
-        _ -> p
--}
-{-
-    IfM :: Exp Bool -> ExpM () -> ExpM () -> ExpM ()
-    QuotRem :: Integral a => Exp a -> Exp a -> ExpM () -> ((Exp a, Exp a) -> ExpM ()) -> ExpM ()
-
-    LetM :: Exp a -> (Exp a -> ExpM ()) -> ExpM ()
---    LetM' :: Exp a -> (Exp a -> ExpM ()) -> ExpM ()
-    Replicate :: Exp Int -> ExpM () -> ExpM ()
-
-    _ -> e
-
-
-    Input :: Exp Word16 -> (Exp Word16 -> ExpM ()) -> ExpM ()
-    Output :: Exp Word16 -> Exp Word16 -> ExpM ()
--}
-{-
-type AState = [(Inf, ExpM ())]
-
-fin = uncurry final
-final st b = mconcat (map snd st) <> b
-
-findKey :: S.Set Part' -> AState -> Maybe (Inf, ExpM ())
-findKey k [] = Nothing
-findKey k (v@(_, Set k' _): _) | k == keyOf k' = Just v
-findKey k (_: xs) = findKey k xs
-
--- TODO: optimize IP setting out of IfM 
-reorderExp :: ExpM () -> ExpM ()
-reorderExp =  uncurry final . foldrExp f (\b x y -> ([], IfM b (fin x) (fin y))) ([], Nop)
-  where
-    f :: ExpM b -> (AState, ExpM ()) -> (AState, ExpM ())
-    f a (st, b) = case a of
-
-        Set k@IP v -> case findKey (keyOf k) st of
-            Nothing -> ([(na, a)], b)
-            Just (i, vs)
-                | i `disj` ni -> ( if keyOf k `disj` i then [(i, vs)] else [(na |.| i, repl' k v vs)], b)
-                | otherwise -> fin
-
-        _ -> case st of
-            [(i, vs)] | IP' `S.notMember` na && i `disj` ni -> ([(i, vs)], a `Seq` b)
-            _ -> fin
-
-      where
-        (ni, na) = mparts a
-
-        fin :: (AState, ExpM ())
-        fin = ([], a `Seq` final st b)
--}
-
-disj a b = S.null $ S.intersection a b
-
-{-
-foldrExp :: (forall b . ExpM b -> a -> a) -> (forall b . Exp Bool -> a -> a -> a) -> a -> ExpM b -> a
-foldrExp f g x (Seq a b) = f a (foldrExp f g x b)
-foldrExp f g x (IfM a b c) = g a (foldrExp f g x b) (foldrExp f g x c)
-foldrExp f g x y = f y x
--}
 
 -- instruction blocks
 type Blocks = IM.IntMap (ExpM Jump')

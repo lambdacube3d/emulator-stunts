@@ -25,7 +25,7 @@ import Hdis86
 import Debug.Trace
 
 import Helper
-import Edsl hiding (Info)
+import Edsl
 import MachineState
 import DeBruijn
 

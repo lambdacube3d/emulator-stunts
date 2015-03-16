@@ -19,7 +19,7 @@ import Sound.ALUT
 data Request
     = AskKeyInterrupt Word16
     | AskTimerInterrupt Int
-    | PrintFreqTable (MVar ())
+--    | PrintFreqTable (MVar ())
 
 type Flags = Word16
 
