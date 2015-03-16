@@ -40,7 +40,6 @@ data Part_ e a where
     Heap8  :: e Int -> Part_ e Word8
     Heap16 :: e Int -> Part_ e Word16
 
-    IP :: Part_ e Word16
     AX, BX, CX, DX, SI, DI, BP, SP :: Part_ e Word16
     Es, Ds, Ss, Cs :: Part_ e Word16
     CF, PF, AF, ZF, SF, IF, DF, OF :: Part_ e Bool
@@ -56,7 +55,6 @@ mapPart f = \case
     Heap16 a -> Heap16 (f a)
     Low a -> Low $ mapPart f a
     High a -> High $ mapPart f a
-    IP -> IP
     AX -> AX
     BX -> BX
     CX -> CX
@@ -459,7 +457,6 @@ fetchBlock_ fetch cs_ ss es ds ip_ = (1, [(ips_, ips_ +1)], fetchBlock_' fetch c
 
     fetchBlock_' :: (Int -> Metadata) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM ()
     fetchBlock_' fetch cs_ ss es ds ip_ = do
-        Set IP (Add (C $ fromIntegral $ mdLength md) (Get IP))
         execInstruction' md (fetchBlock_' fetch cs_ ss es ds) cs_ ss es ds ip_
       where
         md = fetch $ segAddr cs_ ip_
@@ -483,7 +480,7 @@ operandSize = \case
 
 execInstruction' :: Metadata -> (Word16 -> ExpM ()) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM ()
 execInstruction' mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip
-  = case filter nonSeg inPrefixes of
+  = case filter rep inPrefixes of
     [Rep, RepE]
         | inOpcode `elem` [Icmpsb, Icmpsw, Iscasb, Iscasw] -> cycle $ Get ZF      -- repe
         | inOpcode `elem` [Imovsb, Imovsw, Ilodsb, Ilodsw, Istosb, Istosw] -> cycle'      -- rep
@@ -504,14 +501,9 @@ execInstruction' mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip
         body'
         modif CX $ Add $ C $ -1
 
-    rep p = p `elem` [Rep, RepE, RepNE]
+    rep = (`elem` [Rep, RepE, RepNE])
     c m = m >> cc
     cc = cont $ ip + fromIntegral (mdLength mdat)
-
-    nonSeg = \case
-        Seg _ -> False
-        x -> True
-
 
 compileInst :: Metadata -> (Word16 -> ExpM ()) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM ()
 compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpcode of
@@ -566,11 +558,11 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
     Iloopnz -> loop $ Not $ Get ZF
 
     -- hack for stunts!
-    Ipop | op1 == Reg (RegSeg DS) -> pop $ Set Ds
-         | op1 == Reg (RegSeg ES) -> pop $ Set Es
-    Imov | op1 == Reg (RegSeg DS) -> Set Ds $ getWordOperand segmentPrefix op2
-         | op1 == Reg (RegSeg ES) -> Set Es $ getWordOperand segmentPrefix op2
-         | op1 == Reg (RegSeg SS) -> Set Ss $ getWordOperand segmentPrefix op2
+    Ipop | op1 == Reg (RegSeg DS) -> stop $ pop $ Set Ds
+         | op1 == Reg (RegSeg ES) -> stop $ pop $ Set Es
+    Imov | op1 == Reg (RegSeg DS) -> stop $ Set Ds $ getWordOperand segmentPrefix op2
+         | op1 == Reg (RegSeg ES) -> stop $ Set Es $ getWordOperand segmentPrefix op2
+         | op1 == Reg (RegSeg SS) -> stop $ Set Ss $ getWordOperand segmentPrefix op2
 
 
     Ipush   -> c $ push getOp1w
@@ -595,7 +587,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
     Ixlatb -> c $ Set (Low AX) $ Get $ Heap8 $ segAddr_ (maybe gds (getReg . RegSeg) segmentPrefix) $ Add (Extend $ Get $ Low AX) (Get BX)
 
     Ilea -> c $ setOp1w op2addr'
-    _ | inOpcode `elem` [Iles, Ilds] -> addr2 op2 $ \(ad, ad2) -> do
+    _ | inOpcode `elem` [Iles, Ilds] -> stop $ addr2 op2 $ \(ad, ad2) -> do
         setOp1w ad
         Set (case inOpcode of Iles -> Es; Ilds -> Ds) ad2
 
@@ -728,6 +720,7 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
 
     c m = m >> cc
     cc = cont nextip
+    stop m = m >> Jump' (C cs) (C nextip)
     nextip = ip + fromIntegral (mdLength mdat)
 
     far = " far " `isInfixOf` mdAssembly mdat

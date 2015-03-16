@@ -127,7 +127,6 @@ type MachinePart' a = (Machine a, a -> Machine ())
 
 evalPart_ :: Part_ e a -> MachinePart a
 evalPart_ = \case
-    IP -> ip
     AX -> ax
     BX -> bx
     CX -> cx
