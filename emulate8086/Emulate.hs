@@ -143,7 +143,6 @@ evalPart_ = \case
     High x -> evalPart_ x . high
     CF -> carryF
     PF -> parityF
-    AF -> adjustF
     ZF -> zeroF
     SF -> signF
     IF -> interruptF

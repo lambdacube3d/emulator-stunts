@@ -160,9 +160,9 @@ getRetrace = do
 trace_ :: String -> Machine ()
 trace_ s = liftIO $ putStr $ " | " ++ s
 
-[overflowF,directionF,interruptF,signF,zeroF,adjustF,parityF,carryF] =
+[overflowF,directionF,interruptF,signF,zeroF,parityF,carryF] =
     [ flags_ . lens (`testBit` i) (\x b -> if b then setBit x i else clearBit x i) :: MachinePart (Bool)
-    | i <- [11,10,9,7,6,4,2,0]
+    | i <- [11,10,9,7,6,2,0]
     ]
 
 al = ax . low :: MachinePart Word8

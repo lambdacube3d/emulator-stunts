@@ -42,7 +42,7 @@ data Part_ e a where
 
     AX, BX, CX, DX, SI, DI, BP, SP :: Part_ e Word16
     Es, Ds, Ss, Cs :: Part_ e Word16
-    CF, PF, AF, ZF, SF, IF, DF, OF :: Part_ e Bool
+    CF, PF, ZF, SF, IF, DF, OF :: Part_ e Bool
 
     Flags :: Part_ e Word16
     DXAX :: Part_ e Word32
@@ -69,7 +69,6 @@ mapPart f = \case
     Cs -> Cs
     CF -> CF
     PF -> PF
-    AF -> AF
     ZF -> ZF
     SF -> SF
     IF -> IF
@@ -83,7 +82,7 @@ mapPart f = \case
 data Part'
     = Heap'
     | IP' | AL' | BL' | CL' | DL' | AH' | BH' | CH' | DH' 
-    | SI' | DI' | BP' | SP' | Es' | Ds' | Ss' | Cs' | CF' | PF' | AF' | ZF' | SF' | IF' | DF' | OF'
+    | SI' | DI' | BP' | SP' | Es' | Ds' | Ss' | Cs' | CF' | PF' | ZF' | SF' | IF' | DF' | OF'
     deriving (Eq, Ord)
 
 data Eqq a b where
@@ -136,7 +135,7 @@ keyOf = \case
 -}
 full :: Inf
 full = S.fromList [ Heap',
-      IP', AL', BL', CL', DL', AH', BH', CH', DH', SI', DI', BP', SP', Es', Ds', Ss', Cs', CF', PF', AF', ZF', SF', IF', DF', OF'
+      IP', AL', BL', CL', DL', AH', BH', CH', DH', SI', DI', BP', SP', Es', Ds', Ss', Cs', CF', PF', ZF', SF', IF', DF', OF'
         ]
 
 data ExpM a where
@@ -456,7 +455,7 @@ fetchBlock_ fetch cs_ ss es ds ip_ = (1, [(ips_, ips_ +1)], fetchBlock_' fetch c
     ips_ = segAddr cs_ ip_
 
     fetchBlock_' :: (Int -> Metadata) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM ()
-    fetchBlock_' fetch cs_ ss es ds ip_ = do
+    fetchBlock_' fetch cs_ ss es ds ip_ =
         execInstruction' md (fetchBlock_' fetch cs_ ss es ds) cs_ ss es ds ip_
       where
         md = fetch $ segAddr cs_ ip_
@@ -693,13 +692,11 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
                     Set SF $ HighBit r
                     uSet OF
                     Set PF $ EvenParity $ Convert r
-                    uSet AF
                 when (inOpcode `elem` [Ircl, Ircr, Irol, Iror]) $ do
                     uSet ZF
                     uSet SF
                     uSet OF
                     uSet PF
-                    uSet AF
 
         twoOp :: Bool -> (forall b . (Integral b, FiniteBits b) => Exp b -> Exp b -> Exp b) -> ExpM ()
         twoOp store op = twoOp_ store op op1' op2v
@@ -714,7 +711,6 @@ compileInst mdat@Metadata{mdInst = i@Inst{..}} cont cs ss es ds ip = case inOpco
             Set ZF $ Eq (C 0) r
             Set SF $ HighBit r
             Set PF $ EvenParity $ Convert r
-            uSet AF
 
             when store $ Set op1 r
 
