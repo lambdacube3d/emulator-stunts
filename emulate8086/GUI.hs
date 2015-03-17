@@ -31,13 +31,13 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
     let winW = 960
         winH = 600
         sett r = changeSt $ config . instPerSec %= r
-        setOVar f = changeSt $ config . showOffset %= max 0 . min videoMem . f
+        setOVar f = showOffset .%= max 0 . min videoMem . f
     pos <- newMVar Nothing
     Just window <- GLFW.createWindow winW winH "Haskell Stunts" Nothing Nothing
     GLFW.makeContextCurrent $ Just window
     let posToAddr st x y = do
-            let offs = st ^. config . showOffset
-                fb = heap''
+            offs <- use' showOffset
+            let fb = heap''
                 addr = offs + 320 * y + x
             val <- U.read fb addr
             return (addr, val)
@@ -87,8 +87,8 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
             Key'N -> sett (* (1/1.1))
             Key'M -> sett (* 1.1)
             Key'Comma -> modifyMVar_ esds $ return . not
-            Key'T -> changeSt $ config . showReads %= not
-            Key'I -> changeSt $ config . showReads' %= not
+            Key'T -> showReads .%= not
+            Key'I -> showReads' .%= not
             Key'U -> changeSt $ config . showCache %= not
             Key'P -> changeSt $ config . speed %= (3000 -)
             Key'W -> changeSt adjustCache
@@ -110,20 +110,20 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
                 _ <- takeMVar tv
                 st <- readMVar stvar
                 esds' <- readMVar esds
-                let offs = st ^. config . showOffset
+                offs <- use' showOffset
                 let fb = heap''
-                (vec, post) <- if st ^. config . showReads then do
-                    let v = st ^. config . showBuffer
-                    return $ (,) v $ do
-                        U.set v 0
+                b <- use' showReads
+                (vec, post) <- if b then do
+                    return $ (,) showBuffer $ do
+                        U.set showBuffer 0
                         when (st ^. config . showCache) $ do
                             forM_ (IM.toList $ fst $ IM.split (offs + 320 * 200) $ snd $ IM.split (offs-1) $ st ^. cache) $ \case
                                 (k, Compiled _ _ es ds _ r _) -> forM_ r $ \(beg, end) ->
                                     forM_ [max 0 $ beg - offs .. min (320 * 200 - 1) $ end - 1 - offs] $ \i -> do
 --                                        x <- U.unsafeRead v i
-                                        U.unsafeWrite v i $ maybe 0xffff0000 ((.|. 0x0000ff00) . (`shiftL` 16) . fromIntegral) (if esds' then es else ds) -- x .|. 0x3f000000
+                                        U.unsafeWrite showBuffer i $ maybe 0xffff0000 ((.|. 0x0000ff00) . (`shiftL` 16) . fromIntegral) (if esds' then es else ds) -- x .|. 0x3f000000
                                 (k, DontCache _) -> do
-                                    U.unsafeWrite v (k - offs) $ 0xffff0000
+                                    U.unsafeWrite showBuffer (k - offs) $ 0xffff0000
                                 _ -> return ()
                   else do
                     let p = st ^. config . palette

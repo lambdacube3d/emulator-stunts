@@ -32,11 +32,7 @@ type MemPiece = (Regions, Int)
 
 data Config_ = Config_
     { _verboseLevel     :: Int
-    , _showReads        :: Bool
-    , _showReads'       :: Bool
     , _showCache        :: Bool
-    , _showBuffer       :: U.IOVector Word32
-    , _showOffset       :: Int
     , _instPerSec       :: Float  -- Hz
     , _speed            :: Int  -- 0: stop
     , _stepsCounter     :: Int
@@ -68,6 +64,29 @@ regs :: U.IOVector Word16
 {-# NOINLINE regs #-}
 regs = unsafePerformIO $ U.new $ 13 + 1
 
+type MachinePart'' a = (IO a, a -> IO ())
+
+showReads = refPart _showReads
+showReads' = refPart _showReads'
+showOffset = refPart _showOffset
+
+_showReads, _showReads' :: IORef Bool
+_showOffset :: IORef Int
+{-# NOINLINE _showReads #-}
+_showReads = unsafePerformIO $ newIORef False
+{-# NOINLINE _showReads' #-}
+_showReads' = unsafePerformIO $ newIORef False
+{-# NOINLINE _showOffset #-}
+_showOffset = unsafePerformIO $ newIORef 0xa0000
+
+refPart x = (readIORef x, writeIORef x)
+
+showBuffer :: U.IOVector Word32
+{-# NOINLINE showBuffer #-}
+showBuffer = unsafePerformIO $ U.new (320*200)
+
+
+
 data MachineState = MachineState
     { _heap     :: MemPiece     -- heap layout
 
@@ -88,13 +107,11 @@ type MachinePart a = Lens' MachineState a
 $(makeLenses ''Config_)
 $(makeLenses ''MachineState)
 
-
 wordToFlags :: Word16 -> Flags
 wordToFlags w = fromIntegral $ (w .&. 0x0ed3) .|. 0x2
 
 emptyState = do
   ivar <- newMVar []
-  vec2 <- U.new (320*200) :: IO (U.IOVector Word32)
   return $ MachineState
     { _heap     = undefined
     , _cache    = IM.empty
@@ -105,11 +122,7 @@ emptyState = do
     , _intMask  = 0xf8
     , _config   = Config_
         { _verboseLevel = 2
-        , _showReads    = False
-        , _showReads'   = True
         , _showCache    = True
-        , _showBuffer   = vec2
-        , _showOffset   = 0xa0000
         , _instPerSec   = 50
         , _speed        = 3000
         , _stepsCounter = 0

@@ -51,7 +51,6 @@ modifyAllocated addr req (alloc, endf) = head $ concatMap f $ getOut $ zip alloc
 --------------------------------------
 
 type MachinePart' a = (Machine a, a -> Machine ())
-type MachinePart'' a = (IO a, a -> IO ())
 
 (@:) :: BS.ByteString -> a ->  a
 b @: x = x
@@ -104,27 +103,26 @@ info _ s1 s2 s3 = s3
 
 uRead :: Info -> MachineState -> Int -> IO Word8
 uRead inf h i = do
-    when (h ^. config . showReads') $ do
-        let off = h ^. config . showOffset
+    b <- use' showReads'
+    when b $ do
+        off <- use' showOffset
         let j = i - off
         when (0 <= j && j < 320 * 200) $ do
-            let v = h ^. config . showBuffer
-            x <- U.unsafeRead v j
-            U.unsafeWrite v j $ x .|. info inf 0xff00ff00 0x00008000 0x0000ff00
+            x <- U.unsafeRead showBuffer j
+            U.unsafeWrite showBuffer j $ x .|. info inf 0xff00ff00 0x00008000 0x0000ff00
     U.unsafeRead heap'' i
 
 uWrite :: Info -> Int -> Word8 -> Machine ()
 uWrite inf i v = do
     liftIO $ U.unsafeWrite heap'' i v
-    b <- use $ config . showReads
+    b <- use' showReads
     when b $ do
-        off <- use $ config . showOffset
+        off <- use' showOffset
         let j = i - off
         when (0 <= j && j < 320 * 200) $ do
-            v <- use $ config . showBuffer
             liftIO $ do
-                x <- U.unsafeRead v j
-                U.unsafeWrite v j $ x .|. info inf 0xffff0000 0x00800000 0x00ff0000
+                x <- U.unsafeRead showBuffer j
+                U.unsafeWrite showBuffer j $ x .|. info inf 0xffff0000 0x00800000 0x00ff0000
 
 bytesAt__ :: Int -> Int -> MachinePart' [Word8]
 bytesAt__ i' j' = (get_, set)

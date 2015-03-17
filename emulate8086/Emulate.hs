@@ -62,13 +62,12 @@ fetchBlock_' ca f cs ss es ds ip = do
     _ <- liftIO $ evaluate n
     return $ Compiled cs ss es ds n r $ do
         _ <- evalBlocks cs ip e
-        b <- use $ config . showReads
+        b <- use' showReads
         when b $ do
-            v <- use $ config . showBuffer
-            off <- use $ config . showOffset
+            off <- use' showOffset
             liftIO $ forM_ r $ \(beg, end) -> forM_ [max 0 $ beg - off .. min (320 * 200 - 1) $ end - 1 - off] $ \i -> do
-                x <- U.unsafeRead v i
-                U.unsafeWrite v i $ x .|. 0xff000000
+                x <- U.unsafeRead showBuffer i
+                U.unsafeWrite showBuffer i $ x .|. 0xff000000
 
 fetchBlock :: Cache -> Machine CacheEntry
 fetchBlock ca = do
