@@ -1,6 +1,6 @@
 import qualified Data.ByteString as BS
 import Control.Monad.State
-import Control.Lens as Lens
+--import Control.Lens as Lens
 import Control.Concurrent
 import System.IO
 import Sound.ALUT
@@ -29,22 +29,19 @@ main = withProgNameAndArgs runALUT $ \_ _ -> do
     let addChange m = modifyMVar_ changeState $ \n -> return $ n >> m
 --    l <- getLabels
     game <- BS.readFile gameFile
-    st <- emptyState
-    pmvar <- newMVar st
-    _ <- forkIO $ void $ flip evalStateT st $ do
-        config . verboseLevel .= 1 
-        config . soundSource .= source
+    ir <- use'' interruptRequest
+    _ <- forkIO $ do
+        verboseLevel ...= 1 
+        soundSource ...= source
         getInst <- loadExe loadSegment game
         loadCache getInst
         forever $ do
-            sp <- use $ config . speed
+            sp <- use'' speed
             if sp > 0 then do
                 mkStep >>= checkInt
               else liftIO $ threadDelay 20000
-            st <- use id
-            liftIO $ modifyMVar_ pmvar $ const $ return st
             join $ liftIO $ modifyMVar changeState $ \m -> return (return (), m)
-    drawWithFrameBuffer addChange (\r -> modifyMVar_ (st ^. config . interruptRequest) $ return . (++[r])) pmvar $ return ()
+    drawWithFrameBuffer addChange (\r -> modifyMVar_ ir $ return . (++[r])) $ return ()
 
 createBuff :: BufferData a -> Frequency -> IO Buffer
 createBuff (BufferData m fmt f) x = do

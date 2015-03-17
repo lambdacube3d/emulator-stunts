@@ -23,14 +23,14 @@ import Dos
 videoMem = 0xa0000
 dof = 320 * 200
 
-drawWithFrameBuffer :: (Machine () -> IO ()) -> (Request -> IO ()) -> MVar MachineState -> IO () -> IO ()
-drawWithFrameBuffer changeSt interrupt stvar draw = do
+drawWithFrameBuffer :: (Machine () -> IO ()) -> (Request -> IO ()) -> IO () -> IO ()
+drawWithFrameBuffer changeSt interrupt draw = do
     _ <- GLFW.init
     esds <- newMVar False
     vec2 <- U.new (320*200) :: IO (U.IOVector Word32)
     let winW = 960
         winH = 600
-        sett r = changeSt $ config . instPerSec %= r
+        sett r = changeSt $ instPerSec ..%= r
         setOVar f = showOffset .%= max 0 . min videoMem . f
     pos <- newMVar Nothing
     Just window <- GLFW.createWindow winW winH "Haskell Stunts" Nothing Nothing
@@ -45,7 +45,7 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
         CursorState'NotInWindow -> modifyMVar_ pos $ const $ return Nothing
         _ -> return ()
     setCursorPosCallback window $ Just $ \window x_ y_ -> do
-        st <- readMVar stvar
+        st <- use'' id
         let x = round x_ `div` 3
             y = round y_ `div` 3
         when (0 <= x && x < 320 && 0 <= y && y < 200) $ do
@@ -89,8 +89,8 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
             Key'Comma -> modifyMVar_ esds $ return . not
             Key'T -> showReads .%= not
             Key'I -> showReads' .%= not
-            Key'U -> changeSt $ config . showCache %= not
-            Key'P -> changeSt $ config . speed %= (3000 -)
+            Key'U -> changeSt $ showCache ..%= not
+            Key'P -> changeSt $ speed ..%= (3000 -)
             Key'W -> changeSt adjustCache
             Key'Q -> GLFW.setWindowShouldClose window True
             _ -> return ()
@@ -108,7 +108,7 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
             unless b $ do
                 draw
                 _ <- takeMVar tv
-                st <- readMVar stvar
+                st <- use'' id
                 esds' <- readMVar esds
                 offs <- use' showOffset
                 let fb = heap''
@@ -116,8 +116,9 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
                 (vec, post) <- if b then do
                     return $ (,) showBuffer $ do
                         U.set showBuffer 0
-                        when (st ^. config . showCache) $ do
-                            forM_ (IM.toList $ fst $ IM.split (offs + 320 * 200) $ snd $ IM.split (offs-1) $ st ^. cache) $ \case
+                        when (st ^. showCache) $ do
+                            ca <- use' cache
+                            forM_ (IM.toList $ fst $ IM.split (offs + 320 * 200) $ snd $ IM.split (offs-1) ca) $ \case
                                 (k, Compiled _ _ es ds _ r _) -> forM_ r $ \(beg, end) ->
                                     forM_ [max 0 $ beg - offs .. min (320 * 200 - 1) $ end - 1 - offs] $ \i -> do
 --                                        x <- U.unsafeRead v i
@@ -126,7 +127,7 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
                                     U.unsafeWrite showBuffer (k - offs) $ 0xffff0000
                                 _ -> return ()
                   else do
-                    let p = st ^. config . palette
+                    let p = st ^. palette
                     forM_ [0..199] $ \y -> do
                       let y_ = offs + 320 * y
                           y' = 320 * y

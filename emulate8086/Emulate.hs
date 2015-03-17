@@ -30,16 +30,15 @@ import Dos
 
 getFetcher :: Machine (Int -> Metadata)
 getFetcher = do
-    v <- liftIO $ US.unsafeFreeze heap''
-    (start, bs) <- use $ config . gameexe
+    v <- US.unsafeFreeze heap''
+    (start, bs) <- use'' gameexe
     ip_ <- use' ip
     cs_ <- use' cs
-    inv <- use $ config . invalid
     let f ips
             | 0 <= i && i < BS.length bs = if x == x' then x else error $ "getFetcher: " ++ show ((cs_,ip_), ips)
             | otherwise = x
           where
-            x = head . disassembleMetadata disasmConfig . BS.pack . take 7 . map fromIntegral . US.toList $ US.drop ips v
+            x = head . disassembleMetadata disasmConfig . BS.pack . map fromIntegral . US.toList $ US.slice ips 7 v
             x' = head . disassembleMetadata disasmConfig . BS.drop i $ bs
             i = ips - start
     return f
@@ -59,13 +58,14 @@ evalBlocks cs' ip' e = case IM.lookup (fromIntegral ip') e of
 
 fetchBlock_' ca f cs ss es ds ip = do
     let (n, r, e) = fetchBlock_ (f) cs ss es ds ip
-    _ <- liftIO $ evaluate n
+    _ <- evaluate n
+    let !cc = convExpM $ snd $ head $ IM.toList e
     return $ Compiled cs ss es ds n r $ do
-        _ <- evalBlocks cs ip e
+        _ <- evalExpM mempty cc
         b <- use' showReads
         when b $ do
             off <- use' showOffset
-            liftIO $ forM_ r $ \(beg, end) -> forM_ [max 0 $ beg - off .. min (320 * 200 - 1) $ end - 1 - off] $ \i -> do
+            forM_ r $ \(beg, end) -> forM_ [max 0 $ beg - off .. min (320 * 200 - 1) $ end - 1 - off] $ \i -> do
                 x <- U.unsafeRead showBuffer i
                 U.unsafeWrite showBuffer i $ x .|. 0xff000000
 
@@ -89,15 +89,16 @@ mkStep = do
 
     let ips = segAddr cs_ ip_
         compile fe = do
-            entry@(Compiled _ _ _ _ n reg ch) <- mdo
+            entry@(Compiled _ _ _ _ n reg ch) <- do
+                let ca = mempty
                 e <- fe ca
-                ca <- use cache
+--                ca <- use'' cache
                 return e
-            when (cacheOK ips) $ cache %= IM.insert ips entry
+            when (cacheOK ips) $ cache .%= IM.insert ips entry
             ch
             return n
 
-    cv <- use $ cache . at ips
+    cv <- IM.lookup ips <$> use' cache
     case cv of
      Just v -> case v of
       Compiled cs' ss' es' ds' n len m -> do
@@ -115,13 +116,17 @@ mkStep = do
             m
             return n
       BuiltIn m -> do
+        putStr "?"
         m
         return 1
       DontCache _ -> do
+        putStr "."
         Compiled _ _ _ _ n _ ch <- fetchBlock mempty
         ch
         return n
-     Nothing -> compile fetchBlock
+     Nothing -> do
+        putStr "#"
+        compile fetchBlock
 
 -- ad-hoc hacking for stunts!
 cacheOK ips = ips < 0x39000 -- || ips >= 0x3a700
@@ -172,7 +177,7 @@ prj :: Var env t -> Env env -> t
 prj VarZ = getPushVal
 prj (VarS ix) = prj ix . getPushEnv
 
-type Machine' e = ReaderT (Env e) Machine
+type Machine' e = ReaderT (Env e) IO
 
 ---------------------------------
 
@@ -182,30 +187,20 @@ iterateM n f a = f a >>= iterateM (n-1) f
 iff x y True = x
 iff x y _ = y
 
-evalExp' :: Exp a -> Machine a
-evalExp' e = flip runReaderT Empty $ evalExp (convExp e)
-
-evalExp :: EExp e a -> Machine' e a
-evalExp x = ReaderT $ \e -> liftIO $ runReaderT (evalExp_ x) e
-
-type Machine'' e = ReaderT (Env e) IO
-
-pushVal' :: Machine'' (Con b e) a -> b -> Machine'' e a
+pushVal' :: Machine' (Con b e) a -> b -> Machine' e a
 pushVal' m v = ReaderT $ runReaderT m . (`Push` v)
 
-evalExp_ :: EExp e a -> Machine'' e a
-evalExp_ = evalExp where
-  evalExp :: EExp e a -> Machine'' e a
-  evalExp = \case
+evalExp :: EExp e a -> Machine' e a
+evalExp = \case
     Var' ix -> reader $ prj ix
     Let' e f -> evalExp e >>= pushVal' (evalExp f)
     Iterate' n f a -> evalExp n >>= \i -> evalExp a >>= iterateM i (pushVal' (evalExp f))
 
     C' a -> return a
     Get' p -> case p of
-        Heap16 e -> evalExp e >>= liftIO . getWordAt (Program e)
-        Heap8 e -> evalExp e >>= liftIO . getByteAt (Program e)
-        p -> liftIO $ fst $ evalPart_ p
+        Heap16 e -> evalExp e >>= lift . getWordAt (Program e)
+        Heap8 e -> evalExp e >>= lift . getByteAt (Program e)
+        p -> lift $ fst $ evalPart_ p
 
     If' b x y -> evalExp b >>= iff (evalExp x) (evalExp y)
     Eq' x y -> liftM2 (==) (evalExp x) (evalExp y)
@@ -239,8 +234,8 @@ evalExp_ = evalExp where
     Fst' p -> fst <$> evalExp p
     Snd' p -> snd <$> evalExp p
 
-evalExpM :: Cache -> ExpM Jump' -> Machine ()
-evalExpM ca e = flip runReaderT Empty $ evalEExpM ca (convExpM e) >>= \(JumpAddr c i) -> cs ..= c >> ip ..= i
+--evalExpM :: Cache -> ExpM Jump' -> Machine ()
+evalExpM ca e = flip runReaderT Empty (evalEExpM ca e) >>= \(JumpAddr c i) -> cs ..= c >> ip ..= i
 
 evalEExpM :: Cache -> EExpM e a -> Machine' e a
 evalEExpM ca = evalExpM
@@ -251,7 +246,7 @@ evalEExpM ca = evalExpM
     Set' p e' c -> case p of 
         Heap16 e -> join (lift <$> liftM2 (setWordAt $ Program e) (evalExp e) (evalExp e')) >> evalExpM c
         Heap8 e -> join (lift <$> liftM2 (setByteAt $ Program e) (evalExp e) (evalExp e')) >> evalExpM c
-        p -> evalExp e' >>= (evalPart_ p ..=) >> evalExpM c
+        p -> evalExp e' >>= lift . (evalPart_ p ..=) >> evalExpM c
 {- temporarily comment out
     Jump'' (C' c) (C' i) | Just (Compiled cs' ss' _ _ _ _ m) <- IM.lookup (segAddr c i) ca
                        , cs' == c -> lift $ do
@@ -264,9 +259,9 @@ evalEExpM ca = evalExpM
 
     IfM' b x y -> evalExp b >>= iff (evalExpM x) (evalExpM y)
 
-    Input' a f -> evalExp a >>= lift . input >>= pushVal (evalExpM f)
-
     Replicate' n b e f -> evalExp n >>= replicateM' (evalExp b) (evalExpM e) >>= pushVal (evalExpM f)
+
+    Input' a f -> evalExp a >>= lift . input >>= pushVal (evalExpM f)
 
     Output' a b c -> join (lift <$> liftM2 output' (evalExp a) (evalExp b)) >> evalExpM c
 
@@ -281,27 +276,27 @@ pushVal :: Machine' (Con b e) a -> b -> Machine' e a
 pushVal m v = ReaderT $ runReaderT m . (`Push` v)
 
 checkInt n = do
-  ns <- use $ config . stepsCounter
+  ns <- use' stepsCounter
   let !ns' = ns + n
-  config . stepsCounter .= ns'
+  stepsCounter ..= ns'
   let ma = complement 0xff
   when (ns' .&. ma /= ns .&. ma) $ do
     i <- use' interruptF
     when i $ do
-        mask <- use intMask
-        ivar <- use $ config . interruptRequest
-        ints <- liftIO $ takeMVar ivar
+        mask <- use'' intMask
+        ivar <- use'' interruptRequest
+        ints <- takeMVar ivar
         let ibit = \case
                 AskTimerInterrupt{} -> 0
                 AskKeyInterrupt{}   -> 1
             (now, later) = partition (not . testBit mask . ibit) ints
-        liftIO $ putMVar ivar later
+        putMVar ivar later
         forM_ now $ \case
            AskTimerInterrupt id -> do
-              cc <- use $ config . counter
+              cc <- use'' counter
               when (id == cc) $ interrupt 0x08
            AskKeyInterrupt scancode -> do
-              config . keyDown .= scancode
+              keyDown ...= scancode
               interrupt 0x09
 
 {-
@@ -321,19 +316,20 @@ checkInt n = do
 
 loadCache getInst = do
     trace_ "Loading cache"
-    cf <- liftIO readCache
+    cf <- readCache
 --    when (not $ unique [segAddr cs $ fromIntegral ip | (fromIntegral -> cs, ips) <- IM.toList cf, ip <- IS.toList ips]) $ error "corrupt cache"
     let fromIntegral' :: Int -> Maybe Word16
         fromIntegral' x | x == -1 = Nothing
         fromIntegral' x = Just $ fromIntegral x
         fromIntegral_ :: Int -> Word16
         fromIntegral_ = fromIntegral
-    cf' <- cf `deepseq` mdo
+    cf' <- cf `deepseq` do
+        let ca = mempty :: Cache
         cf' <- forM (IM.toList cf) $ \(ip, (fromIntegral_ -> cs, fromIntegral_ -> ss, fromIntegral' -> es, fromIntegral' -> ds)) ->
                  (,) ip <$> fetchBlock_' ca (head . disassembleMetadata disasmConfig . getInst) cs ss es ds (fromIntegral $ ip - cs ^. paragraph)
-        ca <- use cache
+--        ca <- use'' cache
         return cf'
-    cache %= IM.union (IM.fromList cf')
+    cache .%= IM.union (IM.fromList cf')
     trace_ "cache loaded"
 
 readCache :: IO (IM.IntMap (Int,Int,Int,Int))

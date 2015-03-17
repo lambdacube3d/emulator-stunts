@@ -3,15 +3,15 @@ module MachineState where
 
 import Data.Word
 import Data.Bits
-import Data.Monoid
+--import Data.Monoid
 import Data.IORef
 import Control.Concurrent.MVar
-import qualified Data.Set as S
+--import qualified Data.Set as S
 import qualified Data.Vector as V
 import qualified Data.IntMap.Strict as IM
 import qualified Data.ByteString as BS
 import qualified Data.Vector.Storable.Mutable as U
-import Control.Monad.State
+--import Control.Monad.State
 import Control.Lens as Lens
 import Sound.ALUT
 
@@ -29,24 +29,6 @@ type Flags = Word16
 type Region = (Int, Int)
 type Regions = [Region]
 type MemPiece = (Regions, Int)
-
-data Config_ = Config_
-    { _verboseLevel     :: Int
-    , _showCache        :: Bool
-    , _instPerSec       :: Float  -- Hz
-    , _speed            :: Int  -- 0: stop
-    , _stepsCounter     :: Int
-    , _counter          :: Int -- timer interrupt counter
-    , _palette          :: V.Vector Word32
-    , _gameexe          :: (Int, BS.ByteString)
-    , _invalid          :: S.Set (Word16, Word16)
-
-    , _soundSource      :: Source
-    , _frequency        :: Word16   -- speaker frequency
-    , _interruptRequest :: MVar [Request]
-    , _keyDown          :: Word16
-    , _speaker          :: Word8     -- 0x61 port
-    }
 
 type UVec = U.IOVector Word8
 type Cache = IM.IntMap CacheEntry
@@ -69,15 +51,18 @@ type MachinePart'' a = (IO a, a -> IO ())
 showReads = refPart _showReads
 showReads' = refPart _showReads'
 showOffset = refPart _showOffset
+stepsCounter = refPart _stepsCounter
 
 _showReads, _showReads' :: IORef Bool
-_showOffset :: IORef Int
+_showOffset, _stepsCounter :: IORef Int
 {-# NOINLINE _showReads #-}
 _showReads = unsafePerformIO $ newIORef False
 {-# NOINLINE _showReads' #-}
 _showReads' = unsafePerformIO $ newIORef False
 {-# NOINLINE _showOffset #-}
 _showOffset = unsafePerformIO $ newIORef 0xa0000
+{-# NOINLINE _stepsCounter #-}
+_stepsCounter = unsafePerformIO $ newIORef 0
 
 refPart x = (readIORef x, writeIORef x)
 
@@ -85,57 +70,66 @@ showBuffer :: U.IOVector Word32
 {-# NOINLINE showBuffer #-}
 showBuffer = unsafePerformIO $ U.new (320*200)
 
-
+cache = refPart _cache
+_cache    :: IORef Cache
+{-# NOINLINE _cache #-}
+_cache = unsafePerformIO $ newIORef IM.empty
 
 data MachineState = MachineState
-    { _heap     :: MemPiece     -- heap layout
+    { _verboseLevel     :: !Int
+    , _showCache        :: !Bool
+    , _instPerSec       :: !Float  -- Hz
+    , _speed            :: !Int  -- 0: stop
+    , _counter          :: !Int -- timer interrupt counter
+    , _palette          :: !(V.Vector Word32)
+    , _gameexe          :: (Int, BS.ByteString)
 
-    , _retrace  :: [Word16]
-    , _intMask  :: Word8
+    , _soundSource      :: Source
+    , _frequency        :: !Word16   -- speaker frequency
+    , _interruptRequest :: !(MVar [Request])
+    , _keyDown          :: !Word16
+    , _speaker          :: !Word8     -- 0x61 port
 
-    , _config   :: Config_
-    , _cache    :: Cache
-    , _labels   :: IM.IntMap BS.ByteString
-    , _files    :: IM.IntMap (FilePath, Int)  -- filepath, position
-    , _dta      :: Int
+    , _heap     :: !MemPiece     -- heap layout
+
+    , _retrace  :: ![Word16]
+    , _intMask  :: !Word8
+
+    , _labels   :: !(IM.IntMap BS.ByteString)
+    , _files    :: !(IM.IntMap (FilePath, Int))  -- filepath, position
+    , _dta      :: !Int
     }
 
-type Machine = StateT MachineState IO
-type MachinePart a = Lens' MachineState a
+type Machine = IO
+--type MachinePart a = Lens' MachineState a
 
-
-$(makeLenses ''Config_)
 $(makeLenses ''MachineState)
 
 wordToFlags :: Word16 -> Flags
 wordToFlags w = fromIntegral $ (w .&. 0x0ed3) .|. 0x2
 
-emptyState = do
+{-# NOINLINE emptyState #-}
+emptyState = unsafePerformIO $ do
   ivar <- newMVar []
-  return $ MachineState
-    { _heap     = undefined
-    , _cache    = IM.empty
+  newIORef $ MachineState
+    { _heap     = ([],0xa0000)
     , _labels   = IM.empty
     , _files    = IM.empty
     , _dta      = 0
     , _retrace  = cycle [1,9,0,8] --     [1,0,0,0,0,0,0,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0]
     , _intMask  = 0xf8
-    , _config   = Config_
-        { _verboseLevel = 2
-        , _showCache    = True
-        , _instPerSec   = 50
-        , _speed        = 3000
-        , _stepsCounter = 0
-        , _counter      = 0
-        , _speaker      = 0x30 -- ??
-        , _palette      = defaultPalette
-        , _keyDown      = 0x00
-        , _interruptRequest = ivar
-        , _soundSource  = undefined
-        , _frequency    = 0x0000
-        , _gameexe      = undefined
-        , _invalid      = mempty
-        }
+    , _verboseLevel = 2
+    , _showCache    = True
+    , _instPerSec   = 50
+    , _speed        = 3000
+    , _counter      = 0
+    , _speaker      = 0x30 -- ??
+    , _palette      = defaultPalette
+    , _keyDown      = 0x00
+    , _interruptRequest = ivar
+    , _soundSource  = undefined
+    , _frequency    = 0x0000
+    , _gameexe      = undefined
     }
 
 defaultPalette :: V.Vector Word32

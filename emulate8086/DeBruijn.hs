@@ -1,4 +1,10 @@
-module DeBruijn where
+module DeBruijn
+    ( EExp (..)
+    , EExpM (..)
+    , List (..)
+    , Var (..)
+    , convExpM
+    ) where
 
 import Data.Word
 import Data.Bits hiding (bit)
