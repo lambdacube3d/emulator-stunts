@@ -5,8 +5,6 @@ import Data.Bits hiding (bit)
 import Data.List
 import Data.Monoid
 import qualified Data.ByteString as BS
-import qualified Data.Set as Set
-import qualified Data.IntSet as IS
 import qualified Data.IntMap.Strict as IM
 import qualified Data.Vector.Storable as US
 import qualified Data.Vector.Storable.Mutable as U
@@ -19,8 +17,6 @@ import Control.Exception
 import Control.DeepSeq
 import System.Directory
 
-import System.IO.Unsafe
-
 import Hdis86
 
 import Helper
@@ -32,7 +28,7 @@ import Dos
 --------------------------------------
 
 
-getFetcher :: Machine (Int -> BS.ByteString)
+getFetcher :: Machine (Int -> Metadata)
 getFetcher = do
     h <- use heap''
     v <- liftIO $ US.unsafeFreeze h
@@ -41,13 +37,11 @@ getFetcher = do
     cs_ <- use cs
     inv <- use $ config . invalid
     let f ips
-            | 0 <= i && i < BS.length bs = if x == x' || (cs_,ip_) `Set.member` inv then x else unsafePerformIO $ do
-                writeFile invalidFile $ show $ Set.insert (cs_,ip_) inv
-                error $ "getFetcher: " ++ show ((cs_,ip_), ips)
+            | 0 <= i && i < BS.length bs = if x == x' then x else error $ "getFetcher: " ++ show ((cs_,ip_), ips)
             | otherwise = x
           where
-            x = BS.pack . map fromIntegral . US.toList $ US.slice ips maxInstLength v
-            x' = BS.take maxInstLength $ BS.drop i bs
+            x = head . disassembleMetadata disasmConfig . BS.pack . map fromIntegral . US.toList $ US.slice ips maxInstLength v
+            x' = head . disassembleMetadata disasmConfig . BS.take maxInstLength $ BS.drop i bs
             i = ips - start
     return f
 
@@ -65,7 +59,7 @@ evalBlocks cs' ip' e = case IM.lookup (fromIntegral ip') e of
     Nothing -> return ()
 
 fetchBlock_' ca f cs ss es ds ip = do
-    let (n, r, e) = fetchBlock_ (head . disassembleMetadata disasmConfig . f) cs ss es ds ip
+    let (n, r, e) = fetchBlock_ (f) cs ss es ds ip
     _ <- liftIO $ evaluate n
     return $ Compiled cs ss es ds n r $ do
         _ <- evalBlocks cs ip e
@@ -323,10 +317,6 @@ checkInt n = do
 
 loadCache getInst = do
     trace_ "Loading cache"
-    inv <- read <$> liftIO (readFile invalidFile)
-    config . invalid .= inv
-    let inv' = IS.fromList $ map (uncurry segAddr) $ Set.toList inv
-    cache %= IM.union (IM.fromList $ zip (IS.toList inv') $ repeat $ DontCache 0)
     cf <- liftIO readCache
 --    when (not $ unique [segAddr cs $ fromIntegral ip | (fromIntegral -> cs, ips) <- IM.toList cf, ip <- IS.toList ips]) $ error "corrupt cache"
     let fromIntegral' :: Int -> Maybe Word16
@@ -336,10 +326,10 @@ loadCache getInst = do
         fromIntegral_ = fromIntegral
     cf' <- cf `deepseq` mdo
         cf' <- forM (IM.toList cf) $ \(ip, (fromIntegral_ -> cs, fromIntegral_ -> ss, fromIntegral' -> es, fromIntegral' -> ds)) ->
-                 (,) ip <$> fetchBlock_' ca getInst cs ss es ds (fromIntegral $ ip - cs ^. paragraph)
+                 (,) ip <$> fetchBlock_' ca (head . disassembleMetadata disasmConfig . getInst) cs ss es ds (fromIntegral $ ip - cs ^. paragraph)
         ca <- use cache
         return cf'
-    cache %= IM.union (IM.fromList (filter (not . (`IS.member` inv') . fst) $ cf'))
+    cache %= IM.union (IM.fromList cf')
     trace_ "cache loaded"
 
 readCache :: IO (IM.IntMap (Int,Int,Int,Int))

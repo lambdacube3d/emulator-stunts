@@ -183,7 +183,6 @@ ifff x = [x]
 addressOf Nothing RDX = liftM2 segAddr (use ds) (use dx)
 addressOf (Just ES) RDX = liftM2 segAddr (use es) (use dx)
 
-invalidFile = "invalid.txt"
 cacheFile = "cache.txt"
 
 --alter i f = IM.alter (Just . maybe (f mempty) f) i
