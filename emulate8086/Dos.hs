@@ -23,7 +23,7 @@ import System.FilePath (takeFileName)
 import System.FilePath.Glob
 import Sound.ALUT (play, stop, sourceGain, pitch, ($=))
 import Hdis86
-import Debug.Trace
+--import Debug.Trace
 
 import Helper
 import MachineState
@@ -101,8 +101,8 @@ info System s1 s2 s3 = s1
 info (Program (SegAddr' (C' _) (C' _))) s1 s2 s3 = s2
 info _ s1 s2 s3 = s3
 
-uRead :: Info -> MachineState -> Int -> IO Word8
-uRead inf h i = do
+uRead :: Info -> Int -> IO Word8
+uRead inf i = do
     b <- use' showReads'
     when b $ do
         off <- use' showOffset
@@ -129,20 +129,20 @@ bytesAt__ i' j' = (get_, set)
   where
     set ws = zipWithM_ (uWrite System) [i'..]
         $ (pad (error "pad") j' . take j') ws
-    get_ = get >>= \h -> liftIO $ mapM (uRead System h) [i'..i'+j'-1]
+    get_ = liftIO $ mapM (uRead System) [i'..i'+j'-1]
 
 byteAt__ :: Info -> Int -> Machine Word8
-byteAt__ inf i = get >>= \h -> liftIO $ uRead inf h i
+byteAt__ inf i = liftIO $ uRead inf i
 
-getByteAt inf i = view _2 >>= \h -> liftIO $ uRead inf h i
+getByteAt inf i = uRead inf i
 
 setByteAt :: Info -> Int -> Word8 -> Machine ()
 setByteAt inf i v = uWrite inf i v
 
 wordAt__ :: Info -> Int -> Machine Word16
-wordAt__ inf i = get >>= \h -> liftIO $ liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead inf h (i+1)) (uRead inf h i)
+wordAt__ inf i = liftIO $ liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead inf (i+1)) (uRead inf i)
 
-getWordAt inf i = view _2 >>= \h -> liftIO $ liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead inf h (i+1)) (uRead inf h i)
+getWordAt inf i = liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead inf (i+1)) (uRead inf i)
 
 setWordAt :: Info -> Int -> Word16 -> Machine ()
 setWordAt inf i v = uWrite inf i (fromIntegral v) >> uWrite inf (i+1) (fromIntegral $ v `shiftR` 8)

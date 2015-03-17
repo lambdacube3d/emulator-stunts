@@ -186,25 +186,25 @@ evalExp' :: Exp a -> Machine a
 evalExp' e = flip runReaderT Empty $ evalExp (convExp e)
 
 evalExp :: EExp e a -> Machine' e a
-evalExp x = ReaderT $ \e -> get >>= \st -> liftIO $ runReaderT (evalExp_ x) (e, st)
+evalExp x = ReaderT $ \e -> liftIO $ runReaderT (evalExp_ x) e
 
-type Machine'' e = ReaderT (Env e, MachineState) IO
+type Machine'' e = ReaderT (Env e) IO
 
 pushVal' :: Machine'' (Con b e) a -> b -> Machine'' e a
-pushVal' m v = ReaderT $ \(e, x) -> runReaderT m (e `Push` v, x)
+pushVal' m v = ReaderT $ runReaderT m . (`Push` v)
 
 evalExp_ :: EExp e a -> Machine'' e a
 evalExp_ = evalExp where
   evalExp :: EExp e a -> Machine'' e a
   evalExp = \case
-    Var' ix -> reader $ prj ix . fst
+    Var' ix -> reader $ prj ix
     Let' e f -> evalExp e >>= pushVal' (evalExp f)
     Iterate' n f a -> evalExp n >>= \i -> evalExp a >>= iterateM i (pushVal' (evalExp f))
 
     C' a -> return a
     Get' p -> case p of
-        Heap16 e -> evalExp e >>= getWordAt (Program e)
-        Heap8 e -> evalExp e >>= getByteAt (Program e)
+        Heap16 e -> evalExp e >>= liftIO . getWordAt (Program e)
+        Heap8 e -> evalExp e >>= liftIO . getByteAt (Program e)
         p -> liftIO $ fst $ evalPart_ p
 
     If' b x y -> evalExp b >>= iff (evalExp x) (evalExp y)
