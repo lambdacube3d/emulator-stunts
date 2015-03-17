@@ -25,7 +25,6 @@ import Hdis86
 import Debug.Trace
 
 import Helper
-import Edsl
 import MachineState
 import DeBruijn
 
@@ -770,7 +769,7 @@ loadExe loadSegment gameExe = do
 
   where
     getInst i
-        | j >= 0 && j < BS.length relocatedExe = BS.take maxInstLength $ BS.drop j relocatedExe
+        | j >= 0 && j < BS.length relocatedExe = BS.drop j relocatedExe
       where
         j = i - exeStart
 

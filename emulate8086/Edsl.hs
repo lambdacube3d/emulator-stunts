@@ -590,6 +590,4 @@ fetchBlock' fetch cs ip ss es ds = case inOpcode of
 
     modif p f = set p $ f $ Get p
 
-maxInstLength = 7
-
 

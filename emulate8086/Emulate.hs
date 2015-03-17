@@ -40,8 +40,8 @@ getFetcher = do
             | 0 <= i && i < BS.length bs = if x == x' then x else error $ "getFetcher: " ++ show ((cs_,ip_), ips)
             | otherwise = x
           where
-            x = head . disassembleMetadata disasmConfig . BS.pack . map fromIntegral . US.toList $ US.slice ips maxInstLength v
-            x' = head . disassembleMetadata disasmConfig . BS.take maxInstLength $ BS.drop i bs
+            x = head . disassembleMetadata disasmConfig . BS.pack . take 7 . map fromIntegral . US.toList $ US.drop ips v
+            x' = head . disassembleMetadata disasmConfig . BS.drop i $ bs
             i = ips - start
     return f
 
