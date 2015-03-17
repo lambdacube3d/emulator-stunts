@@ -30,11 +30,10 @@ import Dos
 
 getFetcher :: Machine (Int -> Metadata)
 getFetcher = do
-    h <- use heap''
-    v <- liftIO $ US.unsafeFreeze h
+    v <- liftIO $ US.unsafeFreeze heap''
     (start, bs) <- use $ config . gameexe
-    ip_ <- use ip
-    cs_ <- use cs
+    ip_ <- use' ip
+    cs_ <- use' cs
     inv <- use $ config . invalid
     let f ips
             | 0 <= i && i < BS.length bs = if x == x' then x else error $ "getFetcher: " ++ show ((cs_,ip_), ips)
@@ -73,21 +72,21 @@ fetchBlock_' ca f cs ss es ds ip = do
 
 fetchBlock :: Cache -> Machine CacheEntry
 fetchBlock ca = do
-    es_ <- use es
-    ds_ <- use ds
+    es_ <- use' es
+    ds_ <- use' ds
     fetchBlock'' (Just es_) (Just ds_) ca
 
 fetchBlock'' es ds ca = do
-    cs_ <- use cs
-    ss_ <- use ss
-    ip_ <- use ip
+    cs_ <- use' cs
+    ss_ <- use' ss
+    ip_ <- use' ip
     f <- getFetcher
     fetchBlock_' ca f cs_ ss_ es ds ip_
 
 mkStep :: Machine Int
 mkStep = do
-    ip_ <- use ip
-    cs_ <- use cs
+    ip_ <- use' ip
+    cs_ <- use' cs
 
     let ips = segAddr cs_ ip_
         compile fe = do
@@ -103,12 +102,12 @@ mkStep = do
     case cv of
      Just v -> case v of
       Compiled cs' ss' es' ds' n len m -> do
-        cs'' <- use cs
+        cs'' <- use' cs
         when (cs' /= cs'') $ error "cs differs"
-        ss'' <- use ss
+        ss'' <- use' ss
         when (ss' /= ss'') $ error "ss differs"
-        es'' <- use es
-        ds'' <- use ds
+        es'' <- use' es
+        ds'' <- use' ds
         let f a b = if a == Just b then a else Nothing
         if (maybe False (/= es'') es' || maybe False (/=ds'') ds') then do
             trace_ "recompile"
@@ -132,7 +131,7 @@ disasmConfig = Config Intel Mode16 SyntaxIntel 0
 
 type MachinePart' a = (Machine a, a -> Machine ())
 
-evalPart_ :: Part_ e a -> MachinePart a
+evalPart_ :: Part_ e a -> MachinePart'' a
 evalPart_ = \case
     AX -> ax
     BX -> bx
@@ -146,8 +145,14 @@ evalPart_ = \case
     Ds -> ds
     Ss -> ss
     Cs -> cs
-    Low x -> evalPart_ x . low
-    High x -> evalPart_ x . high
+    Low AX -> al
+    Low BX -> bl
+    Low CX -> cl
+    Low DX -> dl
+    High AX -> ah
+    High BX -> bh
+    High CX -> ch
+    High DX -> dh
     CF -> carryF
     PF -> parityF
     ZF -> zeroF
@@ -156,7 +161,7 @@ evalPart_ = \case
     DF -> directionF
     OF -> overflowF
     Edsl.Flags -> flags
-    DXAX -> uComb dx ax . combine
+    DXAX -> dxax
 
 
 
@@ -201,7 +206,7 @@ evalExp_ = evalExp where
     Get' p -> case p of
         Heap16 e -> evalExp e >>= getWordAt (Program e)
         Heap8 e -> evalExp e >>= getByteAt (Program e)
-        p -> view $ _2 . evalPart_ p
+        p -> liftIO $ fst $ evalPart_ p
 
     If' b x y -> evalExp b >>= iff (evalExp x) (evalExp y)
     Eq' x y -> liftM2 (==) (evalExp x) (evalExp y)
@@ -236,7 +241,7 @@ evalExp_ = evalExp where
     Snd' p -> snd <$> evalExp p
 
 evalExpM :: Cache -> ExpM Jump' -> Machine ()
-evalExpM ca e = flip runReaderT Empty $ evalEExpM ca (convExpM e) >>= \(JumpAddr c i) -> cs .= c >> ip .= i
+evalExpM ca e = flip runReaderT Empty $ evalEExpM ca (convExpM e) >>= \(JumpAddr c i) -> cs ..= c >> ip ..= i
 
 evalEExpM :: Cache -> EExpM e a -> Machine' e a
 evalEExpM ca = evalExpM
@@ -247,7 +252,7 @@ evalEExpM ca = evalExpM
     Set' p e' c -> case p of 
         Heap16 e -> join (lift <$> liftM2 (setWordAt $ Program e) (evalExp e) (evalExp e')) >> evalExpM c
         Heap8 e -> join (lift <$> liftM2 (setByteAt $ Program e) (evalExp e) (evalExp e')) >> evalExpM c
-        p -> evalExp e' >>= (evalPart_ p .=) >> evalExpM c
+        p -> evalExp e' >>= (evalPart_ p ..=) >> evalExpM c
 {- temporarily comment out
     Jump'' (C' c) (C' i) | Just (Compiled cs' ss' _ _ _ _ m) <- IM.lookup (segAddr c i) ca
                        , cs' == c -> lift $ do
@@ -282,7 +287,7 @@ checkInt n = do
   config . stepsCounter .= ns'
   let ma = complement 0xff
   when (ns' .&. ma /= ns .&. ma) $ do
-    i <- use interruptF
+    i <- use' interruptF
     when i $ do
         mask <- use intMask
         ivar <- use $ config . interruptRequest

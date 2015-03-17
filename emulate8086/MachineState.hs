@@ -4,6 +4,7 @@ module MachineState where
 import Data.Word
 import Data.Bits
 import Data.Monoid
+import Data.IORef
 import Control.Concurrent.MVar
 import qualified Data.Set as S
 import qualified Data.Vector as V
@@ -13,6 +14,8 @@ import qualified Data.Vector.Storable.Mutable as U
 import Control.Monad.State
 import Control.Lens as Lens
 import Sound.ALUT
+
+import System.IO.Unsafe
 
 ----------------------------------------------
 
@@ -49,8 +52,6 @@ data Config_ = Config_
     , _speaker          :: Word8     -- 0x61 port
     }
 
-data Regs = Regs { _ax_,_dx_,_bx_,_cx_, _si_,_di_, _cs_,_ss_,_ds_,_es_, _ip_,_sp_,_bp_ :: Word16 }
-
 type UVec = U.IOVector Word8
 type Cache = IM.IntMap CacheEntry
 
@@ -59,11 +60,16 @@ data CacheEntry
     | BuiltIn !(Machine ())
     | DontCache !Int
 
+heap'' :: UVec
+{-# NOINLINE heap'' #-}
+heap'' = unsafePerformIO $ U.new $ 0xb0000
+
+regs :: U.IOVector Word16
+{-# NOINLINE regs #-}
+regs = unsafePerformIO $ U.new $ 13 + 1
+
 data MachineState = MachineState
-    { _flags_   :: Flags
-    , _regs     :: Regs
-    , _heap     :: MemPiece     -- heap layout
-    , _heap''   :: UVec
+    { _heap     :: MemPiece     -- heap layout
 
     , _retrace  :: [Word16]
     , _intMask  :: Word8
@@ -73,7 +79,6 @@ data MachineState = MachineState
     , _labels   :: IM.IntMap BS.ByteString
     , _files    :: IM.IntMap (FilePath, Int)  -- filepath, position
     , _dta      :: Int
-
     }
 
 type Machine = StateT MachineState IO
@@ -81,22 +86,17 @@ type MachinePart a = Lens' MachineState a
 
 
 $(makeLenses ''Config_)
-$(makeLenses ''Regs)
 $(makeLenses ''MachineState)
 
 
 wordToFlags :: Word16 -> Flags
-wordToFlags w = fromIntegral $ (w .&. 0xed3) .|. 0x2
+wordToFlags w = fromIntegral $ (w .&. 0x0ed3) .|. 0x2
 
 emptyState = do
-  heap <- liftIO $ U.new $ 0xb0000
   ivar <- newMVar []
   vec2 <- U.new (320*200) :: IO (U.IOVector Word32)
   return $ MachineState
-    { _flags_   = wordToFlags 0xf202
-    , _regs     = Regs 0 0 0 0  0 0  0 0 0 0  0 0 0
-    , _heap     = undefined
-    , _heap''   = heap
+    { _heap     = undefined
     , _cache    = IM.empty
     , _labels   = IM.empty
     , _files    = IM.empty

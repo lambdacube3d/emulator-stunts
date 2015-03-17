@@ -37,7 +37,7 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
     GLFW.makeContextCurrent $ Just window
     let posToAddr st x y = do
             let offs = st ^. config . showOffset
-                fb = st ^. heap''
+                fb = heap''
                 addr = offs + 320 * y + x
             val <- U.read fb addr
             return (addr, val)
@@ -111,7 +111,7 @@ drawWithFrameBuffer changeSt interrupt stvar draw = do
                 st <- readMVar stvar
                 esds' <- readMVar esds
                 let offs = st ^. config . showOffset
-                let fb = st ^. heap''
+                let fb = heap''
                 (vec, post) <- if st ^. config . showReads then do
                     let v = st ^. config . showBuffer
                     return $ (,) v $ do

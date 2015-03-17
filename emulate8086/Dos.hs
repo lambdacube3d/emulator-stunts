@@ -13,6 +13,7 @@ import qualified Data.IntMap.Strict as IM
 import qualified Data.Vector as V
 import qualified Data.Vector.Storable.Mutable as U
 import Control.Applicative
+import Control.Arrow
 import Control.Monad.State
 import Control.Lens as Lens
 import Control.Concurrent
@@ -50,6 +51,7 @@ modifyAllocated addr req (alloc, endf) = head $ concatMap f $ getOut $ zip alloc
 --------------------------------------
 
 type MachinePart' a = (Machine a, a -> Machine ())
+type MachinePart'' a = (IO a, a -> IO ())
 
 (@:) :: BS.ByteString -> a ->  a
 b @: x = x
@@ -58,19 +60,38 @@ infix 5 @:
 haltWith = error
 halt = error "CleanHalt"
 
-ax = regs . ax_
-bx = regs . bx_
-cx = regs . cx_
-dx = regs . dx_
-si = regs . si_
-di = regs . di_
-cs = regs . cs_
-ss = regs . ss_ . iso id (trace " set ss ")
-ds = regs . ds_
-es = regs . es_
-ip = regs . ip_
-sp = regs . sp_
-bp = regs . bp_
+infix 4 ..=, .%=
+(_, w) ..= x = liftIO $ w x
+(r, w) .%= f = liftIO $ r >>= w . f
+use' (r, _) = liftIO r
+
+[ax, bx, cx, dx, si, di, cs, ss, ds, es, ip, sp, bp, flags_] =
+    [ (U.unsafeRead regs i, U.unsafeWrite regs i) :: MachinePart'' Word16 | i <- [0..13] ]
+
+flags :: MachinePart'' Word16
+flags = id *** (. wordToFlags) $ flags_
+
+[al, bl, cl, dl] =
+    [ (fromIntegral <$> U.unsafeRead regs i, \v -> U.unsafeRead regs i >>= U.unsafeWrite regs i . (.|. fromIntegral v) . (.&. 0xff00)) :: MachinePart'' Word8 | i <- [0..3] ]
+
+[ah, bh, ch, dh] =
+    [ (fromIntegral . (`shiftR` 8) <$> U.unsafeRead regs i, \v -> U.unsafeRead regs i >>= U.unsafeWrite regs i . (.|. fromIntegral v `shiftL` 8) . (.&. 0x00ff)) :: MachinePart'' Word8 | i <- [0..3] ]
+
+dxax, cxdx :: MachinePart'' Word32
+dxax = comb dx ax
+cxdx = comb cx dx
+
+comb (rh, wh) (rl, wl)
+    = ( liftM2 (\h l -> fromIntegral h `shiftL` 16 .|. fromIntegral l) rh rl
+      , \x -> wh (fromIntegral $ x `shiftR` 16) >> wl (fromIntegral x)
+      )
+
+[overflowF, directionF, interruptF, signF, zeroF, parityF, carryF] =
+    [ ((`testBit` i) <$> r, \b -> r >>= w . if b then (`setBit` i) else (`clearBit` i)) :: MachinePart'' Bool
+    | i <- [11,10,9,7,6,2,0]
+    ]
+  where (r, w) = flags_
+
 
 data Info
     = System
@@ -90,12 +111,11 @@ uRead inf h i = do
             let v = h ^. config . showBuffer
             x <- U.unsafeRead v j
             U.unsafeWrite v j $ x .|. info inf 0xff00ff00 0x00008000 0x0000ff00
-    U.unsafeRead (h ^. heap'') i
+    U.unsafeRead heap'' i
 
 uWrite :: Info -> Int -> Word8 -> Machine ()
 uWrite inf i v = do
-    h <- use heap''
-    liftIO $ U.unsafeWrite h i v
+    liftIO $ U.unsafeWrite heap'' i v
     b <- use $ config . showReads
     when b $ do
         off <- use $ config . showOffset
@@ -133,10 +153,6 @@ dwordAt__ :: Info -> Int -> MachinePart' Word32
 dwordAt__ inf i = ( liftM2 (\hi lo -> fromIntegral hi `shiftL` 16 .|. fromIntegral lo) (wordAt__ inf $ i+2) (wordAt__ inf i)
              , \v -> setWordAt inf i (fromIntegral v) >> setWordAt inf (i+2) (fromIntegral $ v `shiftR` 16))
 
-
-flags :: MachinePart Word16
-flags = flags_ . iso id wordToFlags
-
 getSender = do
     v <- use $ config . interruptRequest
     return $ \r -> modifyMVar_ v $ return . (++ [r])
@@ -156,31 +172,13 @@ getRetrace = do
     retrace %= tail
     return x
 
-
 trace_ :: String -> Machine ()
 trace_ s = liftIO $ putStr $ " | " ++ s
 
-[overflowF,directionF,interruptF,signF,zeroF,parityF,carryF] =
-    [ flags_ . lens (`testBit` i) (\x b -> if b then setBit x i else clearBit x i) :: MachinePart (Bool)
-    | i <- [11,10,9,7,6,2,0]
-    ]
-
-al = ax . low :: MachinePart Word8
-ah = ax . high:: MachinePart Word8
-dl = dx . low :: MachinePart Word8
-dh = dx . high:: MachinePart Word8
-bl = bx . low :: MachinePart Word8
-bh = bx . high:: MachinePart Word8
-cl = cx . low :: MachinePart Word8
-ch = cx . high:: MachinePart Word8
-
 ----------------------
 
-ifff "" = []
-ifff x = [x]
-
-addressOf Nothing RDX = liftM2 segAddr (use ds) (use dx)
-addressOf (Just ES) RDX = liftM2 segAddr (use es) (use dx)
+addressOf Nothing RDX = liftM2 segAddr (use' ds) (use' dx)
+addressOf (Just ES) RDX = liftM2 segAddr (use' es) (use' dx)
 
 cacheFile = "cache.txt"
 
@@ -284,10 +282,10 @@ origInterrupt = M.fromList
 
   , item 0x10 (0xf000,0x1320) $ do
     trace_ "Video Services"
-    v <- use ah
+    v <- use' ah
     case v of
         0x00 -> do
-            video_mode_number <- use al
+            video_mode_number <- use' al
             trace_ $ "Set Video Mode #" ++ showHex' 2 video_mode_number
             case video_mode_number of
                 0x00 -> do
@@ -295,29 +293,29 @@ origInterrupt = M.fromList
                 0x03 -> do
                     trace_ "mode 3"
                 0x13 -> do
-                    bx .= 0  -- 4  -- ???
+                    bx ..= 0  -- 4  -- ???
                 _ -> haltWith $ "#" ++ showHex' 2 video_mode_number
         0x0b -> do
             trace_ "Select Graphics Palette or Text Border Color"
         0x0e -> do
-            a <- use al
+            a <- use' al
             liftIO $ putChar $ chr . fromIntegral $ a
             trace_ $ "Write Character as TTY: " ++ showHex' 2 a
             
 --            traceM $ (:[]) . chr . fromIntegral $ a
         0x0f -> do
             trace_ "Get Current Video Mode"
-            al .= "text mode" @: 3
-            ah .= "width of screen, in character columns" @: 80
-            bh .= "current active video page (0-based)" @: 0x00 --b8
+            al ..= "text mode" @: 3
+            ah ..= "width of screen, in character columns" @: 80
+            bh ..= "current active video page (0-based)" @: 0x00 --b8
         0x10 -> do
             trace_ "Set/Get Palette Registers (EGA/VGA)"
-            f <- use al
+            f <- use' al
             case f of
               0x12 -> do
                 trace_ "set block of DAC color registers"
-                first_DAC_register <- use bx -- (0-00ffH)
-                number_of_registers <- use cx -- (0-00ffH)
+                first_DAC_register <- use' bx -- (0-00ffH)
+                number_of_registers <- use' cx -- (0-00ffH)
                 -- ES:DX addr of a table of R,G,B values (it will be CX*3 bytes long)
                 addr <- addressOf (Just ES) RDX
                 colors <- fst $ bytesAt__ addr $ 3 * fromIntegral number_of_registers
@@ -333,32 +331,32 @@ origInterrupt = M.fromList
 
   , item 0x15 (0xf000,0x11e0) $ do     -- 15h
     trace_ "Misc System Services"
-    v <- use ah
+    v <- use' ah
     case v of
 --      0x00 -> do
 --        trace_ "Turn on casette driver motor"
       0xc2 -> do
         trace_ "Pointing device BIOS interface"
-        w <- use al
+        w <- use' al
         case w of
           0x01 -> do
             trace_ "Reset Pointing device"
-            ah .= 0 -- ?
-            bl .= 0xaa -- ?
+            ah ..= 0 -- ?
+            bl ..= 0xaa -- ?
             returnOK
       v  -> haltWith $ "interrupt #15,#" ++ showHex' 2 v
 
   , item 0x16 (0xf000,0x1200) $ do
     trace_ "Keyboard Services"
-    v <- use ah
+    v <- use' ah
     case v of
         0x00 -> do
             trace_ "Read (Wait for) Next Keystroke"
-            ah .= "Esc scan code" @: 0x39
-            al .= "Esc ASCII code" @: 0x1b
+            ah ..= "Esc scan code" @: 0x39
+            al ..= "Esc ASCII code" @: 0x1b
         0x01 -> do
             trace_ "Query Keyboard Status / Preview Key"
-            zeroF .= False  -- no keys in buffer
+            zeroF ..= False  -- no keys in buffer
         v  -> haltWith $ "interrupt #16,#" ++ showHex' 2 v
 
   , item 0x20 (0x0000, 0x0000) $ do
@@ -367,7 +365,7 @@ origInterrupt = M.fromList
 
   , item 0x21 (0xf000,0x14c0) $ do
     trace_ "DOS rutine"
-    v <- use ah
+    v <- use' ah
     case v of
         0x00 -> do
             trace_ "dos Program terminate"
@@ -379,30 +377,30 @@ origInterrupt = M.fromList
             dta .= addr
 
         0x25 -> do
-            v <- fromIntegral <$> use al     -- interrupt vector number
+            v <- fromIntegral <$> use' al     -- interrupt vector number
             trace_ $ "Set Interrupt Vector " ++ showHex' 2 v
-            use dx >>= setWordAt System (4*v)     -- DS:DX = pointer to interrupt handler
-            use ds >>= setWordAt System (4*v + 2)
+            use' dx >>= setWordAt System (4*v)     -- DS:DX = pointer to interrupt handler
+            use' ds >>= setWordAt System (4*v + 2)
 
         0x30 -> do
             trace_ "Get DOS version"
-            al .= "major version number" @: 0x05      --  (2-5)
-            ah .= "minor version number" @: 0x00      --  (in hundredths decimal)
-            bh .= "MS-DOS" @: 0xff
+            al ..= "major version number" @: 0x05      --  (2-5)
+            ah ..= "minor version number" @: 0x00      --  (in hundredths decimal)
+            bh ..= "MS-DOS" @: 0xff
             do              -- 24 bit OEM serial number
-                bl .= "OEM serial number (high bits)" @: 0
-                cx .= "OEM serial number (low bits)" @: 0
+                bl ..= "OEM serial number (high bits)" @: 0
+                cx ..= "OEM serial number (low bits)" @: 0
 
         0x35 -> do
-            v <- fromIntegral <$> use al
+            v <- fromIntegral <$> use' al
             trace_ $ "Get Interrupt Vector " ++ showHex' 2 v
-            wordAt__ System (4*v) >>= (bx .=)
-            wordAt__ System (4*v + 2) >>= (es .=)   -- ES:BX = pointer to interrupt handler
+            wordAt__ System (4*v) >>= (bx ..=)
+            wordAt__ System (4*v + 2) >>= (es ..=)   -- ES:BX = pointer to interrupt handler
 
         0x3c -> do
             trace_ "Create File"
             (f, fn) <- getFileName
-            attributes <- use cx
+            attributes <- use' cx
             b <- liftIO $ doesFileExist fn
             if b then dosFail 0x05 -- access denied
               else do
@@ -410,7 +408,7 @@ origInterrupt = M.fromList
                 newHandle fn
         0x3d -> do
             trace_ "Open File Using Handle"
-            open_access_mode <- use al
+            open_access_mode <- use' al
             case open_access_mode of
               0 -> do   -- read mode
                 (f,fn) <- getFileName
@@ -418,7 +416,7 @@ origInterrupt = M.fromList
 
         0x3e -> do
             trace_ "Close file"
-            handle <- fromIntegral <$> use bx
+            handle <- fromIntegral <$> use' bx
             trace_ $ "handle " ++ showHex' 4 handle
             x <- IM.lookup handle <$> use files
             case x of
@@ -428,22 +426,22 @@ origInterrupt = M.fromList
                 returnOK
 
         0x3f -> do
-            handle <- fromIntegral <$> use bx
+            handle <- fromIntegral <$> use' bx
             (fn, seek) <- (IM.! handle) <$> use files
-            num <- fromIntegral <$> use cx
+            num <- fromIntegral <$> use' cx
             trace_ $ "Read " ++ showHex' 4 handle ++ ":" ++ fn ++ " " ++ showHex' 4 num
             loc <- addressOf Nothing RDX
             s <- liftIO $ BS.take num . BS.drop seek <$> BS.readFile fn
             let len = BS.length s
             files %= flip IM.adjust handle (\(fn, p) -> (fn, p+len))
             snd (bytesAt__ loc len) (BS.unpack s)
-            ax .= "length" @: fromIntegral len
+            ax ..= "length" @: fromIntegral len
             returnOK
 
         0x40 -> do
-            handle <- fromIntegral <$> use bx
+            handle <- fromIntegral <$> use' bx
             trace_ $ "Write to " ++ showHex' 4 handle
-            num <- fromIntegral <$> use cx
+            num <- fromIntegral <$> use' cx
             loc <- addressOf Nothing RDX
             case handle of
               1 -> trace_ . ("STDOUT: " ++) . map (chr . fromIntegral) =<< fst (bytesAt__ loc num)
@@ -459,10 +457,10 @@ origInterrupt = M.fromList
                 returnOK
 
         0x42 -> do
-            handle <- fromIntegral <$> use bx
+            handle <- fromIntegral <$> use' bx
             fn <- (^. _1) . (IM.! handle) <$> use files
-            mode <- use al
-            pos <- fromIntegral . asSigned <$> use (uComb cx dx . combine)
+            mode <- use' al
+            pos <- fromIntegral . asSigned <$> use' cxdx
             trace_ $ "Seek " ++ showHex' 4 handle ++ ":" ++ fn ++ " to " ++ show mode ++ ":" ++ showHex' 8 pos
             s <- liftIO $ BS.readFile fn
             files %= (flip IM.adjust handle $ \(fn, p) -> case mode of
@@ -471,13 +469,13 @@ origInterrupt = M.fromList
                 2 -> (fn, BS.length s + pos)
                 )
             pos' <- (^. _2) . (IM.! handle) <$> use files
-            (uComb dx ax . combine) .= fromIntegral pos'
+            dxax ..= fromIntegral pos'
             returnOK
 
         0x44 -> do
             trace_ "I/O Control for Devices (IOCTL)"
-            0x44 <- use ah
-            function_value <- use al
+            0x44 <- use' ah
+            function_value <- use' al
 {-
             file_handle <- use bx
             logical_device_number <- use bl -- 0=default, 1=A:, 2=B:, 3=C:, ...
@@ -486,7 +484,7 @@ origInterrupt = M.fromList
 -}
             case function_value of
               0x00 -> do
-                handle <- use bx
+                handle <- use' bx
                 trace_ $ "Get Device Information of " ++ show handle 
                 let v = case handle of
                       4 -> 0x80A0        --  0010 1000 00 000100   no D: drive
@@ -494,42 +492,42 @@ origInterrupt = M.fromList
                       2 -> 0x80D3        --  0010 1000 00 000011    B: drive
                       1 -> 0x80D3        --  0010 1000 00 000011    A: drive
                       0 -> 0x80D3        --  0010 1000 00 000011    default drive
-                dx .= v
-                ax .= v
+                dx ..= v
+                ax ..= v
             returnOK
 
         0x48 -> do
-            memory_paragraphs_requested <- use bx
+            memory_paragraphs_requested <- use' bx
             trace_ $ "Allocate Memory " ++ showHex' 5 (memory_paragraphs_requested ^. paragraph)
             x <- zoom heap $ state $ allocateMem (memory_paragraphs_requested ^. paragraph)
-            ax .= "segment address of allocated memory block" @: (x ^. from paragraph) -- (MCB + 1para)
+            ax ..= "segment address of allocated memory block" @: (x ^. from paragraph) -- (MCB + 1para)
             returnOK
 
         0x4a -> do
-            new_requested_block_size_in_paragraphs <- use bx
+            new_requested_block_size_in_paragraphs <- use' bx
             trace_ $ "Modify allocated memory blocks to " ++ showHex' 4 new_requested_block_size_in_paragraphs
-            segment_of_the_block <- use es      -- (MCB + 1para)
+            segment_of_the_block <- use' es      -- (MCB + 1para)
             h <- use heap
             case modifyAllocated (segment_of_the_block ^. paragraph) (new_requested_block_size_in_paragraphs ^. paragraph) h of
               Left x -> do
-                bx .= "maximum block size possible" @: (x ^. from paragraph)
+                bx ..= "maximum block size possible" @: (x ^. from paragraph)
                 trace_ $ "insufficient, max possible: " ++ showHex' 4 (x ^. from paragraph)
                 dosFail 0x08 -- insufficient memory
               Right h -> do
-                ds <- use ds
-                ax .= ds  -- why???
+                ds <- use' ds
+                ax ..= ds  -- why???
                 heap .= h
                 returnOK
 
         0x4c -> do
-            code <- use al
+            code <- use' al
             trace_ $ "Terminate Process With Return Code #" ++ showHex' 2 code
             halt
 
         0x4e -> do
             trace_ $ "Find file"
             (f_,_) <- getFileName
-            attribute_used_during_search <- use cx
+            attribute_used_during_search <- use' cx
             ad <- use dta
             s <- liftIO $ do
                     b <- globDir1 (compile $ map toUpper f_) "../original"
@@ -546,7 +544,7 @@ origInterrupt = M.fromList
                 snd (dwordAt__ System $ ad + 0x1a) $ fromIntegral (BS.length s)
                 snd (bytesAt__ (ad + 0x1e) 13) $ pad 0 13 (map (fromIntegral . ord) (strip $ takeFileName f) ++ [0])
                 setByteAt System (ad + 0x00) 1
-                ax .= 0 -- ?
+                ax ..= 0 -- ?
                 returnOK
               Nothing -> dosFail 0x02  -- File not found
 
@@ -571,13 +569,13 @@ origInterrupt = M.fromList
                 snd (dwordAt__ System $ ad + 0x1a) $ fromIntegral (BS.length s)
                 snd (bytesAt__ (ad + 0x1e) 13) $ pad 0 13 (map (fromIntegral . ord) (strip $ takeFileName f) ++ [0])
                 setByteAt System (ad + 0x00) $ n+1
-                ax .= 0 -- ?
+                ax ..= 0 -- ?
                 returnOK
               Nothing -> dosFail 0x02
 
         0x62 -> do
             trace_ "Get PSP address (DOS 3.x)"
-            bx .= "segment address of current process" @: 0x1fe  -- hack!!!  !!!
+            bx ..= "segment address of current process" @: 0x1fe  -- hack!!!  !!!
             returnOK
 
         _    -> haltWith $ "dos function #" ++ showHex' 2 v
@@ -588,26 +586,26 @@ origInterrupt = M.fromList
 
   , item 0x33 (0xc7ff,0x0010) $ do     -- 33h
 --    trace_ "Mouse Services"
-    v <- use ax
+    v <- use' ax
     case v of
         0x00 -> do
             trace_ "Mouse Reset/Get Mouse Installed Flag"
-            ax .= {- "mouse?" @: 0xffff -} "mouse driver not installed" @: 0x0000
-            bx .= "number of buttons" @: 0 -- 3
+            ax ..= {- "mouse?" @: 0xffff -} "mouse driver not installed" @: 0x0000
+            bx ..= "number of buttons" @: 0 -- 3
         0x03 -> do
 --            trace_ "Get Mouse position and button status"
-            cx .= "mouse X" @: 0
-            dx .= "mouse Y" @: 0
-            bx .= "button status" @: 0
+            cx ..= "mouse X" @: 0
+            dx ..= "mouse Y" @: 0
+            bx ..= "button status" @: 0
         0x07 -> do
             trace_ "Set Mouse Horizontal Min/Max Position"
-            minimum_horizontal_position <- use cx
-            maximum_horizontal_position <- use dx
+            minimum_horizontal_position <- use' cx
+            maximum_horizontal_position <- use' dx
             return ()
         0x08 -> do
             trace_ "Set Mouse Vertical Min/Max Position"
-            minimum_vertical_position <- use cx
-            maximum_vertical_position <- use dx
+            minimum_vertical_position <- use' cx
+            maximum_vertical_position <- use' dx
             return ()
         0x0f -> do
             trace_ "Set Mouse Mickey Pixel Ratio"
@@ -621,7 +619,7 @@ origInterrupt = M.fromList
         handle <- max 5 . imMax <$> use files
         files %= IM.insert handle (fn, 0)
         trace_ $ "handle " ++ showHex' 4 handle
-        ax .= "file handle" @: fromIntegral handle
+        ax ..= "file handle" @: fromIntegral handle
         returnOK
 
     getFileName = do
@@ -636,12 +634,12 @@ origInterrupt = M.fromList
         b <- liftIO $ doesFileExist fn
         if b then cont else dosFail 0x02
 
-    returnOK = carryF .= False
+    returnOK = carryF ..= False
 
     dosFail errcode = do
         trace_ $ showerr errcode
-        ax .= errcode
-        carryF .= True
+        ax ..= errcode
+        carryF ..= True
       where
         showerr = \case
             0x01  -> "Invalid function number"
@@ -728,19 +726,21 @@ replicate' n x = replicate n x
 
 loadExe :: Word16 -> BS.ByteString -> Machine (Int -> BSC.ByteString)
 loadExe loadSegment gameExe = do
+    flags ..= wordToFlags 0xf202
+
     heap .= ( [(length rom', length rom2')], 0xa0000 - 16)
     zipWithM_ (setByteAt System) [0..] rom2'
-    ss .=  (ssInit + loadSegment)
-    sp .=  spInit
-    cs .=  (csInit + loadSegment)
-    ip .=  ipInit
-    ds .=  pspSegment
-    es .=  pspSegment
-    cx .=  0x00ff -- why?
-    dx .=  pspSegment -- why?
-    bp .=  0x091c -- why?
-    si .=  0x0012 -- why?
-    di .=  0x1f40 -- why?
+    ss ..=  (ssInit + loadSegment)
+    sp ..=  spInit
+    cs ..=  (csInit + loadSegment)
+    ip ..=  ipInit
+    ds ..=  pspSegment
+    es ..=  pspSegment
+    cx ..=  0x00ff -- why?
+    dx ..=  pspSegment -- why?
+    bp ..=  0x091c -- why?
+    si ..=  0x0012 -- why?
+    di ..=  0x1f40 -- why?
     labels .= mempty
 
     liftIO $ print $ showHex' 5 $ loadSegment ^. paragraph
@@ -759,11 +759,11 @@ loadExe loadSegment gameExe = do
     config . gameexe .= (exeStart, relocatedExe)
 
     -- hack for stunts: skip the first few instructions to ensure constant ss value during run
-    ip .=  0x004f
-    si .=  0x0d20
-    di .=  0x2d85
-    sp .=  0xcc5e
-    ss .=  0x2d85
+    ip ..=  0x004f
+    si ..=  0x0d20
+    di ..=  0x2d85
+    sp ..=  0xcc5e
+    ss ..=  0x2d85
     
     return getInst
 
@@ -827,25 +827,25 @@ relocate table loc exe = BS.concat $ fst: map add (bss ++ [last])
 
 push :: Word16 -> Machine ()
 push x = do
-    sp %= (+ (-2))
-    ad <- liftM2 segAddr (use ss) (use sp)
+    sp .%= (+ (-2))
+    ad <- liftM2 segAddr (use' ss) (use' sp)
     setWordAt System ad x
 
 pop :: Machine Word16
 pop = do
-    ad <- liftM2 segAddr (use ss) (use sp)
+    ad <- liftM2 segAddr (use' ss) (use' sp)
     x <- wordAt__ System ad
-    sp %= (+ 2)
+    sp .%= (+ 2)
     return x
 
 interrupt :: Word8 -> Machine ()
 interrupt v = do
-    use flags >>= push
-    use cs >>= push
-    use ip >>= push
-    interruptF .= False
-    wordAt__ System (ad + 2) >>= (cs .=)
-    wordAt__ System ad >>= (ip .=)
+    use' flags >>= push
+    use' cs >>= push
+    use' ip >>= push
+    interruptF ..= False
+    wordAt__ System (ad + 2) >>= (cs ..=)
+    wordAt__ System ad >>= (ip ..=)
   where
     ad = 4 * fromIntegral v
 
@@ -854,9 +854,9 @@ iret = do
     ip' <- pop
     cs' <- pop
     flags' <- pop
-    interruptF .= testBit flags' 9
-    cs .= cs'
-    ip .= ip'
+    interruptF ..= testBit flags' 9
+    cs ..= cs'
+    ip ..= ip'
     
 
 
