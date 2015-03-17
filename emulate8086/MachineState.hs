@@ -7,7 +7,7 @@ import Data.Bits
 import Data.IORef
 import Control.Concurrent.MVar
 --import qualified Data.Set as S
-import qualified Data.Vector as V
+import qualified Data.Vector.Storable as V
 import qualified Data.IntMap.Strict as IM
 import qualified Data.ByteString as BS
 import qualified Data.Vector.Storable.Mutable as U

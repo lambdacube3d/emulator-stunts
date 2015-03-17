@@ -11,7 +11,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Map as M
 import qualified Data.IntMap.Strict as IM
-import qualified Data.Vector as V
+import qualified Data.Vector.Storable as V
 import qualified Data.Vector.Storable.Mutable as U
 import Control.Applicative
 import Control.Arrow

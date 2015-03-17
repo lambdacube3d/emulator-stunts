@@ -6,6 +6,7 @@ import Data.Bits
 import Data.Word
 import qualified Data.IntMap.Strict as IM
 import qualified Data.Vector as Vec
+import qualified Data.Vector.Storable as S
 import qualified Data.Vector.Storable.Mutable as U
 import Control.Monad as Prelude
 import Control.Lens
@@ -128,13 +129,8 @@ drawWithFrameBuffer changeSt interrupt draw = do
                                 _ -> return ()
                   else do
                     let p = st ^. palette
-                    forM_ [0..199] $ \y -> do
-                      let y_ = offs + 320 * y
-                          y' = 320 * y
-                      forM_ [0..319] $ \x -> do
-                        a <- U.unsafeRead fb $ y_ + x
-                        v <- Vec.unsafeIndexM p $ fromIntegral a .&. 0xff
-                        U.unsafeWrite vec2 (y' + x) v
+                    v <- S.unsafeFreeze fb
+                    vec2 <- S.unsafeThaw $ S.unsafeBackpermute p (S.map fromIntegral $ S.slice offs (320*200) v)
                     return (vec2, return ())
                 p <- readMVar pos
                 case p of
