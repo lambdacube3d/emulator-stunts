@@ -88,9 +88,6 @@ set x y = Set x y (return ())
 ifM (C c) a b = if c then a else b
 ifM x a b = IfM x a b
 
-when' :: Exp Bool -> ExpM () -> ExpM ()
-when' b x = ifM b x (return ())
-
 letM :: Exp a -> ExpM (Exp a)
 letM (C c) = return (C c)
 letM x = LetM x return
@@ -298,9 +295,9 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
     Isahf   -> setFlags >> set AL (Convert $ Get Flags) >> ccClean
     Ilahf   -> setFlags >> set AH (Convert $ Get Flags) >> ccClean
 
-    Iclc  -> ccF oF sF zF cF (C False)
-    Icmc  -> ccF oF sF zF cF (Not cF)
-    Istc  -> ccF oF sF zF cF (C True)
+    Iclc  -> ccF oF sF zF pF (C False)
+    Icmc  -> ccF oF sF zF pF (Not cF)
+    Istc  -> ccF oF sF zF pF (C True)
     Icld  -> c $ set DF $ C False
     Istd  -> c $ set DF $ C True
     Icli  -> c $ set IF $ C False
@@ -430,7 +427,7 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
 
         shiftOp :: (forall b . (AsSigned b) => Exp Bool -> Exp b -> (Exp Bool, Exp b)) -> ExpM Jump'
         shiftOp op = letM (and' (C 0x1f) $ getByteOperand op2) >>= \n -> do
-             ifM (eq' (C 0) n) cc $ do
+             ifM (eq' (C 0) n) cc $ do        -- TODO!
                 letM (iterate' (convert n) (uncurry Tuple . uncurry op . unTup) $ Tuple cF op1v) >>= \t -> do
                 let r = snd' t
                 set op1' r
