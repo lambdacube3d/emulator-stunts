@@ -320,8 +320,8 @@ fetchBlock' fetch cs ip ss es ds sp oF sF zF pF cF = case inOpcode of
             Ilds -> cont' es (Get Ds) $ set Ds ad2
 
     _ -> case sizeByte of
-        1 -> withSize getByteOperand byteOperand AL AH AX
-        2 -> withSize getWordOperand wordOperand AX DX DXAX
+        1 -> withSize getByteOperand (set . byteOperand) AL AH AX
+        2 -> withSize getWordOperand (set . wordOperand) AX DX DXAX
   where
     Metadata{..} = fetch $ segAddr cs ip
     Inst{..} = mdInst
@@ -351,17 +351,17 @@ fetchBlock' fetch cs ip ss es ds sp oF sF zF pF cF = case inOpcode of
 
     withSize :: forall a . (AsSigned a, Extend a, Extend (Signed a), AsSigned (X2 a), X2 (Signed a) ~ Signed (X2 a))
         => (Operand -> Exp a)
-        -> (Operand -> Part a)
+        -> (Operand -> Exp a -> ExpM ())
         -> Part a
         -> Part a
         -> Part (X2 a)
         -> ExpM Jump'
-    withSize getTr tr_ alx ahd axd = case inOpcode of
-        Imov  -> c $ set op1' op2v
+    withSize getTr set_ alx ahd axd = case inOpcode of
+        Imov  -> c $ set_ op1 op2v
         Ixchg -> c $ letMC op1v $ \o1 -> do
-            set op1' op2v
-            set op2' o1
-        Inot  -> c $ set op1' $ Not op1v
+            set_ op1 op2v
+            set_ op2 o1
+        Inot  -> c $ set_ op1 $ Not op1v
 
         Isal  -> shiftOp $ \_ x -> (highBit x, ShiftL x)
         Ishl  -> shiftOp $ \_ x -> (highBit x, ShiftL x)
@@ -381,9 +381,9 @@ fetchBlock' fetch cs ip ss es ds sp oF sF zF pF cF = case inOpcode of
         Itest -> twoOp False And
         Iadc  -> twoOp True $ \a b -> Add (Add a b) $ Convert cF
         Isbb  -> twoOp True $ \a b -> Sub (Sub a b) $ Convert cF
-        Ineg  -> twoOp_ (flip Sub) (set op1') op1v $ C 0
-        Idec  -> twoOp_ Add (set op1') op1v $ C $ -1
-        Iinc  -> twoOp_ Add (set op1') op1v $ C 1
+        Ineg  -> twoOp_ (flip Sub) (set_ op1) op1v $ C 0
+        Idec  -> twoOp_ Add (set_ op1) op1v $ C $ -1
+        Iinc  -> twoOp_ Add (set_ op1) op1v $ C 1
 
         Idiv  -> divide id id
         Iidiv -> divide signed Signed
@@ -391,34 +391,32 @@ fetchBlock' fetch cs ip ss es ds sp oF sF zF pF cF = case inOpcode of
         Iimul -> multiply signed
 
         _ | inOpcode `elem` [Icwd,   Icbw]   -> c $ set axd $ Convert $ Signed $ Get alx
-          | inOpcode `elem` [Istosb, Istosw] -> cycle $ normal $ move di'' alx >> adjustIndex DI
-          | inOpcode `elem` [Ilodsb, Ilodsw] -> cycle $ normal $ move alx si'' >> adjustIndex SI
-          | inOpcode `elem` [Imovsb, Imovsw] -> cycle $ normal $ move di'' si'' >> adjustIndex SI >> adjustIndex DI
+          | inOpcode `elem` [Istosb, Istosw] -> cycle $ normal $ set_ di'' (Get alx) >> adjustIndex DI
+          | inOpcode `elem` [Ilodsb, Ilodsw] -> cycle $ normal $ set alx (getTr si'') >> adjustIndex SI
+          | inOpcode `elem` [Imovsb, Imovsw] -> cycle $ normal $ set_ di'' (getTr si'') >> adjustIndex SI >> adjustIndex DI
           | inOpcode `elem` [Iscasb, Iscasw] -> cycle $ \cont ->
-                twoOp__ Sub (const $ return ()) (Get di'') (Get alx) $ \oF sF zF pF cF -> do
+                twoOp__ Sub (const $ return ()) (getTr di'') (Get alx) $ \oF sF zF pF cF -> do
                     adjustIndex DI
                     cont oF sF zF pF cF
           | inOpcode `elem` [Icmpsb, Icmpsw] -> cycle $ \cont ->
-                twoOp__ Sub (const $ return ()) (Get si'') (Get di'') $ \oF sF zF pF cF -> do
+                twoOp__ Sub (const $ return ()) (getTr si'') (getTr di'') $ \oF sF zF pF cF -> do
                     adjustIndex SI
                     adjustIndex DI
                     cont oF sF zF pF cF
 
-        Iin  -> c $ Input (getWordOperand op2) $ set op1' . Convert
+        Iin  -> c $ Input (getWordOperand op2) $ set_ op1 . Convert
         Iout -> c $ output (getWordOperand op1) $ convert op2v
 
       where
 
-        si'', di'' :: Part a
-        si'' = tr_ $ memIndex RSI
-        di'' = tr_ $ memIndex RDI
+        si'', di'' :: Operand
+        si'' = memIndex RSI
+        di'' = memIndex RDI
 
         memIndex r = Mem $ Memory undefined (Reg16 r) RegNone 0 $ Immediate Bits0 0
 
         adjustIndex i = modif i $ Add $ If (Get DF) (C $ -sizeByte) (C sizeByte)
 
-        op1' = tr_ op1
-        op2' = tr_ op2
         op1v = getTr op1
         op2v = getTr op2
 
@@ -439,27 +437,26 @@ fetchBlock' fetch cs ip ss es ds sp oF sF zF pF cF = case inOpcode of
              ifM (eq' (C 0) n) cc $ do        -- TODO!
                 letM (iterate' (convert n) (uncurry Tuple . uncurry op . unTup) $ Tuple cF op1v) >>= \t -> do
                 let r = snd' t
-                set op1' r
+                set_ op1 r
                 if inOpcode `elem` [Isal, Isar, Ishl, Ishr] then
                     ccF (uSet' OF oF) (highBit r) (Eq (C 0) r) (EvenParity $ Convert r) (fst' t)
                   else   -- [Ircl, Ircr, Irol, Iror]
                     ccF (uSet' OF oF) (uSet' SF sF) (uSet' ZF zF) (uSet' PF pF) (fst' t)
 
         twoOp :: Bool -> (forall b . (Integral b, FiniteBits b) => Exp b -> Exp b -> Exp b) -> ExpM Jump'
-        twoOp store op = twoOp_ op (if store then set op1' else const $ return ()) op1v op2v
+        twoOp store op = twoOp_ op (if store then set_ op1 else const $ return ()) op1v op2v
 
         twoOp_ :: AsSigned a
             => (forall a . (Integral a, FiniteBits a) => Exp a -> Exp a -> Exp a)
             -> (Exp a -> ExpM ()) -> Exp a -> Exp a -> ExpM Jump'
-        twoOp_ op store op1 op2 = twoOp__ op store op1 op2 ccF oF sF zF pF cF
+        twoOp_ op store a b = twoOp__ op store a b ccF oF sF zF pF cF
 
         twoOp__ :: AsSigned a
                 => (forall a . (Integral a, FiniteBits a) => Exp a -> Exp a -> Exp a)
                 -> (Exp a -> ExpM ()) -> Exp a -> Exp a
                 -> FlagTr
-        twoOp__ op store op1 op2 cont oF sF zF pF cF = do
-            let a = op1 -- >>= \a -> do
-            let b = op2 --letMC op2 $ \b ->
+        twoOp__ op store op1 b cont oF sF zF pF cF =
+            letM op1 >>= \a ->
             letM (op a b) >>= \r -> do
             store r
             cont (Not $ Eq (Convert $ Signed r) $ op (Convert $ Signed a :: Exp Int) (convert $ signed b))
