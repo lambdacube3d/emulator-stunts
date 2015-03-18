@@ -333,22 +333,7 @@ checkInt changeState cycles cont n = do
 --    sp <- use'' speed
 --    if sp > 0 then do
 --                  else threadDelay 20000
-    when (ns' < cycles) cont
-
-
-{-
-       PrintFreqTable wait -> do
-        (c1, c2) <- use cache
-        let f (k, (x, y)) = showHex' 5 k ++ "   " ++ pad ' ' 20 (maybe "" (\(a,b,_)->pad ' ' 10 (show a) ++ pad ' ' 10 (show $ b - k + 1)) x) ++ pad ' ' 10 (maybe "" show y)
-        let t = unlines $ map f $ sortBy (compare `on` (fmap (\(a,_,_)->a) . fst . snd)) $
-                  IM.toList $ IM.unionWith (\(a,b) (c,d) -> (maybe a Just c, maybe b Just d))
-                    (IM.map (\x -> (Just x, Nothing)) c1) (IM.map (\x -> (Nothing, Just x)) c2)
-        liftIO $ do
---            writeFile "freqTable.txt" t
---            putStrLn t
---            threadDelay 1000000
-            putMVar wait ()
--}
+    when (not debug || ns' < cycles) cont
 
 
 loadCache getInst = do
