@@ -106,16 +106,13 @@ mkStep = do
             m
             return n
       BuiltIn m -> do
-        putStr "?"
         m
         return 1
       DontCache _ -> do
-        putStr "."
         Compiled _ _ _ _ _ n _ ch <- fetchBlock mempty
         ch
         return n
      Nothing -> do
-        putStr "#"
         compile fetchBlock
 
 compile :: (Cache -> IO CacheEntry) -> Machine Int
