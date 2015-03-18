@@ -28,6 +28,7 @@ import Hdis86
 
 import Helper
 import MachineState
+import Edsl
 import DeBruijn
 
 ---------------------------------------------- memory allocation
@@ -141,7 +142,7 @@ data Info
 
 info :: Info -> a -> a -> a -> a
 info System s1 s2 s3 = s1
-info (Program (SegAddr' (C' _) (C' _))) s1 s2 s3 = s2
+info (Program (SegAddr (C _) (C _))) s1 s2 s3 = s2
 info _ s1 s2 s3 = s3
 
 uRead :: Info -> Int -> IO Word8

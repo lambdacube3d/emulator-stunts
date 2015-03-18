@@ -114,28 +114,34 @@ instance Monad ExpM where
         Output a b e -> Output a b $ e >>= f
         Jump' _ _ -> error "Jump' >>="
 
-data Exp a where
-    Var :: Int -> Exp a
+type Exp = Exp_ Co Fun
 
-    C :: a -> Exp a
-    Let :: Exp a -> (Exp a -> Exp b) -> Exp b
-    Tuple :: Exp a -> Exp b -> Exp (a, b)
-    Fst :: Exp (a, b) -> Exp a
-    Snd :: Exp (a, b) -> Exp b
-    Iterate :: Exp Int -> (Exp a -> Exp a) -> Exp a -> Exp a
-    If :: Exp Bool -> Exp a -> Exp a -> Exp a
+newtype Co a = Co Int
 
-    Get :: Part a -> Exp a
+newtype Fun a b = Fun {getFun :: Exp a -> Exp b}
 
-    Eq :: Eq a => Exp a -> Exp a -> Exp Bool
-    Add, Mul :: (Num a, Eq a) => Exp a -> Exp a -> Exp a
-    QuotRem :: Integral a => Exp a -> Exp a -> Exp (a, a)
-    And, Or, Xor :: Bits a => Exp a -> Exp a -> Exp a
-    Not, ShiftL, ShiftR, RotateL, RotateR :: Bits a => Exp a -> Exp a
-    EvenParity :: Exp Word8 -> Exp Bool
+data Exp_ (v :: * -> *) (c :: * -> * -> *) a where
+    Var :: v a -> Exp_ v c a
 
-    Convert :: (Integral a, Num b) => Exp a -> Exp b
-    SegAddr :: Exp Word16 -> Exp Word16 -> Exp Int
+    C :: a -> Exp_ v c a
+    Let :: Exp_ v c a -> c a b -> Exp_ v c b
+    Tuple :: Exp_ v c a -> Exp_ v c b -> Exp_ v c (a, b)
+    Fst :: Exp_ v c (a, b) -> Exp_ v c a
+    Snd :: Exp_ v c (a, b) -> Exp_ v c b
+    Iterate :: Exp_ v c Int -> c a a -> Exp_ v c a -> Exp_ v c a
+    If :: Exp_ v c Bool -> Exp_ v c a -> Exp_ v c a -> Exp_ v c a
+
+    Get :: Part_ (Exp_ v c) a -> Exp_ v c a
+
+    Eq :: Eq a => Exp_ v c a -> Exp_ v c a -> Exp_ v c Bool
+    Add, Mul :: (Num a, Eq a) => Exp_ v c a -> Exp_ v c a -> Exp_ v c a
+    QuotRem :: Integral a => Exp_ v c a -> Exp_ v c a -> Exp_ v c (a, a)
+    And, Or, Xor :: Bits a => Exp_ v c a -> Exp_ v c a -> Exp_ v c a
+    Not, ShiftL, ShiftR, RotateL, RotateR :: Bits a => Exp_ v c a -> Exp_ v c a
+    EvenParity :: Exp_ v c Word8 -> Exp_ v c Bool
+
+    Convert :: (Integral a, Num b) => Exp_ v c a -> Exp_ v c b
+    SegAddr :: Exp_ v c Word16 -> Exp_ v c Word16 -> Exp_ v c Int
 
 unTup x = (fst' x, snd' x)
 
@@ -199,7 +205,7 @@ convert e = Convert e
 
 iterate' (C 0) f e = e
 iterate' (C 1) f e = f e
-iterate' n f e = Iterate n f e
+iterate' n f e = Iterate n (Fun f) e
 
 extend' :: Extend a => Exp a -> Exp (X2 a)
 extend' = convert
