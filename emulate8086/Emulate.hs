@@ -261,16 +261,16 @@ evalEExpM ca = evalExpM
   where
   evalExpM :: EExpM e a -> Machine' e a
   evalExpM = \case
---    LetM' (C e) f -> pushVal (evalExpM f) e
-    LetM' e f -> evalExp e >>= pushVal (evalExpM f)
+--    LetM(C e) f -> pushVal (evalExpM f) e
+    LetM e (DBM f) -> evalExp e >>= pushVal (evalExpM f)
 --    LetMC e f g -> evalExp e >>= pushVal (evalExpM f) >> evalExpM g
-    Set' p (C e') c -> case p of
+    Set p (C e') c -> case p of
         Heap16 (C e_) -> lift (setWordAt (Program $ C e_) e_ e') >> evalExpM c
         Heap16 e -> evalExp e >>= \e_ -> lift (setWordAt (Program e) e_ e') >> evalExpM c
 --        Heap8 (C e_) -> lift (setByteAt (Program $ C e_) e_ e') >> evalExpM c
         Heap8 e -> evalExp e >>= \e_ -> lift (setByteAt (Program e) e_ e') >> evalExpM c
         p -> let x = snd $ evalPart_ p in lift (x e') >> evalExpM c
-    Set' p e' c -> case p of 
+    Set p e' c -> case p of 
         Heap16 (C e_) -> evalExp e' >>= \e_' -> lift (setWordAt (Program $ C e_) e_ e_') >> evalExpM c
         Heap16 e -> evalExp e >>= \e_ -> evalExp e' >>= \e_' -> lift (setWordAt (Program e) e_ e_') >> evalExpM c
 --        Heap8 (C e_) -> evalExp e' >>= \e_' -> lift (setByteAt (Program $ C e_) e_ e_') >> evalExpM c
@@ -283,19 +283,19 @@ evalEExpM ca = evalExpM
                             ip .= i
                             m
 -}
-    Jump'' (C c) (C i) -> return $ JumpAddr c i
-    Jump'' c i -> liftM2 JumpAddr (evalExp c) (evalExp i)
-    Stop' a -> return a
+    Jump' (C c) (C i) -> return $ JumpAddr c i
+    Jump' c i -> liftM2 JumpAddr (evalExp c) (evalExp i)
+    Stop a -> return a
 
-    IfM' (C b) x y -> if b then evalExpM x else evalExpM y
-    IfM' b x y -> evalExp b >>= iff (evalExpM x) (evalExpM y)
+    IfM (C b) x y -> if b then evalExpM x else evalExpM y
+    IfM b x y -> evalExp b >>= iff (evalExpM x) (evalExpM y)
 
-    Replicate' n (C True) e f -> evalExp n >>= \n -> replicateM_ (fromIntegral n) (evalExpM e) >> pushVal (evalExpM f) (0 `asTypeOf` n)
-    Replicate' n b e f -> evalExp n >>= replicateM' (evalExp b) (evalExpM e) >>= pushVal (evalExpM f)
+    Replicate n (C True) e (DBM f) -> evalExp n >>= \n -> replicateM_ (fromIntegral n) (evalExpM e) >> pushVal (evalExpM f) (0 `asTypeOf` n)
+    Replicate n b e (DBM f) -> evalExp n >>= replicateM' (evalExp b) (evalExpM e) >>= pushVal (evalExpM f)
 
-    Input' a f -> evalExp a >>= lift . input >>= pushVal (evalExpM f)
+    Input a (DBM f) -> evalExp a >>= lift . input >>= pushVal (evalExpM f)
 
-    Output' a b c -> join (lift <$> liftM2 output' (evalExp a) (evalExp b)) >> evalExpM c
+    Output a b c -> join (lift <$> liftM2 output' (evalExp a) (evalExp b)) >> evalExpM c
 
 
 replicateM' _ _ n@0 = return n

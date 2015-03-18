@@ -24,25 +24,28 @@ data Var :: List * -> * -> * where
 type EExp e = Exp_ (Var e) (DB e)
 
 newtype DB e a b = DB {getDB :: EExp (Con a e) b}
+newtype DBM e a b = DBM {getDBM :: EExpM (Con a e) b}
 
 instance Eq a => Eq (EExp e a) where
     C a == C b = a == b 
     Get a == Get b = a == b
     _ == _ = False      -- TODO
 
+type EExpM e = ExpM_ (Var e) (DBM e) (DB e)
+{-
 data EExpM :: List * -> * -> * where
-    Stop' :: a -> EExpM e a
-    Set' :: Part_ (EExp e) a -> EExp e a -> EExpM e x -> EExpM e x
+    Stop :: a -> EExpM e a
+    Set :: Part_ (EExp e) a -> EExp e a -> EExpM e x -> EExpM e x
 
-    Jump'' :: EExp e Word16 -> EExp e Word16 -> EExpM e Jump'
-    LetM' :: EExp e a -> EExpM (Con a e) b -> EExpM e b
+    Jump' :: EExp e Word16 -> EExp e Word16 -> EExpM e Jump'
+    LetM :: EExp e a -> EExpM (Con a e) b -> EExpM e b
     LetMC :: EExp e a -> EExpM (Con a e) () -> EExpM e b -> EExpM e b
-    IfM' :: EExp e Bool -> EExpM e a -> EExpM e a -> EExpM e a
-    Replicate' :: Integral a => EExp e a -> EExp e Bool -> EExpM e () -> EExpM (Con a e) x -> EExpM e x
+    IfM :: EExp e Bool -> EExpM e a -> EExpM e a -> EExpM e a
+    Replicate :: Integral a => EExp e a -> EExp e Bool -> EExpM e () -> EExpM (Con a e) x -> EExpM e x
 
-    Input' :: EExp e Word16 -> EExpM (Con Word16 e) x -> EExpM e x
-    Output' :: EExp e Word16 -> EExp e Word16 -> EExpM e x -> EExpM e x
-
+    Input :: EExp e Word16 -> EExpM (Con Word16 e) x -> EExpM e x
+    Output :: EExp e Word16 -> EExp e Word16 -> EExpM e x -> EExpM e x
+-}
 data Layout :: List * -> List * -> * where
   EmptyLayout :: Layout env Nil
   PushLayout  :: {-Typeable t 
@@ -109,20 +112,20 @@ convExpM = f EmptyLayout where
 
       k :: forall a . ExpM a -> EExpM e a
       k = \case
-        LetM e g -> LetM' (q e) $ f (inc lyt `PushLayout` VarZ) $ g $ Var $ Co $ size lyt
+        LetM e (FunM g) -> LetM (q e) $ DBM $ f (inc lyt `PushLayout` VarZ) $ g $ Var $ Co $ size lyt
 --        LetMC e g x -> LetMC (q e) (f (inc lyt `PushLayout` VarZ) $ g $ Var (size lyt)) (k x)
-        Input e g -> Input' (q e) $ f (inc lyt `PushLayout` VarZ) $ g $ Var $ Co $ size lyt
+        Input e (FunM g) -> Input (q e) $ DBM $ f (inc lyt `PushLayout` VarZ) $ g $ Var $ Co $ size lyt
 
 --        Seq a b -> Seq' (k a) (k b)
-        IfM a b c -> IfM' (q a) (k b) (k c)
-        Replicate n b a g -> Replicate' (q n) (q b) (k a) $ f (inc lyt `PushLayout` VarZ) $ g $ Var $ Co $ size lyt
+        IfM a b c -> IfM (q a) (k b) (k c)
+        Replicate n b a (FunM g) -> Replicate (q n) (q b) (k a) $ DBM $ f (inc lyt `PushLayout` VarZ) $ g $ Var $ Co $ size lyt
 --        Nop -> Nop'
-        Jump' cs ip -> Jump'' (q cs) (q ip) --Seq' (Set' (convPart lyt Cs) (q cs)) (Set' (convPart lyt IP) (q ip))
+        Jump' cs ip -> Jump' (q cs) (q ip) --Seq' (Set (convPart lyt Cs) (q cs)) (Set (convPart lyt IP) (q ip))
         Set Cs _ _ -> error "convExpM: set cs"
 --        Set IP _ -> error "convExpM: set ip"
-        Set p e cont -> Set' (convPart lyt p) (q e) $ k cont
-        Output a b cont -> Output' (q a) (q b) $ k cont
-        Stop a -> Stop' a
+        Set p e cont -> Set (convPart lyt p) (q e) $ k cont
+        Output a b cont -> Output (q a) (q b) $ k cont
+        Stop a -> Stop a
 
 convPart :: Layout e e -> Part_ Exp a -> Part_ (EExp e) a
 convPart lyt = mapPart (convExp_ lyt)
@@ -222,16 +225,16 @@ spTrans :: EExpM e a -> EExpM e a
 spTrans = spTr (Get SP)
 
 spTr :: EExp e Word16 -> EExpM e a -> EExpM e a
-spTr sp (Set' SP (add_ -> (i, Get SP)) c) = spTr (add' (C i) sp) c
-spTr sp (Set' SP v c) = Set' SP (spTrE sp v) (spTr (Get SP) c)
-spTr sp (Set' p v c) = Set' p (spTrE sp v) (spTr sp c)
-spTr (Get SP) x@Jump''{} = x
-spTr sp x@Jump''{} = Set' SP sp x
-spTr sp (IfM' a b c) = IfM' (spTrE sp a) (spTr sp b) (spTr sp c)
-spTr sp (Output' a b c) = Output' (spTrE sp a) (spTrE sp b) (spTr sp c) 
-spTr sp (Input' a c) = Input' (spTrE sp a) (spTr (lift' sp) c)
-spTr sp (LetM' a c) = LetM' (spTrE sp a) (spTr (lift' sp) c)
-spTr sp (Replicate' n b x c) = Replicate' n b x (spTr (lift' sp) c)
-spTr _ Stop'{} = error "spTr Stop"
+spTr sp (Set SP (add_ -> (i, Get SP)) c) = spTr (add' (C i) sp) c
+spTr sp (Set SP v c) = Set SP (spTrE sp v) (spTr (Get SP) c)
+spTr sp (Set p v c) = Set p (spTrE sp v) (spTr sp c)
+spTr (Get SP) x@Jump'{} = x
+spTr sp x@Jump'{} = Set SP sp x
+spTr sp (IfM a b c) = IfM (spTrE sp a) (spTr sp b) (spTr sp c)
+spTr sp (Output a b c) = Output (spTrE sp a) (spTrE sp b) (spTr sp c) 
+spTr sp (Input a (DBM c)) = Input (spTrE sp a) (DBM $ spTr (lift' sp) c)
+spTr sp (LetM a (DBM c)) = LetM (spTrE sp a) (DBM $ spTr (lift' sp) c)
+spTr sp (Replicate n b x (DBM c)) = Replicate n b x (DBM $ spTr (lift' sp) c)
+spTr _ Stop{} = error "spTr Stop"
 --spTr _ LetMC{} = error "spTr LetMC"
 

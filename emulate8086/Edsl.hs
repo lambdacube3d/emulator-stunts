@@ -68,19 +68,23 @@ mapPart f = \case
 
 data Jump' = JumpAddr Word16 Word16
 
-data ExpM e where
-    Stop :: e -> ExpM e
-    Set :: Part a -> Exp a -> ExpM e -> ExpM e
+type ExpM = ExpM_ Co FunM Fun
 
-    Jump' :: Exp Word16 -> Exp Word16 -> ExpM Jump'
+newtype FunM a b = FunM {getFunM :: Exp a -> ExpM b}
+
+data ExpM_ (v :: * -> *) (cm :: * -> * -> *) (c :: * -> * -> *)  e where
+    Stop :: e -> ExpM_ v cm c e
+    Set :: Part_ (Exp_ v c) a -> Exp_ v c a -> ExpM_ v cm c e -> ExpM_ v cm c e
+
+    Jump' :: Exp_ v c Word16 -> Exp_ v c Word16 -> ExpM_ v cm c Jump'
     -- constrained let type (with more efficient interpretation) 
-    LetMC :: Exp a -> (Exp a -> ExpM ()) -> ExpM e -> ExpM e
-    LetM :: Exp a -> (Exp a -> ExpM e) -> ExpM e
-    IfM :: Exp Bool -> ExpM e -> ExpM e -> ExpM e
-    Replicate :: Integral a => Exp a -> Exp Bool -> ExpM () -> (Exp a -> ExpM e) -> ExpM e
+    LetMC :: Exp_ v c a -> cm a () -> ExpM_ v cm c e -> ExpM_ v cm c e
+    LetM :: Exp_ v c a -> cm a e -> ExpM_ v cm c e
+    IfM :: Exp_ v c Bool -> ExpM_ v cm c e -> ExpM_ v cm c e -> ExpM_ v cm c e
+    Replicate :: Integral a => Exp_ v c a -> Exp_ v c Bool -> ExpM_ v cm c () -> cm a e -> ExpM_ v cm c e
 
-    Input :: Exp Word16 -> (Exp Word16 -> ExpM e) -> ExpM e
-    Output :: Exp Word16 -> Exp Word16 -> ExpM e -> ExpM e
+    Input :: Exp_ v c Word16 -> cm Word16 e -> ExpM_ v cm c e
+    Output :: Exp_ v c Word16 -> Exp_ v c Word16 -> ExpM_ v cm c e -> ExpM_ v cm c e
 
 set :: Part a -> Exp a -> ExpM ()
 set x y = Set x y (return ())
@@ -90,11 +94,11 @@ ifM x a b = IfM x a b
 
 letM :: Exp a -> ExpM (Exp a)
 letM (C c) = return (C c)
-letM x = LetM x return
+letM x = LetM x $ FunM return
 
 letMC, letMC' :: Exp a -> (Exp a -> ExpM ()) -> ExpM ()
 letMC (C c) f = f (C c)
-letMC x f = LetMC x f (return ())
+letMC x f = LetMC x (FunM f) (return ())
 
 letMC' x f = letM x >>= f
 
@@ -107,10 +111,10 @@ instance Monad ExpM where
         Stop x -> f x
         Set a b e -> Set a b $ e >>= f
         LetMC e x g -> LetMC e x $ g >>= f
-        LetM e g -> LetM e $ g >=> f
+        LetM e (FunM g) -> LetM e $ FunM $ g >=> f
         IfM b x y -> IfM b (x >>= f) (y >>= f)
-        Replicate n b m g -> Replicate n b m $ g >=> f
-        Input e g -> Input e $ g >=> f
+        Replicate n b m (FunM g) -> Replicate n b m $ FunM $ g >=> f
+        Input e (FunM g) -> Input e $ FunM $ g >=> f
         Output a b e -> Output a b $ e >>= f
         Jump' _ _ -> error "Jump' >>="
 
@@ -412,7 +416,7 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
                     adjustIndex DI
                     cont oF sF zF pF cF
 
-        Iin  -> c $ Input (getWordOperand op2) $ setTr op1 . Convert
+        Iin  -> c $ Input (getWordOperand op2) $ FunM $ setTr op1 . Convert
         Iout -> c $ output (getWordOperand op1) $ convert op2v
 
       where
@@ -484,7 +488,9 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
                 
         [] -> body ccF oF sF zF pF cF
       where
-        cyc cond = setFlags >> Replicate (Get CX) cond (body setF (Get OF) (Get SF) (Get ZF) (Get PF) (Get CF)) (\x -> set CX x >> ccClean)
+        cyc cond = do
+            setFlags
+            Replicate (Get CX) cond (body setF (Get OF) (Get SF) (Get ZF) (Get PF) (Get CF)) $ FunM $ \x -> set CX x >> ccClean
 
     normal m setF oF sF zF pF cF = m >> setF oF sF zF pF cF
 
