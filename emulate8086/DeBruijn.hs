@@ -50,40 +50,10 @@ prjIx 0 (PushLayout _ ix) = unsafeCoerce ix
 prjIx n (PushLayout l _)  = prjIx (n - 1) l
 
 convExp_ :: forall a e . Layout e e -> Exp a -> EExp e a
-convExp_ lyt = g where
-      h :: forall a e . Layout e e -> Exp a -> EExp e a
-      h = convExp_
-
-      g :: forall a . Exp a -> EExp e a
-      g = \case
-        Var (Co sz) -> Var (prjIx (size lyt - sz - 1) lyt)
-
-        C a -> C a
-        Let e (Fun f) -> Let (g e) $ DB $ h (inc lyt `PushLayout` VarZ) $ f $ Var $ Co $ size lyt
-        Iterate n (Fun f) e -> Iterate (g n) (DB $ h (inc lyt `PushLayout` VarZ) $ f $ Var $ Co $ size lyt) (g e)
-
-        Tuple a b -> Tuple (g a) (g b)
-        Fst a -> Fst $ g a
-        Snd a -> Snd $ g a
-        If a b c -> If (g a) (g b) (g c)
-
-        Get p -> Get (convPart lyt p)
-
-        Eq a b -> Eq (g a) (g b)
-        Add a b -> Add (g a) (g b)
-        Mul a b -> Mul (g a) (g b)
-        QuotRem a b -> QuotRem (g a) (g b)
-        And a b -> And (g a) (g b)
-        Or a b -> Or (g a) (g b)
-        Xor a b -> Xor (g a) (g b)
-        SegAddr a b -> SegAddr (g a) (g b)
-        Not a -> Not (g a)
-        ShiftL a -> ShiftL (g a)
-        ShiftR a -> ShiftR (g a)
-        RotateL a -> RotateL (g a)
-        RotateR a -> RotateR (g a)
-        EvenParity a -> EvenParity (g a)
-        Convert a -> Convert (g a)
+convExp_ lyt = foldExp
+    (\(Fun f) -> DB $ convExp_ (inc lyt `PushLayout` VarZ) $ f $ Var $ Co $ size lyt)
+    (\(Co sz) -> Var (prjIx (size lyt - sz - 1) lyt))
+    (Get . convPart lyt)
 
 convExpM :: ExpM a -> EExpM Nil a
 convExpM = f EmptyLayout where
@@ -125,49 +95,27 @@ incV f VarZ = VarZ
 incV f (VarS x) = VarS $ f x
 
 lift'' :: forall e e' . (forall x . Var e x -> Var e' x) -> forall a . EExp e a -> EExp e' a
-lift'' gv = f where
-  f :: forall x . EExp e x -> EExp e' x
+lift'' gv = foldExp (\(DB x) -> DB $ lift'' (incV gv) x) (Var . gv) (Get . mapPart (lift'' gv))
+
+-- TODO: abstract add, mul
+{-# INLINE foldExp #-}
+foldExp :: forall v v' c c' a
+     . (forall x y . c x y -> c' x y)
+    -> (forall x . v x -> Exp_ v' c' x)
+    -> (forall x . Part_ (Exp_ v c) x -> Exp_ v' c' x)
+    -> Exp_ v c a -> Exp_ v' c' a
+foldExp tr var get = f where
+  f :: Exp_ v c x -> Exp_ v' c' x
   f = \case
-    Get p -> Get $ mapPart f p
+    Var c -> var c
+    Get x -> get x
     C c -> C c
-    Var c -> Var $ gv c
     Fst p -> Fst $ f p
     Snd p -> Snd $ f p
     Tuple a b -> Tuple (f a) (f b)
     If a b c -> If (f a) (f b) (f c)
-    Let e (DB x) -> Let (f e) (DB $ lift'' (incV gv) x)
-    Iterate n (DB g) c -> Iterate (f n) (DB $ lift'' (incV gv) g) (f c)
-    Eq a b -> Eq (f a) (f b)
-    Add a b -> Add (f a) (f b)
-    Mul a b -> Mul (f a) (f b)
-    And a b -> And (f a) (f b)
-    Or a b -> Or (f a) (f b)
-    Xor a b -> Xor (f a) (f b)
-    SegAddr a b -> SegAddr (f a) (f b)
-    QuotRem a b -> QuotRem (f a) (f b)
-    Not a -> Not (f a)
-    ShiftL a -> ShiftL (f a)
-    ShiftR a -> ShiftR (f a)
-    RotateL a -> RotateL (f a)
-    RotateR a -> RotateR (f a)
-    EvenParity a -> EvenParity (f a)
-    Convert a -> Convert (f a)
-
-spTrE :: forall e a . EExp e Word16 -> EExp e a -> EExp e a
-spTrE sp = f where
-  f :: forall x . EExp e x -> EExp e x
-  f = \case
-    Get SP -> sp
-    Get x -> Get x
-
-    C c -> C c
-    Var c -> Var c
-    Fst p -> Fst $ f p
-    Snd p -> Snd $ f p
-    Tuple a b -> Tuple (f a) (f b)
-    If a b c -> If (f a) (f b) (f c)
-    Let e (DB x) -> Let (f e) (DB $ spTrE (lift' sp) x)
-    Iterate n (DB g) c -> Iterate (f n) (DB $ spTrE (lift' sp) g) (f c)
+    Let e x -> Let (f e) (tr x)
+    Iterate n g c -> Iterate (f n) (tr g) (f c)
     Eq a b -> Eq (f a) (f b)
     Add a b -> add (f a) (f b)
     Mul a b -> mul (f a) (f b)
@@ -183,6 +131,13 @@ spTrE sp = f where
     RotateR a -> RotateR (f a)
     EvenParity a -> EvenParity (f a)
     Convert a -> Convert (f a)
+
+spTrE :: forall e a . EExp e Word16 -> EExp e a -> EExp e a
+spTrE sp = foldExp (\(DB c) -> DB $ spTrE (lift' sp) c) Var get
+  where
+    get :: Part_ (EExp e) x -> EExp e x
+    get SP = sp
+    get x = Get x
 
 ------------------------------------
 
