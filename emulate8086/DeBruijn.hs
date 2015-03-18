@@ -8,7 +8,6 @@ module DeBruijn
     )-} where
 
 import Data.Word
-import Data.Bits hiding (bit)
 import Unsafe.Coerce
 
 import Edsl
@@ -32,24 +31,10 @@ instance Eq a => Eq (EExp e a) where
     _ == _ = False      -- TODO
 
 type EExpM e = ExpM_ (Var e) (DBM e) (DB e)
-{-
-data EExpM :: List * -> * -> * where
-    Stop :: a -> EExpM e a
-    Set :: Part_ (EExp e) a -> EExp e a -> EExpM e x -> EExpM e x
 
-    Jump' :: EExp e Word16 -> EExp e Word16 -> EExpM e Jump'
-    LetM :: EExp e a -> EExpM (Con a e) b -> EExpM e b
-    LetMC :: EExp e a -> EExpM (Con a e) () -> EExpM e b -> EExpM e b
-    IfM :: EExp e Bool -> EExpM e a -> EExpM e a -> EExpM e a
-    Replicate :: Integral a => EExp e a -> EExp e Bool -> EExpM e () -> EExpM (Con a e) x -> EExpM e x
-
-    Input :: EExp e Word16 -> EExpM (Con Word16 e) x -> EExpM e x
-    Output :: EExp e Word16 -> EExp e Word16 -> EExpM e x -> EExpM e x
--}
 data Layout :: List * -> List * -> * where
   EmptyLayout :: Layout env Nil
-  PushLayout  :: {-Typeable t 
-              => -}Layout env env' -> Var env t -> Layout env (Con t env')
+  PushLayout  :: {-Typeable t =>-} Layout env env' -> Var env t -> Layout env (Con t env')
 
 size :: Layout env env' -> Int
 size EmptyLayout        = 0
@@ -184,8 +169,8 @@ spTrE sp = f where
     Let e (DB x) -> Let (f e) (DB $ spTrE (lift' sp) x)
     Iterate n (DB g) c -> Iterate (f n) (DB $ spTrE (lift' sp) g) (f c)
     Eq a b -> Eq (f a) (f b)
-    Add a b -> add' (f a) (f b)
-    Mul a b -> mul' (f a) (f b)
+    Add a b -> add (f a) (f b)
+    Mul a b -> mul (f a) (f b)
     And a b -> And (f a) (f b)
     Or a b -> Or (f a) (f b)
     Xor a b -> Xor (f a) (f b)
@@ -207,25 +192,11 @@ add_ v = (0, v)
 pattern Neg' a = Mul (C (-1)) a
 pattern Sub' a b = Add a (Neg' b)
 
-add' (C c) (C c') = C $ c + c'
-add' (C c) (Add (C c') v) = add' (C $ c + c') v
-add' (C 0) x = x
-add' a (C c) = add' (C c) a
-add' (Neg' a) (Neg' b) = Neg' (add' a b)
-add' a b = Add a b
-
-mul' (C c) (C c') = C $ c * c'
-mul' (C c) (Mul (C c') x) = mul' (C $ c * c') x   -- signed modulo multiplication is also associative
-mul' (C 0) x = C 0
-mul' (C 1) x = x
-mul' x (C c) = mul' (C c) x
-mul' a b = Mul a b
-
 spTrans :: EExpM e a -> EExpM e a
 spTrans = spTr (Get SP)
 
 spTr :: EExp e Word16 -> EExpM e a -> EExpM e a
-spTr sp (Set SP (add_ -> (i, Get SP)) c) = spTr (add' (C i) sp) c
+spTr sp (Set SP (add_ -> (i, Get SP)) c) = spTr (add (C i) sp) c
 spTr sp (Set SP v c) = Set SP (spTrE sp v) (spTr (Get SP) c)
 spTr sp (Set p v c) = Set p (spTrE sp v) (spTr sp c)
 spTr (Get SP) x@Jump'{} = x
