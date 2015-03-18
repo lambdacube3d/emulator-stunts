@@ -24,11 +24,11 @@ data Part_ e a where
 
 instance Eq (Part_ e a) where
     AX == AX = True
-    _ == _ = False
+    _ == _ = False  -- TODO
 
 mapPart :: (forall a . e a -> f a) -> Part_ e a -> Part_ f a
 mapPart f = \case
-    Heap8 a -> Heap8 (f a)
+    Heap8 a  -> Heap8 (f a)
     Heap16 a -> Heap16 (f a)
     AL -> AL
     BL -> BL
@@ -198,11 +198,15 @@ instance Monad ExpM where
         Output a b e -> Output a b $ e >>= f
         Jump' _ _ -> error "Jump' >>="
 
-------------------------------------
+------------------------------------ HOAS
 
 newtype Co a = Co Int
 
 newtype Fun a b = Fun {getFun :: Exp a -> Exp b}
+
+type Exp = Exp_ Co Fun
+
+---------------------- DeBruijn
 
 data List a = Con a (List a) | Nil
 
@@ -210,8 +214,9 @@ data Var :: List * -> * -> * where
     VarZ :: Var (Con a e) a
     VarS :: Var e a -> Var (Con b e) a
 
+newtype DB e a b = DB {getDB :: EExp (Con a e) b}
+
 type EExp e = Exp_ (Var e) (DB e)
-type Exp = Exp_ Co Fun
 
 --------------------------------------------------------------------------------
 
@@ -249,11 +254,15 @@ letMC' x f = letM x >>= f
 
 output a b = Output a b (return ())
 
+---------------------- HOAS
+
 newtype FunM a b = FunM {getFunM :: Exp a -> ExpM b}
 
-newtype DB e a b = DB {getDB :: EExp (Con a e) b}
+type ExpM = ExpM_ Co FunM Fun
+
+-------------------------- DeBruijn
+
 newtype DBM e a b = DBM {getDBM :: EExpM (Con a e) b}
 
-type ExpM = ExpM_ Co FunM Fun
 type EExpM e = ExpM_ (Var e) (DBM e) (DB e)
 

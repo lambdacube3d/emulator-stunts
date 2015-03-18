@@ -64,14 +64,6 @@ setCounter = do
         threadDelay $ round $ 1000000 / v
         send $ AskTimerInterrupt c
 
--- TODO
-getRetrace = do
-    x <- head <$> use'' retrace
-    retrace ..%= tail
-    return x
-
-----------------------
-
 --------------------------------------------------------------------------------
 
 input :: Word16 -> Machine (Word16)
@@ -90,7 +82,9 @@ input v = do
             when ((x .&. 0xfc) /= 0x30) $ trace_ $ "speaker -> " ++ showHex' 2 x
             return $ "???" @: fromIntegral x
         0x03da -> do
-            r <- getRetrace
+            -- TODO
+            r <- head <$> use'' retrace
+            retrace ..%= tail
             trace_ $ "VGA hardware " ++ showHex' 4 r
             return $ "Vretrace | DD" @: r
         _ -> haltWith $ "input #" ++ showHex' 4 v
