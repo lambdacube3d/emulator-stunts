@@ -97,41 +97,6 @@ incV f (VarS x) = VarS $ f x
 lift'' :: forall e e' . (forall x . Var e x -> Var e' x) -> forall a . EExp e a -> EExp e' a
 lift'' gv = foldExp (\(DB x) -> DB $ lift'' (incV gv) x) (Var . gv) (Get . mapPart (lift'' gv))
 
--- TODO: abstract add, mul
-{-# INLINE foldExp #-}
-foldExp :: forall v v' c c' a
-     . (forall x y . c x y -> c' x y)
-    -> (forall x . v x -> Exp_ v' c' x)
-    -> (forall x . Part_ (Exp_ v c) x -> Exp_ v' c' x)
-    -> Exp_ v c a -> Exp_ v' c' a
-foldExp tr var get = f where
-  f :: Exp_ v c x -> Exp_ v' c' x
-  f = \case
-    Var c -> var c
-    Get x -> get x
-    C c -> C c
-    Fst p -> Fst $ f p
-    Snd p -> Snd $ f p
-    Tuple a b -> Tuple (f a) (f b)
-    If a b c -> If (f a) (f b) (f c)
-    Let e x -> Let (f e) (tr x)
-    Iterate n g c -> Iterate (f n) (tr g) (f c)
-    Eq a b -> Eq (f a) (f b)
-    Add a b -> add (f a) (f b)
-    Mul a b -> mul (f a) (f b)
-    And a b -> And (f a) (f b)
-    Or a b -> Or (f a) (f b)
-    Xor a b -> Xor (f a) (f b)
-    SegAddr a b -> SegAddr (f a) (f b)
-    QuotRem a b -> QuotRem (f a) (f b)
-    Not a -> Not (f a)
-    ShiftL a -> ShiftL (f a)
-    ShiftR a -> ShiftR (f a)
-    RotateL a -> RotateL (f a)
-    RotateR a -> RotateR (f a)
-    EvenParity a -> EvenParity (f a)
-    Convert a -> Convert (f a)
-
 spTrE :: forall e a . EExp e Word16 -> EExp e a -> EExp e a
 spTrE sp = foldExp (\(DB c) -> DB $ spTrE (lift' sp) c) Var get
   where
