@@ -384,7 +384,7 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
         Imul  -> multiply id
         Iimul -> multiply signed
 
-        _ | inOpcode `elem` [Icwd, Icbw] -> cycle $ set axd $ Convert $ Signed $ Get alx
+        _ | inOpcode `elem` [Icwd,   Icbw]   -> c $ set axd $ Convert $ Signed $ Get alx
           | inOpcode `elem` [Istosb, Istosw] -> cycle $ move di'' alx >> adjustIndex DI
           | inOpcode `elem` [Ilodsb, Ilodsw] -> cycle $ move alx si'' >> adjustIndex SI
           | inOpcode `elem` [Imovsb, Imovsw] -> cycle $ move di'' si'' >> adjustIndex SI >> adjustIndex DI
@@ -460,11 +460,12 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
 
     cycle body = case filter rep inPrefixes of
         [Rep, RepE]
-            | inOpcode `elem` [Icmpsb, Icmpsw, Iscasb, Iscasw] -> cyc $ Get ZF      -- repe
             | inOpcode `elem` [Imovsb, Imovsw, Ilodsb, Ilodsw, Istosb, Istosw] -> cyc $ C True      -- rep
+            | inOpcode `elem` [Icmpsb, Icmpsw, Iscasb, Iscasw] -> cyc $ Get ZF      -- repe
         [RepNE]
-            | inOpcode `elem` [Icmpsb, Icmpsw, Iscasb, Iscasw, Imovsb, Imovsw, Ilodsb, Ilodsw, Istosb, Istosw]
-                -> cyc $ Not $ Get ZF
+            | inOpcode `elem` [Imovsb, Imovsw, Ilodsb, Ilodsw, Istosb, Istosw] -> cyc $ C True    -- ???
+            | inOpcode `elem` [Icmpsb, Icmpsw, Iscasb, Iscasw] -> cyc $ Not $ Get ZF
+                
         [] -> c body
       where
         cyc cond = setFlags >> Replicate (Get CX) cond body (\x -> set CX x >> ccClean)
