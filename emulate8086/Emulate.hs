@@ -60,7 +60,7 @@ evalBlocks cs' ip' e = case IM.lookup (fromIntegral ip') e of
 fetchBlock_' ca f cs ss es ds ip = do
     let (n, r, e) = fetchBlock_ (f) cs ss es ds ip
     _ <- evaluate n
-    let !cc = convExpM $ snd $ head $ IM.toList e
+    let !cc = spTrans $ convExpM $ snd $ head $ IM.toList e
         !dd = evalExpM mempty cc
     return $ Compiled (not $ highAddr $ segAddr cs ip) cs ss es ds n r $ do
         _ <- dd
@@ -243,8 +243,6 @@ evalExp = \case
 
     EvenParity' e -> even . popCount <$> evalExp e
 
-    Signed' e -> asSigned <$> evalExp e    
-    Extend' e -> extend <$> evalExp e    
 --    SegAddr' (C' i) (C' f) -> return $ segAddr i f
     SegAddr' (C' i) f -> (fromIntegral i `shiftL` 4 +) . fromIntegral <$> evalExp f
     SegAddr' e f -> liftM2 segAddr (evalExp e) (evalExp f)
