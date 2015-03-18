@@ -18,8 +18,6 @@ import Control.DeepSeq
 import System.Directory
 --import Debug.Trace
 
-import Hdis86
-
 import Helper
 import Edsl
 import MachineState
@@ -30,7 +28,7 @@ import CPU
 --------------------------------------
 
 
-getFetcher :: Machine (Int -> Metadata)
+getFetcher :: Machine Fetcher
 getFetcher = do
     v <- US.unsafeFreeze heap''
     (start, bs) <- use'' gameexe
@@ -40,8 +38,8 @@ getFetcher = do
             | 0 <= i && i < BS.length bs = {-if x /= x' then error $ "getFetcher: " ++ show ((cs_,ip_), ips) else-} x'
             | otherwise = x
           where
-            x = head . disassembleMetadata disasmConfig . BS.pack . map fromIntegral . US.toList $ US.slice ips 7 v
-            x' = head . disassembleMetadata disasmConfig . BS.drop i $ bs
+            x = disassemble . BS.pack . map fromIntegral . US.toList $ US.slice ips 7 v
+            x' = disassemble . BS.drop i $ bs
             i = ips - start
     return f
 
@@ -133,8 +131,6 @@ compile fe = do
 -- ad-hoc hacking for stunts!
 cacheOK ips = ips < 0x39000 || ips >= 0x3a700
 highAddr ips = ips >= 0x3a700
-
-disasmConfig = Config Intel Mode16 SyntaxIntel 0
 
 type MachinePart' a = (Machine a, a -> Machine ())
 
@@ -348,7 +344,7 @@ loadCache getInst = do
     cf' <- cf `deepseq` do
         let ca = mempty :: Cache
         cf' <- forM (IM.toList cf) $ \(ip, (fromIntegral_ -> cs, fromIntegral_ -> ss, fromIntegral' -> es, fromIntegral' -> ds)) ->
-                 (,) ip <$> fetchBlock_' ca (head . disassembleMetadata disasmConfig . getInst) cs ss es ds (fromIntegral $ ip - cs ^. paragraph)
+                 (,) ip <$> fetchBlock_' ca (disassemble . getInst) cs ss es ds (fromIntegral $ ip - cs ^. paragraph)
 --        ca <- use'' cache
         return cf'
     cache .%= IM.union (IM.fromList cf')

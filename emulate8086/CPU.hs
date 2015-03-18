@@ -15,6 +15,12 @@ import Edsl
 
 --------------------------------------------------------------------------------
 
+disasmConfig = Config Intel Mode16 SyntaxIntel 0
+
+disassemble = head . disassembleMetadata disasmConfig
+
+type Fetcher = Int -> Metadata
+
 -- instruction blocks
 type Blocks = IM.IntMap (ExpM Jump')
 
@@ -33,7 +39,7 @@ type FlagTr = forall x . (Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> Exp Bo
                       -> (Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> ExpM x)
 
 fetchBlock'
-    :: (Int -> Metadata)
+    :: Fetcher
     -> Word16 -> Word16 -> Word16 -> Exp Word16 -> Exp Word16
     -> Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool
     -> ExpM Jump'

@@ -23,7 +23,6 @@ import System.Directory
 import System.FilePath (takeFileName)
 import System.FilePath.Glob
 import Sound.ALUT (play, stop, sourceGain, pitch, ($=))
-import Hdis86
 --import Debug.Trace
 
 import Helper
@@ -236,9 +235,6 @@ trace_ s = putStr $ " | " ++ s
 
 ----------------------
 
-addressOf Nothing RDX = liftM2 segAddr (use' ds) (use' dx)
-addressOf (Just ES) RDX = liftM2 segAddr (use' es) (use' dx)
-
 cacheFile = "cache.txt"
 
 --alter i f = IM.alter (Just . maybe (f mempty) f) i
@@ -375,8 +371,8 @@ origInterrupt = M.fromList
                 trace_ "set block of DAC color registers"
                 first_DAC_register <- use' bx -- (0-00ffH)
                 number_of_registers <- use' cx -- (0-00ffH)
-                -- ES:DX addr of a table of R,G,B values (it will be CX*3 bytes long)
-                addr <- addressOf (Just ES) RDX
+                -- Es:DX addr of a table of R,G,B values (it will be CX*3 bytes long)
+                addr <- dxAddr'
                 colors <- fst $ bytesAt__ addr $ 3 * fromIntegral number_of_registers
                 palette ..%= \cs -> cs V.//
                     zip [fromIntegral first_DAC_register .. fromIntegral (first_DAC_register + number_of_registers - 1)]
@@ -432,7 +428,7 @@ origInterrupt = M.fromList
 
         0x1a -> do
             trace_ "Set Disk Transfer Address (DTA)"
-            addr <- addressOf Nothing RDX
+            addr <- dxAddr
             dta ...= addr
 
         0x25 -> do
@@ -454,7 +450,7 @@ origInterrupt = M.fromList
             v <- fromIntegral <$> use' al
             trace_ $ "Get Interrupt Vector " ++ showHex' 2 v
             wordAt__ System (4*v) >>= (bx ..=)
-            wordAt__ System (4*v + 2) >>= (es ..=)   -- ES:BX = pointer to interrupt handler
+            wordAt__ System (4*v + 2) >>= (es ..=)   -- Es:BX = pointer to interrupt handler
 
         0x3c -> do
             trace_ "Create File"
@@ -489,7 +485,7 @@ origInterrupt = M.fromList
             (fn, seek) <- (IM.! handle) <$> use'' files
             num <- fromIntegral <$> use' cx
             trace_ $ "Read " ++ showHex' 4 handle ++ ":" ++ fn ++ " " ++ showHex' 4 num
-            loc <- addressOf Nothing RDX
+            loc <- dxAddr
             s <- BS.take num . BS.drop seek <$> BS.readFile fn
             let len = BS.length s
             files ..%= flip IM.adjust handle (\(fn, p) -> (fn, p+len))
@@ -501,7 +497,7 @@ origInterrupt = M.fromList
             handle <- fromIntegral <$> use' bx
             trace_ $ "Write to " ++ showHex' 4 handle
             num <- fromIntegral <$> use' cx
-            loc <- addressOf Nothing RDX
+            loc <- dxAddr
             case handle of
               1 -> trace_ . ("STDOUT: " ++) . map (chr . fromIntegral) =<< fst (bytesAt__ loc num)
               2 -> trace_ . ("STDERR: " ++) . map (chr . fromIntegral) =<< fst (bytesAt__ loc num)
@@ -684,12 +680,15 @@ origInterrupt = M.fromList
         returnOK
 
     getFileName = do
-        addr <- addressOf Nothing RDX
+        addr <- dxAddr
         fname <- fst $ bytesAt__ addr 40
         let f = map (toUpper . chr . fromIntegral) $ takeWhile (/=0) fname
         trace_ f
         let fn = "../original/" ++ f
         return (f, fn)
+
+    dxAddr = liftM2 segAddr (use' ds) (use' dx)
+    dxAddr' = liftM2 segAddr (use' es) (use' dx)
 
     checkExists fn cont = do
         b <- doesFileExist fn
