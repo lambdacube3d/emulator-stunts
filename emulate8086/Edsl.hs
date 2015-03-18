@@ -128,7 +128,7 @@ data Exp a where
     Get :: Part a -> Exp a
 
     Eq :: Eq a => Exp a -> Exp a -> Exp Bool
-    Sub, Add, Mul :: Num a => Exp a -> Exp a -> Exp a
+    Add, Mul :: (Num a, Eq a) => Exp a -> Exp a -> Exp a
     QuotRem :: Integral a => Exp a -> Exp a -> Exp (a, a)
     And, Or, Xor :: Bits a => Exp a -> Exp a -> Exp a
     Not, ShiftL, ShiftR, RotateL, RotateR :: Bits a => Exp a -> Exp a
@@ -155,18 +155,23 @@ instance Integral Bool where
     a `quotRem` 1 = (a, 0)
     a `quotRem` 0 = error $ "quotRem " ++ show a ++ " 0 :: Bool"
 
+pattern Neg a = Mul (C (-1)) a
+pattern Sub a b = Add a (Neg b)
 
-add (C 0) x = x
-add x (C 0) = x
 add (C c) (C c') = C $ c + c'
 add (C c) (Add (C c') v) = add (C $ c + c') v
+add (C 0) x = x
+add a (C c) = add (C c) a
+add (Neg a) (Neg b) = Neg (add a b)
 add a b = Add a b
 
-mul (C 1) x = x
-mul (C 0) x = C 0
-mul x (C 1) = x
-mul x (C 0) = C 0
+sub a b = add a (mul (C $ -1) b)
+
 mul (C c) (C c') = C $ c * c'
+mul (C c) (Mul (C c') x) = mul (C $ c * c') x   -- signed modulo multiplication is also associative
+mul (C 0) x = C 0
+mul (C 1) x = x
+mul x (C c) = mul (C c) x
 mul a b = Mul a b
 
 and' (C 0) _ = C 0
@@ -251,7 +256,7 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
         ip <- pop
         cs <- if inOpcode == Iret then return $ C cs else pop
         if inOpcode == Iiretw then pop' $ set Flags else setFlags
-        when (length inOperands == 1) $ modif SP $ Add (getWordOperand op1)
+        when (length inOperands == 1) $ modif SP $ add (getWordOperand op1)
         Jump' cs ip
 
     Iint  -> case getByteOperand op1 of C n -> interrupt n
@@ -307,7 +312,7 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
     Icli  -> c $ set IF $ C False
     Isti  -> c $ set IF $ C True
 
-    Ixlatb -> c $ set AL $ Get $ Heap8 $ segAddr_ (segmentPrefix DS) $ Add (extend' $ Get AL) (Get BX)
+    Ixlatb -> c $ set AL $ Get $ Heap8 $ segAddr_ (segmentPrefix DS) $ add (extend' $ Get AL) (Get BX)
 
     Ilea -> c $ setWordOperand op1 $ addressOf' (unMem op2)
     _ | inOpcode `elem` [Iles, Ilds] -> addr2 op2 $ \ad ad2 -> do
@@ -369,18 +374,18 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
         Ircr  -> shiftOp $ \c x -> (Convert x, setHighBit c $ ShiftR x)
         Iror  -> shiftOp $ \_ x -> (Convert x, RotateR x)
 
-        Iadd  -> twoOp True  Add
-        Isub  -> twoOp True  Sub
-        Icmp  -> twoOp False Sub
+        Iadd  -> twoOp True  add
+        Isub  -> twoOp True  sub
+        Icmp  -> twoOp False sub
         Ixor  -> twoOp True  Xor
         Ior   -> twoOp True  Or
         Iand  -> twoOp True  And
         Itest -> twoOp False And
-        Iadc  -> twoOp True $ \a b -> Add (Add a b) $ Convert cF
-        Isbb  -> twoOp True $ \a b -> Sub (Sub a b) $ Convert cF
-        Ineg  -> twoOp_ (flip Sub) (setTr op1) op1v $ C 0
-        Idec  -> twoOp_ Add (setTr op1) op1v $ C $ -1
-        Iinc  -> twoOp_ Add (setTr op1) op1v $ C 1
+        Iadc  -> twoOp True $ \a b -> add (add a b) $ Convert cF
+        Isbb  -> twoOp True $ \a b -> sub (sub a b) $ Convert cF
+        Ineg  -> twoOp_ (flip sub) (setTr op1) op1v $ C 0
+        Idec  -> twoOp_ add (setTr op1) op1v $ C $ -1
+        Iinc  -> twoOp_ add (setTr op1) op1v $ C 1
 
         Idiv  -> divide id id
         Iidiv -> divide signed signed
@@ -392,11 +397,11 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
           | inOpcode `elem` [Ilodsb, Ilodsw] -> cycle $ normal $ set alx (getTr si'') >> adjustIndex SI
           | inOpcode `elem` [Imovsb, Imovsw] -> cycle $ normal $ setTr di'' (getTr si'') >> adjustIndex SI >> adjustIndex DI
           | inOpcode `elem` [Iscasb, Iscasw] -> cycle $ \cont ->
-                twoOp__ Sub (const $ return ()) (getTr di'') (Get alx) $ \oF sF zF pF cF -> do
+                twoOp__ sub (const $ return ()) (getTr di'') (Get alx) $ \oF sF zF pF cF -> do
                     adjustIndex DI
                     cont oF sF zF pF cF
           | inOpcode `elem` [Icmpsb, Icmpsw] -> cycle $ \cont ->
-                twoOp__ Sub (const $ return ()) (getTr si'') (getTr di'') $ \oF sF zF pF cF -> do
+                twoOp__ sub (const $ return ()) (getTr si'') (getTr di'') $ \oF sF zF pF cF -> do
                     adjustIndex SI
                     adjustIndex DI
                     cont oF sF zF pF cF
@@ -412,7 +417,7 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
 
         memIndex r = Mem $ Memory undefined (Reg16 r) RegNone 0 $ Immediate Bits0 0
 
-        adjustIndex i = modif i $ Add $ If (Get DF) (C $ -sizeByte) (C sizeByte)
+        adjustIndex i = modif i $ add $ If (Get DF) (C $ -sizeByte) (C sizeByte)
 
         op1v = getTr op1
         op2v = getTr op2
@@ -424,7 +429,7 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
 
         multiply :: forall c . (Extend c, FiniteBits (X2 c)) => (Exp a -> Exp c) -> ExpM Jump'
         multiply asSigned =
-            letM (Mul (extend' $ asSigned $ Get alx) (extend' $ asSigned op1v)) >>= \r ->
+            letM (mul (extend' $ asSigned $ Get alx) (extend' $ asSigned op1v)) >>= \r ->
             letM (Not $ Eq r $ extend' (convert r :: Exp c)) >>= \c -> do
             set axd $ convert r
             ccF c (uSet' SF sF) (C False){-needed for Stunts-} (uSet' PF pF) c
@@ -483,10 +488,10 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
 
     addr2 m f = do
         ad <- letM $ addressOf $ unMem m
-        f (Get $ Heap16 ad) (Get $ Heap16 $ Add (C 2) ad)
+        f (Get $ Heap16 ad) (Get $ Heap16 $ add (C 2) ad)
 
     loop cond = do
-        modif CX $ Add $ C $ -1
+        modif CX $ add $ C $ -1
         condJump $ and'' cond $ Not $ Eq (C 0) (Get CX)
 
     condJump :: Exp Bool -> ExpM Jump'
@@ -592,19 +597,19 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
     imm' i = imm i
 
     push :: Exp Word16 -> ExpM ()
-    push x = letMC' (Add (C $ -2) (Get SP)) $ \sp -> do
+    push x = letMC' (add (C $ -2) (Get SP)) $ \sp -> do
         set SP sp
         set (Heap16 $ segAddr_ (C ss) sp) x
 
     pop :: ExpM (Exp Word16)
     pop = do
         sp <- letM $ Get SP
-        set SP $ Add (C 2) sp
+        set SP $ add (C 2) sp
         return $ Get $ Heap16 $ segAddr_ (C ss) sp
 
     pop' :: (Exp Word16 -> ExpM ()) -> ExpM ()
     pop' f = letMC' (Get SP) $ \sp -> do
-        set SP $ Add (C 2) sp
+        set SP $ add (C 2) sp
         f $ Get $ Heap16 $ segAddr_ (C ss) sp
 
     interrupt :: Word8 -> ExpM Jump'

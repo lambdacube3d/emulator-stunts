@@ -333,8 +333,7 @@ checkInt changeState cycles cont n = do
 --    sp <- use'' speed
 --    if sp > 0 then do
 --                  else threadDelay 20000
-    when (not debug || ns' < cycles) cont
-
+    when (ns' < cycles) cont
 
 loadCache getInst = do
     trace_ "Loading cache"

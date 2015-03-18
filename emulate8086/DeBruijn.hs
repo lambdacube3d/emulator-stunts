@@ -1,11 +1,11 @@
 module DeBruijn
-    ( EExp (..)
+    {-( EExp (..), Sub'
     , EExpM (..)
     , List (..)
     , Var (..)
     , convExpM
     , spTrans
-    ) where
+    )-} where
 
 import Data.Word
 import Data.Bits hiding (bit)
@@ -36,7 +36,7 @@ data EExp :: List * -> * -> * where
     Get' :: Part_ (EExp e) a -> EExp e a
 
     Eq' :: Eq a => EExp e a -> EExp e a -> EExp e Bool
-    Sub', Add', Mul' :: Num a => EExp e a -> EExp e a -> EExp e a
+    Add', Mul' :: (Num a, Eq a) => EExp e a -> EExp e a -> EExp e a
     QuotRem' :: Integral a => EExp e a -> EExp e a -> EExp e (a, a)
     And', Or', Xor' :: Bits a => EExp e a -> EExp e a -> EExp e a
     Not', ShiftL', ShiftR', RotateL', RotateR' :: Bits a => EExp e a -> EExp e a
@@ -104,7 +104,6 @@ convExp_ lyt = g where
         Get p -> Get' (convPart lyt p)
 
         Eq a b -> Eq' (g a) (g b)
-        Sub a b -> Sub' (g a) (g b)
         Add a b -> Add' (g a) (g b)
         Mul a b -> Mul' (g a) (g b)
         QuotRem a b -> QuotRem' (g a) (g b)
@@ -173,7 +172,6 @@ lift'' gv = f where
     Let' e x -> Let' (f e) (lift'' (incV gv) x)
     Iterate' n g c -> Iterate' (f n) (lift'' (incV gv) g) (f c)
     Eq' a b -> Eq' (f a) (f b)
-    Sub' a b -> Sub' (f a) (f b)
     Add' a b -> Add' (f a) (f b)
     Mul' a b -> Mul' (f a) (f b)
     And' a b -> And' (f a) (f b)
@@ -205,9 +203,8 @@ spTrE sp = f where
     Let' e x -> Let' (f e) (spTrE (lift' sp) x)
     Iterate' n g c -> Iterate' (f n) (spTrE (lift' sp) g) (f c)
     Eq' a b -> Eq' (f a) (f b)
-    Sub' a b -> Sub' (f a) (f b)
-    Add' a b -> Add' (f a) (f b)
-    Mul' a b -> Mul' (f a) (f b)
+    Add' a b -> add' (f a) (f b)
+    Mul' a b -> mul' (f a) (f b)
     And' a b -> And' (f a) (f b)
     Or' a b -> Or' (f a) (f b)
     Xor' a b -> Xor' (f a) (f b)
@@ -223,11 +220,25 @@ spTrE sp = f where
 
 ------------------------------------
 
-add' (C' i) (Add' (C' j) x) = add' (C' (i+j)) x
-add' a b = Add' a b
-
 add_ (Add' (C' j) x) = (j, x)
 add_ v = (0, v)
+
+pattern Neg' a = Mul' (C' (-1)) a
+pattern Sub' a b = Add' a (Neg' b)
+
+add' (C' c) (C' c') = C' $ c + c'
+add' (C' c) (Add' (C' c') v) = add' (C' $ c + c') v
+add' (C' 0) x = x
+add' a (C' c) = add' (C' c) a
+add' (Neg' a) (Neg' b) = Neg' (add' a b)
+add' a b = Add' a b
+
+mul' (C' c) (C' c') = C' $ c * c'
+mul' (C' c) (Mul' (C' c') x) = mul' (C' $ c * c') x   -- signed modulo multiplication is also associative
+mul' (C' 0) x = C' 0
+mul' (C' 1) x = x
+mul' x (C' c) = mul' (C' c) x
+mul' a b = Mul' a b
 
 spTrans :: EExpM e a -> EExpM e a
 spTrans = spTr (Get' SP)

@@ -34,7 +34,7 @@ Executable stuntsemulator
                 -rtsopts
   Extensions:
     NoMonomorphismRestriction, ScopedTypeVariables,
-    ViewPatterns, PatternGuards, LambdaCase, RecordWildCards, BangPatterns, RecursiveDo,
+    ViewPatterns, PatternGuards, PatternSynonyms, LambdaCase, RecordWildCards, BangPatterns, RecursiveDo,
     RankNTypes, GADTs, TypeFamilies, DataKinds,
     MultiParamTypeClasses, FlexibleInstances, FlexibleContexts
 
