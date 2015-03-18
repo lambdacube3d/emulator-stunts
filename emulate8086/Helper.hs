@@ -7,6 +7,24 @@ import Data.Bits hiding (bit)
 import Data.Char
 import Control.Lens as Lens
 
+--------------------------------------------------------------------------------
+
+instance Num Bool where
+    (+) = xor
+    (-) = xor
+    (*) = (&&)
+    abs = id
+    signum = id
+    fromInteger = odd
+
+instance Real Bool where
+    toRational = toRational . fromEnum
+
+instance Integral Bool where
+    toInteger = toInteger . fromEnum
+    a `quotRem` 1 = (a, 0)
+    a `quotRem` 0 = error $ "quotRem " ++ show a ++ " 0 :: Bool"
+
 ----------------------------------------------
 
 everyNth n [] = []

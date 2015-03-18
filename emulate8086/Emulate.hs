@@ -25,6 +25,7 @@ import Edsl
 import MachineState
 import DeBruijn
 import Dos
+import CPU
 
 --------------------------------------
 
