@@ -306,9 +306,11 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
     Ixlatb -> c $ set AL $ Get $ Heap8 $ segAddr_ (segmentPrefix DS) $ Add (Extend $ Get AL) (Get BX)
 
     Ilea -> c $ set (wordOperand op1) $ addressOf' (unMem op2)
-    _ | inOpcode `elem` [Iles, Ilds] -> stop $ addr2 op2 $ \ad ad2 -> do
-        set (wordOperand op1) ad
-        set (case inOpcode of Iles -> Es; Ilds -> Ds) ad2
+    _ | inOpcode `elem` [Iles, Ilds] -> do
+        addr2 op2 $ \ad ad2 -> do
+            set (wordOperand op1) ad
+            set (case inOpcode of Iles -> Es; Ilds -> Ds) ad2
+        end
 
     _ -> case sizeByte of
         1 -> withSize getByteOperand byteOperand AL AH AX
@@ -340,7 +342,6 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
         setCF (Get CF) = return ()
         setCF x = set CF x
 
-    stop m = m >> end
     end = jump (C cs) (C nextip)
 
     withSize :: forall a . (AsSigned a, Extend a, Extend (Signed a), AsSigned (X2 a), X2 (Signed a) ~ Signed (X2 a))
@@ -389,10 +390,10 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
           | inOpcode `elem` [Ilodsb, Ilodsw] -> cycle $ move alx si'' >> adjustIndex SI
           | inOpcode `elem` [Imovsb, Imovsw] -> cycle $ move di'' si'' >> adjustIndex SI >> adjustIndex DI
           | inOpcode `elem` [Iscasb, Iscasw] -> cycle $ do
-            twoOp__ setF False Sub di'' $ Get alx
+            twoOp__ False Sub di'' (Get alx) setF (Get OF) (Get SF) (Get ZF) (Get PF) (Get CF)
             adjustIndex DI
           | inOpcode `elem` [Icmpsb, Icmpsw] -> cycle $ do
-            twoOp__ setF False Sub si'' $ Get di''
+            twoOp__ False Sub si'' (Get di'') setF (Get OF) (Get SF) (Get ZF) (Get PF) (Get CF)
             adjustIndex SI
             adjustIndex DI
 
@@ -440,12 +441,13 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
         twoOp store op = twoOp_ store op op1' op2v
 
         twoOp_ :: AsSigned a => Bool -> (forall a . (Integral a, FiniteBits a) => Exp a -> Exp a -> Exp a) -> Part a -> Exp a -> ExpM Jump'
-        twoOp_ = twoOp__ ccF
+        twoOp_ store op op1 op2 = twoOp__ store op op1 op2 ccF oF sF zF pF cF
 
         twoOp__ :: AsSigned a
-                => (Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> ExpM x)
-                -> Bool -> (forall a . (Integral a, FiniteBits a) => Exp a -> Exp a -> Exp a) -> Part a -> Exp a -> ExpM x
-        twoOp__ cont store op op1 op2 =
+                => Bool -> (forall a . (Integral a, FiniteBits a) => Exp a -> Exp a -> Exp a) -> Part a -> Exp a
+                -> (Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> ExpM x)
+                -> (Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> ExpM x)
+        twoOp__ store op op1 op2 cont oF sF zF pF cF =
             letM (Get op1) >>= \a -> do
             let b = op2 --letMC op2 $ \b ->
             letM (op a b) >>= \r -> do
