@@ -217,6 +217,9 @@ fetchBlock_ fetch cs ss es ds ip
 
 --------------------------------------------------------------------------------
 
+type FlagTr = forall x . (Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> ExpM x)
+                      -> (Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> ExpM x)
+
 highBit :: (Integral a, Bits a) => Exp a -> Exp Bool
 highBit = Convert . RotateL
 
@@ -386,21 +389,24 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
         Iimul -> multiply signed
 
         _ | inOpcode `elem` [Icwd,   Icbw]   -> c $ set axd $ Convert $ Signed $ Get alx
-          | inOpcode `elem` [Istosb, Istosw] -> cycle $ move di'' alx >> adjustIndex DI
-          | inOpcode `elem` [Ilodsb, Ilodsw] -> cycle $ move alx si'' >> adjustIndex SI
-          | inOpcode `elem` [Imovsb, Imovsw] -> cycle $ move di'' si'' >> adjustIndex SI >> adjustIndex DI
-          | inOpcode `elem` [Iscasb, Iscasw] -> cycle $ do
-            twoOp__ False Sub di'' (Get alx) setF (Get OF) (Get SF) (Get ZF) (Get PF) (Get CF)
-            adjustIndex DI
-          | inOpcode `elem` [Icmpsb, Icmpsw] -> cycle $ do
-            twoOp__ False Sub si'' (Get di'') setF (Get OF) (Get SF) (Get ZF) (Get PF) (Get CF)
-            adjustIndex SI
-            adjustIndex DI
+          | inOpcode `elem` [Istosb, Istosw] -> cycle $ normal $ move di'' alx >> adjustIndex DI
+          | inOpcode `elem` [Ilodsb, Ilodsw] -> cycle $ normal $ move alx si'' >> adjustIndex SI
+          | inOpcode `elem` [Imovsb, Imovsw] -> cycle $ normal $ move di'' si'' >> adjustIndex SI >> adjustIndex DI
+          | inOpcode `elem` [Iscasb, Iscasw] -> cycle $ \cont ->
+                twoOp__ False Sub di'' (Get alx) $ \oF sF zF pF cF -> do
+                    adjustIndex DI
+                    cont oF sF zF pF cF
+          | inOpcode `elem` [Icmpsb, Icmpsw] -> cycle $ \cont ->
+                twoOp__ False Sub si'' (Get di'') $ \oF sF zF pF cF -> do
+                    adjustIndex SI
+                    adjustIndex DI
+                    cont oF sF zF pF cF
 
         Iin  -> c $ Input (getWordOperand op2) $ set op1' . Convert
         Iout -> c $ output (getWordOperand op1) $ convert op2v
 
       where
+
         si'', di'' :: Part a
         si'' = tr_ $ memIndex RSI
         di'' = tr_ $ memIndex RDI
@@ -445,8 +451,7 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
 
         twoOp__ :: AsSigned a
                 => Bool -> (forall a . (Integral a, FiniteBits a) => Exp a -> Exp a -> Exp a) -> Part a -> Exp a
-                -> (Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> ExpM x)
-                -> (Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> ExpM x)
+                -> FlagTr
         twoOp__ store op op1 op2 cont oF sF zF pF cF =
             letM (Get op1) >>= \a -> do
             let b = op2 --letMC op2 $ \b ->
@@ -460,17 +465,20 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
                  (EvenParity $ Convert r)
                  (if inOpcode `elem` [Idec, Iinc] then cF else Not $ Eq (Convert r) $ op (Convert a :: Exp Int) (convert b))
 
+    cycle :: FlagTr -> ExpM Jump'
     cycle body = case filter rep inPrefixes of
         [Rep, RepE]
             | inOpcode `elem` [Imovsb, Imovsw, Ilodsb, Ilodsw, Istosb, Istosw] -> cyc $ C True      -- rep
             | inOpcode `elem` [Icmpsb, Icmpsw, Iscasb, Iscasw] -> cyc $ Get ZF      -- repe
         [RepNE]
-            | inOpcode `elem` [Imovsb, Imovsw, Ilodsb, Ilodsw, Istosb, Istosw] -> cyc $ C True    -- ???
+            | inOpcode `elem` [Imovsb, Imovsw, Ilodsb, Ilodsw, Istosb, Istosw] -> cyc $ Not $ Get ZF -- cyc $ C True    -- ???
             | inOpcode `elem` [Icmpsb, Icmpsw, Iscasb, Iscasw] -> cyc $ Not $ Get ZF
                 
-        [] -> c body
+        [] -> body ccF oF sF zF pF cF
       where
-        cyc cond = setFlags >> Replicate (Get CX) cond body (\x -> set CX x >> ccClean)
+        cyc cond = setFlags >> Replicate (Get CX) cond (body setF (Get OF) (Get SF) (Get ZF) (Get PF) (Get CF)) (\x -> set CX x >> ccClean)
+
+    normal m setF oF sF zF pF cF = m >> setF oF sF zF pF cF
 
     rep = (`elem` [Rep, RepE, RepNE])
 
