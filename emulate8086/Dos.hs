@@ -61,25 +61,52 @@ haltWith = error
 halt = error "CleanHalt"
 
 infix 4 ..=, .%=, ...=, ..%=
-(_, w) ..= x = w x
+{-# INLINE (..=) #-}
+w ..= x = snd w x
 (r, w) .%= f = r >>= w . f
-use' (r, _) = r
+{-# INLINE use' #-}
+use' x = fst x
 
 use'' k = (^. k) <$> readIORef emptyState
 k ...= v = modifyIORef' emptyState $ k .~ v
 k ..%= v = modifyIORef' emptyState $ k %~ v
 
-[ax, bx, cx, dx, si, di, cs, ss, ds, es, ip, sp, bp, flags_] =
-    [ (U.unsafeRead regs i, U.unsafeWrite regs i) :: MachinePart'' Word16 | i <- [0..13] ]
+ax = ff 0
+bx = ff 1
+cx = ff 2
+dx = ff 3
+si = ff 4
+{-# INLINE di #-}
+di = ff 5
+cs = ff 6
+ss = ff 7
+ds = ff 8
+es = ff 9
+sp = ff 10
+bp = ff 11
+ip = ff 12
+{-# INLINE flags_ #-}
+flags_ = ff 13
+
+{-# INLINE ff #-}
+ff i = (U.unsafeRead regs i, U.unsafeWrite regs i) :: MachinePart'' Word16
 
 flags :: MachinePart'' Word16
 flags = id *** (. wordToFlags) $ flags_
 
-[al, bl, cl, dl] =
-    [ (fromIntegral <$> U.unsafeRead regs i, \v -> U.unsafeRead regs i >>= U.unsafeWrite regs i . (.|. fromIntegral v) . (.&. 0xff00)) :: MachinePart'' Word8 | i <- [0..3] ]
+al = rLow 0
+bl = rLow 1
+cl = rLow 2
+dl = rLow 3
 
-[ah, bh, ch, dh] =
-    [ (fromIntegral . (`shiftR` 8) <$> U.unsafeRead regs i, \v -> U.unsafeRead regs i >>= U.unsafeWrite regs i . (.|. fromIntegral v `shiftL` 8) . (.&. 0x00ff)) :: MachinePart'' Word8 | i <- [0..3] ]
+rLow i = (fromIntegral <$> U.unsafeRead regs i, \v -> U.unsafeRead regs i >>= U.unsafeWrite regs i . (.|. fromIntegral v) . (.&. 0xff00)) :: MachinePart'' Word8
+
+ah = rHigh 0
+bh = rHigh 1
+ch = rHigh 2
+dh = rHigh 3
+
+rHigh i = (fromIntegral . (`shiftR` 8) <$> U.unsafeRead regs i, \v -> U.unsafeRead regs i >>= U.unsafeWrite regs i . (.|. fromIntegral v `shiftL` 8) . (.&. 0x00ff)) :: MachinePart'' Word8
 
 dxax, cxdx :: MachinePart'' Word32
 dxax = comb dx ax
@@ -90,10 +117,21 @@ comb (rh, wh) (rl, wl)
       , \x -> wh (fromIntegral $ x `shiftR` 16) >> wl (fromIntegral x)
       )
 
-[overflowF, directionF, interruptF, signF, zeroF, parityF, carryF] =
-    [ ((`testBit` i) <$> r, \b -> r >>= w . if b then (`setBit` i) else (`clearBit` i)) :: MachinePart'' Bool
-    | i <- [11,10,9,7,6,2,0]
-    ]
+{-# INLINE overflowF #-}
+overflowF   = flag 11
+directionF  = flag 10
+interruptF  = flag 9
+{-# INLINE signF #-}
+signF       = flag 7
+{-# INLINE zeroF #-}
+zeroF       = flag 6
+{-# INLINE parityF #-}
+parityF     = flag 2
+{-# INLINE carryF #-}
+carryF      = flag 0
+
+{-# INLINE flag #-}
+flag i = ((`testBit` i) <$> r, \b -> r >>= w . if b then (`setBit` i) else (`clearBit` i)) :: MachinePart'' Bool
   where (r, w) = flags_
 
 
@@ -144,11 +182,29 @@ setByteAt :: Info -> Int -> Word8 -> Machine ()
 setByteAt inf i v = uWrite inf i v
 
 wordAt__ :: Info -> Int -> Machine Word16
-wordAt__ inf i = liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead inf (i+1)) (uRead inf i)
+wordAt__ = getWordAt --liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead inf (i+1)) (uRead inf i)
 
+getWordAt inf i | even i = do
+    b <- use' showReads'
+    when b $ do
+        off <- use' showOffset
+        let j = i - off
+        when (0 <= j && j < 320 * 200) $ do -- TODO
+            x <- U.unsafeRead showBuffer j
+            U.unsafeWrite showBuffer j $ x .|. info inf 0xff00ff00 0x00008000 0x0000ff00
+    U.unsafeRead (U.unsafeCast heap'') (i `shiftR` 1)
 getWordAt inf i = liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead inf (i+1)) (uRead inf i)
 
 setWordAt :: Info -> Int -> Word16 -> Machine ()
+setWordAt inf i v | even i = do
+    U.unsafeWrite (U.unsafeCast heap'') (i `shiftR` 1) v
+    b <- use' showReads
+    when b $ do -- TODO
+        off <- use' showOffset
+        let j = i - off
+        when (0 <= j && j < 320 * 200) $ do
+            x <- U.unsafeRead showBuffer j
+            U.unsafeWrite showBuffer j $ x .|. info inf 0xffff0000 0x00800000 0x00ff0000
 setWordAt inf i v = uWrite inf i (fromIntegral v) >> uWrite inf (i+1) (fromIntegral $ v `shiftR` 8)
 
 dwordAt__ :: Info -> Int -> MachinePart' Word32
@@ -192,7 +248,7 @@ alter' Nothing = -1
 adjustCache = do
     trace_ "adjust cache"
     ch <- use' cache
-    let p (Compiled cs ss es ds _ _ _) = Just (cs, ss, es, ds)
+    let p (Compiled True cs ss es ds _ _ _) = Just (cs, ss, es, ds)
         p _ = Nothing
     do
         cf <- read <$> readFile cacheFile

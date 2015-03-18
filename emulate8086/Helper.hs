@@ -5,8 +5,6 @@ import Data.Word
 import Data.Int
 import Data.Bits hiding (bit)
 import Data.Char
-import qualified Data.Sequence as S
-import Control.Arrow
 import Control.Lens as Lens
 
 ----------------------------------------------
@@ -27,40 +25,6 @@ bitAlign :: (Bits a, Num a) => Int -> a -> a
 bitAlign n i = (i + complement mask) .&. mask
   where
     mask = (-1) `shiftL` n
-
-quotRemSafe :: Integral a => a -> a -> Maybe (a, a)
-quotRemSafe a 0 = Nothing
-quotRemSafe a b = Just $ quotRem a b
-
-----------------------------------------------
-
-convertingInt :: (Integral a, Integral b) => Iso' a b
-convertingInt = iso fromIntegral fromIntegral
-
-shifting :: Bits a => Int -> Iso' a a
-shifting i = iso (`shift` i) (`shift` (-i))
-
-bit :: Bits a => Int -> Lens' a Bool
-bit i = lens (`testBit` i) $ \x b -> (if b then setBit else clearBit) x i
-
-bits :: (Bits a, Num a) => Int -> Int -> Lens' a a
-bits off l = lens (.&. bitMask) (\w x -> w .&. complement bitMask .|. x) . from (shifting off)
-  where
-    bitMask = (complement $ (-1) `shiftL` l) `shiftL` off
-
-highBit :: forall a . FiniteBits a => Lens' a Bool
-highBit = bit $ finiteBitSize (undefined :: a) - 1
-
-seqList :: Iso' (S.Seq a) [a]
-seqList = iso toList S.fromList where
-    toList s = case S.viewl s of
-        S.EmptyL -> []
-        x S.:< xs -> x: toList xs
-
---------------------------- TODO: eliminate this
-
-uComb :: Lens' a b -> Lens' a c -> Lens' a (b, c)
-uComb x y = lens ((^. x) &&& (^. y)) $ \a (b, c) -> set x b . set y c $ a
 
 ---------------------------------
 
@@ -105,12 +69,13 @@ high = lens (fromIntegral . (`shiftR` s)) (\st hi -> fromIntegral hi `shiftL` s 
 
 -------------------
 
-checkAlign n i
-    | i ^. bits 0 n == 0 = i
-    | otherwise = error $ "checkAlign: " ++ show n ++ " " ++ show i
+debug = False
 
 paragraph :: Iso' Word16 Int
-paragraph = convertingInt . shifting 4 . iso id (checkAlign 4)
+paragraph = if debug then iso ((`shiftL` 4) . fromIntegral) (fromIntegral . (`shiftR` 4) . check16)
+            else iso ((`shiftL` 4) . fromIntegral) (fromIntegral . (`shiftR` 4))
+  where
+    check16 x = if x .&. complement 0xf == 0 then x else error "paragraph"
 
 segAddr :: Word16 -> Word16 -> Int
 segAddr s w = fromIntegral s `shiftL` 4 + fromIntegral w

@@ -1,5 +1,5 @@
 import qualified Data.ByteString as BS
-import Control.Monad.State
+--import Control.Monad.State
 --import Control.Lens as Lens
 import Control.Concurrent
 import System.IO
@@ -15,7 +15,10 @@ import MachineState
 gameFile = "../restunts/stunts/game.exe"
 loadSegment = 0x20e
 
-main = withProgNameAndArgs runALUT $ \_ _ -> do
+main = withProgNameAndArgs runALUT $ \_ args -> do
+    let cycles = case args of
+            [n] -> read n
+            _ -> -1
 
     bData <- createBufferData (Square 440 0 0.1)
     buff <- createBuff bData 1
@@ -28,6 +31,7 @@ main = withProgNameAndArgs runALUT $ \_ _ -> do
     changeState <- newMVar $ return ()
     let addChange m = modifyMVar_ changeState $ \n -> return $ n >> m
 --    l <- getLabels
+    tid <- myThreadId
     game <- BS.readFile gameFile
     ir <- use'' interruptRequest
     _ <- forkIO $ do
@@ -35,12 +39,9 @@ main = withProgNameAndArgs runALUT $ \_ _ -> do
         soundSource ...= source
         getInst <- loadExe loadSegment game
         loadCache getInst
-        forever $ do
-            sp <- use'' speed
-            if sp > 0 then do
-                mkStep >>= checkInt
-              else liftIO $ threadDelay 20000
-            join $ liftIO $ modifyMVar changeState $ \m -> return (return (), m)
+        let cyc = mkStep >>= checkInt changeState cycles cyc
+        cyc
+        killThread tid
     drawWithFrameBuffer addChange (\r -> modifyMVar_ ir $ return . (++[r])) $ return ()
 
 createBuff :: BufferData a -> Frequency -> IO Buffer

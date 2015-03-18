@@ -16,6 +16,7 @@ import Control.Concurrent
 import Control.Exception
 import Control.DeepSeq
 import System.Directory
+--import Debug.Trace
 
 import Hdis86
 
@@ -35,7 +36,7 @@ getFetcher = do
     ip_ <- use' ip
     cs_ <- use' cs
     let f ips
-            | 0 <= i && i < BS.length bs = if x == x' then x else error $ "getFetcher: " ++ show ((cs_,ip_), ips)
+            | 0 <= i && i < BS.length bs = {-if x /= x' then error $ "getFetcher: " ++ show ((cs_,ip_), ips) else-} x'
             | otherwise = x
           where
             x = head . disassembleMetadata disasmConfig . BS.pack . map fromIntegral . US.toList $ US.slice ips 7 v
@@ -60,8 +61,9 @@ fetchBlock_' ca f cs ss es ds ip = do
     let (n, r, e) = fetchBlock_ (f) cs ss es ds ip
     _ <- evaluate n
     let !cc = convExpM $ snd $ head $ IM.toList e
-    return $ Compiled cs ss es ds n r $ do
-        _ <- evalExpM mempty cc
+        !dd = evalExpM mempty cc
+    return $ Compiled (not $ highAddr $ segAddr cs ip) cs ss es ds n r $ do
+        _ <- dd
         b <- use' showReads
         when b $ do
             off <- use' showOffset
@@ -84,33 +86,21 @@ fetchBlock'' es ds ca = do
 
 mkStep :: Machine Int
 mkStep = do
-    ip_ <- use' ip
-    cs_ <- use' cs
-
-    let ips = segAddr cs_ ip_
-        compile fe = do
-            entry@(Compiled _ _ _ _ n reg ch) <- do
-                let ca = mempty
-                e <- fe ca
---                ca <- use'' cache
-                return e
-            when (cacheOK ips) $ cache .%= IM.insert ips entry
-            ch
-            return n
-
+    ips <- liftM2 segAddr (use' cs) (use' ip)
     cv <- IM.lookup ips <$> use' cache
     case cv of
      Just v -> case v of
-      Compiled cs' ss' es' ds' n len m -> do
-        cs'' <- use' cs
-        when (cs' /= cs'') $ error "cs differs"
-        ss'' <- use' ss
-        when (ss' /= ss'') $ error "ss differs"
+      Compiled _ cs' ss' es' ds' n len m -> do
+        when debug $ do
+            cs'' <- use' cs
+            when (cs' /= cs'') $ error "cs differs"
+            ss'' <- use' ss
+            when (ss' /= ss'') $ error "ss differs"
         es'' <- use' es
         ds'' <- use' ds
-        let f a b = if a == Just b then a else Nothing
         if (maybe False (/= es'') es' || maybe False (/=ds'') ds') then do
             trace_ "recompile"
+            let f a b = if a == Just b then a else Nothing
             compile $ fetchBlock'' (f es' es'') (f ds' ds'')
           else do
             m
@@ -121,22 +111,40 @@ mkStep = do
         return 1
       DontCache _ -> do
         putStr "."
-        Compiled _ _ _ _ n _ ch <- fetchBlock mempty
+        Compiled _ _ _ _ _ n _ ch <- fetchBlock mempty
         ch
         return n
      Nothing -> do
         putStr "#"
         compile fetchBlock
 
+compile :: (Cache -> IO CacheEntry) -> Machine Int
+compile fe = do
+    ip_ <- use' ip
+    cs_ <- use' cs
+    let ips = segAddr cs_ ip_
+    entry@(Compiled b _ _ _ _ n reg ch) <- do
+        let ca = mempty
+        e <- fe ca
+--                ca <- use'' cache
+        return e
+    when (cacheOK ips || not b) $ cache .%= IM.insert ips entry
+    ch
+    return n
+
 -- ad-hoc hacking for stunts!
-cacheOK ips = ips < 0x39000 -- || ips >= 0x3a700
+cacheOK ips = ips < 0x39000 || ips >= 0x3a700
+highAddr ips = ips >= 0x3a700
 
 disasmConfig = Config Intel Mode16 SyntaxIntel 0
 
 type MachinePart' a = (Machine a, a -> Machine ())
 
-evalPart_ :: Part_ e a -> MachinePart'' a
-evalPart_ = \case
+
+
+evalPart_, evalPart__ :: Part_ e a -> MachinePart'' a
+evalPart_ = {-trace "." . -} evalPart__
+evalPart__ = \case
     AX -> ax
     BX -> bx
     CX -> cx
@@ -149,14 +157,14 @@ evalPart_ = \case
     Ds -> ds
     Ss -> ss
     Cs -> cs
-    Low AX -> al
-    Low BX -> bl
-    Low CX -> cl
-    Low DX -> dl
-    High AX -> ah
-    High BX -> bh
-    High CX -> ch
-    High DX -> dh
+    AL -> al
+    BL -> bl
+    CL -> cl
+    DL -> dl
+    AH -> ah
+    BH -> bh
+    CH -> ch
+    DH -> dh
     CF -> carryF
     PF -> parityF
     ZF -> zeroF
@@ -187,22 +195,29 @@ iterateM n f a = f a >>= iterateM (n-1) f
 iff x y True = x
 iff x y _ = y
 
-pushVal' :: Machine' (Con b e) a -> b -> Machine' e a
-pushVal' m v = ReaderT $ runReaderT m . (`Push` v)
+pushVal :: Machine' (Con b e) a -> b -> Machine' e a
+pushVal (ReaderT m) v = ReaderT $ \x -> m (x `Push` v)
 
 evalExp :: EExp e a -> Machine' e a
 evalExp = \case
     Var' ix -> reader $ prj ix
-    Let' e f -> evalExp e >>= pushVal' (evalExp f)
-    Iterate' n f a -> evalExp n >>= \i -> evalExp a >>= iterateM i (pushVal' (evalExp f))
+--    Let' (C' e) f -> pushVal (evalExp f) e
+    Let' e f -> evalExp e >>= pushVal (evalExp f)
+    Iterate' n f a -> evalExp n >>= \i -> evalExp a >>= iterateM i (pushVal (evalExp f))
 
     C' a -> return a
     Get' p -> case p of
+--        Heap16 (C' e) -> lift $ getWordAt (Program $ C' e) e
         Heap16 e -> evalExp e >>= lift . getWordAt (Program e)
+--        Heap8 (C' e) -> lift $ getByteAt (Program $ C' e) e
         Heap8 e -> evalExp e >>= lift . getByteAt (Program e)
-        p -> lift $ fst $ evalPart_ p
+        p -> let x = fst $ evalPart_ p in lift x
 
+--    If' (C' b) x y -> if b then evalExp x else evalExp y
+    If' b (C' x) (C' y) -> iff x y <$> evalExp b
     If' b x y -> evalExp b >>= iff (evalExp x) (evalExp y)
+    Eq' (C' x) y -> (==x) <$> evalExp y
+    Eq' y (C' x) -> (==x) <$> evalExp y
     Eq' x y -> liftM2 (==) (evalExp x) (evalExp y)
 
     Not' a -> complement <$> evalExp a
@@ -210,22 +225,30 @@ evalExp = \case
     ShiftR' a -> (`shiftR` 1) <$> evalExp a
     RotateL' a -> (`rotateL` 1) <$> evalExp a
     RotateR' a -> (`rotateR` 1) <$> evalExp a
+    Sub' (C' a) b -> (a-) <$> evalExp b
+    Sub' b (C' a) -> (+(-a)) <$> evalExp b
     Sub' a b -> liftM2 (-) (evalExp a) (evalExp b)
+    Add' (C' a) b -> (+a) <$> evalExp b
+    Add' b (C' a) -> (+a) <$> evalExp b
     Add' a b -> liftM2 (+) (evalExp a) (evalExp b)
     Mul' a b -> liftM2 (*) (evalExp a) (evalExp b)
     QuotRem' a b -> liftM2 quotRem (evalExp a) (evalExp b)
+    And' (C' a) b -> (.&. a) <$> evalExp b
+    And' b (C' a) -> (.&. a) <$> evalExp b
     And' a b -> liftM2 (.&.) (evalExp a) (evalExp b)
+    Or' (C' a) b -> (.|. a) <$> evalExp b
+    Or' b (C' a) -> (.|. a) <$> evalExp b
     Or'  a b -> liftM2 (.|.) (evalExp a) (evalExp b)
+    Xor' (C' a) b -> (xor a) <$> evalExp b
+    Xor' b (C' a) -> (xor a) <$> evalExp b
+--    Xor' a b | a == b -> return zeroBits
     Xor' a b -> liftM2 xor (evalExp a) (evalExp b)
 
-    Bit' i e -> (`testBit` i) <$> evalExp e
-    SetBit' i e f -> liftM2 (bit i .~) (evalExp e) (evalExp f)
-    HighBit' e -> (^. highBit) <$> evalExp e
-    SetHighBit' e f -> liftM2 (highBit .~) (evalExp e) (evalExp f)
     EvenParity' e -> even . popCount <$> evalExp e
 
     Signed' e -> asSigned <$> evalExp e    
     Extend' e -> extend <$> evalExp e    
+--    SegAddr' (C' i) (C' f) -> return $ segAddr i f
     SegAddr' (C' i) f -> (fromIntegral i `shiftL` 4 +) . fromIntegral <$> evalExp f
     SegAddr' e f -> liftM2 segAddr (evalExp e) (evalExp f)
     Convert' e -> fromIntegral <$> evalExp e    
@@ -234,19 +257,30 @@ evalExp = \case
     Fst' p -> fst <$> evalExp p
     Snd' p -> snd <$> evalExp p
 
+
 --evalExpM :: Cache -> ExpM Jump' -> Machine ()
-evalExpM ca e = flip runReaderT Empty (evalEExpM ca e) >>= \(JumpAddr c i) -> cs ..= c >> ip ..= i
+evalExpM ca e = let !m = evalEExpM ca e in runReaderT m Empty >>= \(JumpAddr c i) -> cs ..= c >> ip ..= i
 
 evalEExpM :: Cache -> EExpM e a -> Machine' e a
 evalEExpM ca = evalExpM
   where
   evalExpM :: EExpM e a -> Machine' e a
   evalExpM = \case
+--    LetM' (C' e) f -> pushVal (evalExpM f) e
     LetM' e f -> evalExp e >>= pushVal (evalExpM f)
+    LetMC' e f g -> evalExp e >>= pushVal (evalExpM f) >> evalExpM g
+    Set' p (C' e') c -> case p of
+        Heap16 (C' e_) -> lift (setWordAt (Program $ C' e_) e_ e') >> evalExpM c
+        Heap16 e -> evalExp e >>= \e_ -> lift (setWordAt (Program e) e_ e') >> evalExpM c
+--        Heap8 (C' e_) -> lift (setByteAt (Program $ C' e_) e_ e') >> evalExpM c
+        Heap8 e -> evalExp e >>= \e_ -> lift (setByteAt (Program e) e_ e') >> evalExpM c
+        p -> let x = snd $ evalPart_ p in lift (x e') >> evalExpM c
     Set' p e' c -> case p of 
-        Heap16 e -> join (lift <$> liftM2 (setWordAt $ Program e) (evalExp e) (evalExp e')) >> evalExpM c
-        Heap8 e -> join (lift <$> liftM2 (setByteAt $ Program e) (evalExp e) (evalExp e')) >> evalExpM c
-        p -> evalExp e' >>= lift . (evalPart_ p ..=) >> evalExpM c
+        Heap16 (C' e_) -> evalExp e' >>= \e_' -> lift (setWordAt (Program $ C' e_) e_ e_') >> evalExpM c
+        Heap16 e -> evalExp e >>= \e_ -> evalExp e' >>= \e_' -> lift (setWordAt (Program e) e_ e_') >> evalExpM c
+--        Heap8 (C' e_) -> evalExp e' >>= \e_' -> lift (setByteAt (Program $ C' e_) e_ e_') >> evalExpM c
+        Heap8 e -> evalExp e >>= \e_ -> evalExp e' >>= \e_' -> lift (setByteAt (Program e) e_ e_') >> evalExpM c
+        p -> let x = snd $ evalPart_ p in evalExp e' >>= lift . x >> evalExpM c
 {- temporarily comment out
     Jump'' (C' c) (C' i) | Just (Compiled cs' ss' _ _ _ _ m) <- IM.lookup (segAddr c i) ca
                        , cs' == c -> lift $ do
@@ -254,33 +288,35 @@ evalEExpM ca = evalExpM
                             ip .= i
                             m
 -}
+    Jump'' (C' c) (C' i) -> return $ JumpAddr c i
     Jump'' c i -> liftM2 JumpAddr (evalExp c) (evalExp i)
     Stop' a -> return a
 
+    IfM' (C' b) x y -> if b then evalExpM x else evalExpM y
     IfM' b x y -> evalExp b >>= iff (evalExpM x) (evalExpM y)
 
+    Replicate' n (C' True) e f -> evalExp n >>= \n -> replicateM_ (fromIntegral n) (evalExpM e) >> pushVal (evalExpM f) (0 `asTypeOf` n)
     Replicate' n b e f -> evalExp n >>= replicateM' (evalExp b) (evalExpM e) >>= pushVal (evalExpM f)
 
     Input' a f -> evalExp a >>= lift . input >>= pushVal (evalExpM f)
 
     Output' a b c -> join (lift <$> liftM2 output' (evalExp a) (evalExp b)) >> evalExpM c
 
-replicateM' _ _ 0 = return 0
+
+replicateM' _ _ n@0 = return n
 replicateM' b m n = do
-    () <- m
+    _ <- m
     y <- b
     let !n' = n - 1
     if y then replicateM' b m n' else return n'
 
-pushVal :: Machine' (Con b e) a -> b -> Machine' e a
-pushVal m v = ReaderT $ runReaderT m . (`Push` v)
-
-checkInt n = do
+checkInt changeState cycles cont n = do
   ns <- use' stepsCounter
   let !ns' = ns + n
   stepsCounter ..= ns'
   let ma = complement 0xff
-  when (ns' .&. ma /= ns .&. ma) $ do
+  if (ns' .&. ma == ns .&. ma) then cont else do
+    join $ modifyMVar changeState $ \m -> return (return (), m)
     i <- use' interruptF
     when i $ do
         mask <- use'' intMask
@@ -298,6 +334,12 @@ checkInt n = do
            AskKeyInterrupt scancode -> do
               keyDown ...= scancode
               interrupt 0x09
+
+--    sp <- use'' speed
+--    if sp > 0 then do
+--                  else threadDelay 20000
+    when (ns' < cycles) cont
+
 
 {-
        PrintFreqTable wait -> do

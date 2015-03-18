@@ -40,10 +40,6 @@ data EExp :: List * -> * -> * where
     QuotRem' :: Integral a => EExp e a -> EExp e a -> EExp e (a, a)
     And', Or', Xor' :: Bits a => EExp e a -> EExp e a -> EExp e a
     Not', ShiftL', ShiftR', RotateL', RotateR' :: Bits a => EExp e a -> EExp e a
-    Bit' :: Bits a => Int -> EExp e a -> EExp e Bool
-    SetBit' :: Bits a => Int -> EExp e Bool -> EExp e a -> EExp e a
-    HighBit' :: FiniteBits a => EExp e a -> EExp e Bool
-    SetHighBit' :: FiniteBits a => EExp e Bool -> EExp e a -> EExp e a
     EvenParity' :: EExp e Word8 -> EExp e Bool
 
     Signed' :: AsSigned a => EExp e a -> EExp e (Signed a)
@@ -51,12 +47,18 @@ data EExp :: List * -> * -> * where
     Convert' :: (Integral a, Num b) => EExp e a -> EExp e b
     SegAddr' :: EExp e Word16 -> EExp e Word16 -> EExp e Int
 
+instance Eq a => Eq (EExp e a) where
+    C' a == C' b = a == b 
+    Get' a == Get' b = a == b
+    _ == _ = False
+
 data EExpM :: List * -> * -> * where
     Stop' :: a -> EExpM e a
     Set' :: Part_ (EExp e) a -> EExp e a -> EExpM e x -> EExpM e x
 
     Jump'' :: EExp e Word16 -> EExp e Word16 -> EExpM e Jump'
     LetM' :: EExp e a -> EExpM (Con a e) b -> EExpM e b
+    LetMC' :: EExp e a -> EExpM (Con a e) () -> EExpM e b -> EExpM e b
     IfM' :: EExp e Bool -> EExpM e a -> EExpM e a -> EExpM e a
     Replicate' :: Integral a => EExp e a -> EExp e Bool -> EExpM e () -> EExpM (Con a e) x -> EExpM e x
 
@@ -82,8 +84,8 @@ prjIx 0 (PushLayout _ ix) = unsafeCoerce ix --fromJust (gcast ix)
                               -- can't go wrong unless the library is wrong!
 prjIx n (PushLayout l _)  = prjIx (n - 1) l
 
-convExp :: Exp a -> EExp Nil a
-convExp = convExp_ EmptyLayout
+--convExp :: Exp a -> EExp Nil a
+--convExp = convExp_ EmptyLayout
 
 convExp_ :: forall a e . Layout e e -> Exp a -> EExp e a
 convExp_ lyt = g where
@@ -113,16 +115,12 @@ convExp_ lyt = g where
         And a b -> And' (g a) (g b)
         Or a b -> Or' (g a) (g b)
         Xor a b -> Xor' (g a) (g b)
-        SetBit i a b -> SetBit' i (g a) (g b)
-        SetHighBit a b -> SetHighBit' (g a) (g b)
         SegAddr a b -> SegAddr' (g a) (g b)
         Not a -> Not' (g a)
         ShiftL a -> ShiftL' (g a)
         ShiftR a -> ShiftR' (g a)
         RotateL a -> RotateL' (g a)
         RotateR a -> RotateR' (g a)
-        Bit i a -> Bit' i (g a)
-        HighBit a -> HighBit' (g a)
         EvenParity a -> EvenParity' (g a)
         Signed a -> Signed' (g a)
         Extend a -> Extend' (g a)
@@ -141,6 +139,7 @@ convExpM = f EmptyLayout where
       k :: forall a . ExpM a -> EExpM e a
       k = \case
         LetM e g -> LetM' (q e) $ f (inc lyt `PushLayout` VarZ) $ g $ Var (size lyt)
+        LetMC e g x -> LetMC' (q e) (f (inc lyt `PushLayout` VarZ) $ g $ Var (size lyt)) (k x)
         Input e g -> Input' (q e) $ f (inc lyt `PushLayout` VarZ) $ g $ Var (size lyt)
 
 --        Seq a b -> Seq' (k a) (k b)

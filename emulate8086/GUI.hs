@@ -5,7 +5,7 @@ module GUI
 import Data.Bits
 import Data.Word
 import qualified Data.IntMap.Strict as IM
-import qualified Data.Vector as Vec
+--import qualified Data.Vector as Vec
 import qualified Data.Vector.Storable as S
 import qualified Data.Vector.Storable.Mutable as U
 import Control.Monad as Prelude
@@ -120,7 +120,7 @@ drawWithFrameBuffer changeSt interrupt draw = do
                         when (st ^. showCache) $ do
                             ca <- use' cache
                             forM_ (IM.toList $ fst $ IM.split (offs + 320 * 200) $ snd $ IM.split (offs-1) ca) $ \case
-                                (k, Compiled _ _ es ds _ r _) -> forM_ r $ \(beg, end) ->
+                                (k, Compiled _ _ _ es ds _ r _) -> forM_ r $ \(beg, end) ->
                                     forM_ [max 0 $ beg - offs .. min (320 * 200 - 1) $ end - 1 - offs] $ \i -> do
 --                                        x <- U.unsafeRead v i
                                         U.unsafeWrite showBuffer i $ maybe 0xffff0000 ((.|. 0x0000ff00) . (`shiftL` 16) . fromIntegral) (if esds' then es else ds) -- x .|. 0x3f000000
