@@ -18,7 +18,7 @@ loadSegment = 0x20e
 main = withProgNameAndArgs runALUT $ \_ args -> do
     let cycles = case args of
             [n] -> read n
-            _ -> -1
+            _ -> 1000000000  -- hack
 
     bData <- createBufferData (Square 440 0 0.1)
     buff <- createBuff bData 1
