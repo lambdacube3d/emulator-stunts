@@ -214,7 +214,7 @@ type Blocks = IM.IntMap (ExpM Jump')
 
 --fetchBlock_ :: (Int -> Metadata) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM ()
 fetchBlock_ fetch cs ss es ds ip
-    = (1, [(ips, ips +1)], IM.singleton (fromIntegral ip) $ fetchBlock' fetch cs ip ss (maybe (Get Es) C es) (maybe (Get Ds) C ds) (Get OF) (Get PF))
+    = (1, [(ips, ips +1)], IM.singleton (fromIntegral ip) $ fetchBlock' fetch cs ip ss (maybe (Get Es) C es) (maybe (Get Ds) C ds) (Get OF) (Get SF) (Get PF))
   where
     ips = segAddr cs ip
 
@@ -226,8 +226,8 @@ highBit = Convert . RotateL
 setHighBit :: (Num a, Bits a) => Exp Bool -> Exp a -> Exp a
 setHighBit c = Or (RotateR $ Convert c)
 
-fetchBlock' :: (Int -> Metadata) -> Word16 -> Word16 -> Word16 -> Exp Word16 -> Exp Word16 -> Exp Bool -> Exp Bool -> ExpM Jump'
-fetchBlock' fetch cs ip ss es ds oF pF = case inOpcode of
+fetchBlock' :: (Int -> Metadata) -> Word16 -> Word16 -> Word16 -> Exp Word16 -> Exp Word16 -> Exp Bool -> Exp Bool -> Exp Bool -> ExpM Jump'
+fetchBlock' fetch cs ip ss es ds oF sF pF = case inOpcode of
 
     _ | length inOperands > 2 -> error "more than 2 operands are not supported"
 
@@ -260,16 +260,16 @@ fetchBlock' fetch cs ip ss es ds oF pF = case inOpcode of
     Ijnz  -> condJump $ Not $ Get ZF
     Ijo   -> condJump oF
     Ijno  -> condJump $ Not oF
-    Ijs   -> condJump $ Get SF
-    Ijns  -> condJump $ Not $ Get SF
+    Ijs   -> condJump sF
+    Ijns  -> condJump $ Not sF
     Ijb   -> condJump $ Get CF
     Ijae  -> condJump $ Not $ Get CF
     Ijbe  -> condJump $ Or (Get CF) (Get ZF)
     Ija   -> condJump $ Not $ Or (Get CF) (Get ZF)
-    Ijl   -> condJump $ Xor (Get SF) oF
-    Ijge  -> condJump $ Not $ Xor (Get SF) oF
-    Ijle  -> condJump $ Or (Xor (Get SF) oF) (Get ZF)
-    Ijg   -> condJump $ Not $ Or (Xor (Get SF) oF) (Get ZF)
+    Ijl   -> condJump $ Xor sF oF
+    Ijge  -> condJump $ Not $ Xor sF oF
+    Ijle  -> condJump $ Or (Xor sF oF) (Get ZF)
+    Ijg   -> condJump $ Not $ Or (Xor sF oF) (Get ZF)
 
     Ijcxz -> condJump $ Eq (C 0) (Get CX)
 
@@ -319,16 +319,19 @@ fetchBlock' fetch cs ip ss es ds oF pF = case inOpcode of
     nextip = ip + fromIntegral mdLength
 
     c m = m >> cc
-    ccOFPF = fetchBlock' fetch cs nextip ss es ds
+    ccF = fetchBlock' fetch cs nextip ss es ds
     uSet' = id
-    cc = ccOFPF oF pF
-    cont' es ds m = m >> fetchBlock' fetch cs nextip ss es ds oF pF
-    jump a b = setOFPF oF pF >> Jump' a b
-    setOFPF oF pF = setOF oF >> setPF pF
-    setOF (Get OF) = return ()
-    setOF x = set OF x
-    setPF (Get PF) = return ()
-    setPF x = set PF x
+    cc = ccF oF sF pF
+    cont' es ds m = m >> fetchBlock' fetch cs nextip ss es ds oF sF pF
+    jump a b = setF oF sF pF >> Jump' a b
+    setF oF sF pF = setOF oF >> setSF sF >> setPF pF
+      where
+        setOF (Get OF) = return ()
+        setOF x = set OF x
+        setSF (Get SF) = return ()
+        setSF x = set SF x
+        setPF (Get PF) = return ()
+        setPF x = set PF x
 
     stop m = m >> end
     end = jump (C cs) (C nextip)
@@ -379,10 +382,10 @@ fetchBlock' fetch cs ip ss es ds oF pF = case inOpcode of
           | inOpcode `elem` [Ilodsb, Ilodsw] -> cycle $ move alx si'' >> adjustIndex SI
           | inOpcode `elem` [Imovsb, Imovsw] -> cycle $ move di'' si'' >> adjustIndex SI >> adjustIndex DI
           | inOpcode `elem` [Iscasb, Iscasw] -> cycle $ do
-            twoOp__ setOFPF False Sub di'' $ Get alx
+            twoOp__ setF False Sub di'' $ Get alx
             adjustIndex DI
           | inOpcode `elem` [Icmpsb, Icmpsw] -> cycle $ do
-            twoOp__ setOFPF False Sub si'' $ Get di''
+            twoOp__ setF False Sub si'' $ Get di''
             adjustIndex SI
             adjustIndex DI
 
@@ -414,9 +417,8 @@ fetchBlock' fetch cs ip ss es ds oF pF = case inOpcode of
             letM (Not $ Eq r $ Extend (Convert r :: Exp c)) >>= \c -> do
             set axd $ Convert r
             set CF c
-            uSet SF
             set ZF $ C False    -- needed for Stunts
-            ccOFPF c (uSet' pF)
+            ccF c (uSet' sF) (uSet' pF)
 
         shiftOp :: (forall b . (AsSigned b) => Exp Bool -> Exp b -> (Exp Bool, Exp b)) -> ExpM Jump'
         shiftOp op = letM (and' (C 0x1f) $ getByteOperand op2) >>= \n -> do
@@ -427,20 +429,18 @@ fetchBlock' fetch cs ip ss es ds oF pF = case inOpcode of
                 set op1' r
                 if inOpcode `elem` [Isal, Isar, Ishl, Ishr] then do
                     set ZF $ Eq (C 0) r
-                    set SF $ highBit r
-                    ccOFPF (uSet' oF) $ EvenParity $ Convert r
+                    ccF (uSet' oF) (highBit r) $ EvenParity $ Convert r
                   else do   -- [Ircl, Ircr, Irol, Iror]
                     uSet ZF
-                    uSet SF
-                    ccOFPF (uSet' oF) (uSet' pF)
+                    ccF (uSet' oF) (uSet' sF) (uSet' pF)
 
         twoOp :: Bool -> (forall b . (Integral b, FiniteBits b) => Exp b -> Exp b -> Exp b) -> ExpM Jump'
         twoOp store op = twoOp_ store op op1' op2v
 
         twoOp_ :: AsSigned a => Bool -> (forall a . (Integral a, FiniteBits a) => Exp a -> Exp a -> Exp a) -> Part a -> Exp a -> ExpM Jump'
-        twoOp_ = twoOp__ ccOFPF
+        twoOp_ = twoOp__ ccF
 
-        twoOp__ :: AsSigned a => (Exp Bool -> Exp Bool -> ExpM x) -> Bool -> (forall a . (Integral a, FiniteBits a) => Exp a -> Exp a -> Exp a) -> Part a -> Exp a -> ExpM x
+        twoOp__ :: AsSigned a => (Exp Bool -> Exp Bool -> Exp Bool -> ExpM x) -> Bool -> (forall a . (Integral a, FiniteBits a) => Exp a -> Exp a -> Exp a) -> Part a -> Exp a -> ExpM x
         twoOp__ cont store op op1 op2 =
             letM (Get op1) >>= \a -> do
             let b = op2 --letMC op2 $ \b ->
@@ -452,8 +452,8 @@ fetchBlock' fetch cs ip ss es ds oF pF = case inOpcode of
             when store $ set op1 r
 
             set ZF $ Eq (C 0) r
-            set SF $ highBit r
             cont (Not $ Eq (Convert $ Signed r) $ op (Convert $ Signed a :: Exp Int) (convert $ signed b))
+                 (highBit r)
                  (EvenParity $ Convert r)
 
     cycle body = c $ case filter rep inPrefixes of
