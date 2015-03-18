@@ -60,63 +60,7 @@ mapPart f = \case
     Flags -> Flags
     DXAX -> DXAX
 
-data Jump' = JumpAddr Word16 Word16
-
-type ExpM = ExpM_ Co FunM Fun
-
-newtype FunM a b = FunM {getFunM :: Exp a -> ExpM b}
-
-data ExpM_ (v :: * -> *) (cm :: * -> * -> *) (c :: * -> * -> *)  e where
-    Stop :: e -> ExpM_ v cm c e
-    Set :: Part_ (Exp_ v c) a -> Exp_ v c a -> ExpM_ v cm c e -> ExpM_ v cm c e
-
-    Jump' :: Exp_ v c Word16 -> Exp_ v c Word16 -> ExpM_ v cm c Jump'
-    -- constrained let type (with more efficient interpretation) 
-    LetMC :: Exp_ v c a -> cm a () -> ExpM_ v cm c e -> ExpM_ v cm c e
-    LetM :: Exp_ v c a -> cm a e -> ExpM_ v cm c e
-    IfM :: Exp_ v c Bool -> ExpM_ v cm c e -> ExpM_ v cm c e -> ExpM_ v cm c e
-    Replicate :: Integral a => Exp_ v c a -> Exp_ v c Bool -> ExpM_ v cm c () -> cm a e -> ExpM_ v cm c e
-
-    Input :: Exp_ v c Word16 -> cm Word16 e -> ExpM_ v cm c e
-    Output :: Exp_ v c Word16 -> Exp_ v c Word16 -> ExpM_ v cm c e -> ExpM_ v cm c e
-
-set :: Part a -> Exp a -> ExpM ()
-set x y = Set x y (return ())
-
-ifM (C c) a b = if c then a else b
-ifM x a b = IfM x a b
-
-letM :: Exp a -> ExpM (Exp a)
-letM (C c) = return (C c)
-letM x = LetM x $ FunM return
-
-letMC, letMC' :: Exp a -> (Exp a -> ExpM ()) -> ExpM ()
-letMC (C c) f = f (C c)
-letMC x f = LetMC x (FunM f) (return ())
-
-letMC' x f = letM x >>= f
-
-output a b = Output a b (return ())
-
-
-instance Monad ExpM where
-    return = Stop
-    a >>= f = case a of
-        Stop x -> f x
-        Set a b e -> Set a b $ e >>= f
-        LetMC e x g -> LetMC e x $ g >>= f
-        LetM e (FunM g) -> LetM e $ FunM $ g >=> f
-        IfM b x y -> IfM b (x >>= f) (y >>= f)
-        Replicate n b m (FunM g) -> Replicate n b m $ FunM $ g >=> f
-        Input e (FunM g) -> Input e $ FunM $ g >=> f
-        Output a b e -> Output a b $ e >>= f
-        Jump' _ _ -> error "Jump' >>="
-
-type Exp = Exp_ Co Fun
-
-newtype Co a = Co Int
-
-newtype Fun a b = Fun {getFun :: Exp a -> Exp b}
+--------------------------------------------------------------------------------
 
 data Exp_ (v :: * -> *) (c :: * -> * -> *) a where
     Var :: v a -> Exp_ v c a
@@ -235,4 +179,81 @@ foldExp tr var get = f where
     RotateR a -> RotateR (f a)
     EvenParity a -> EvenParity (f a)
     Convert a -> Convert (f a)
+
+instance Eq a => Eq (EExp e a) where
+    C a == C b = a == b 
+    Get a == Get b = a == b
+    _ == _ = False      -- TODO
+
+instance Monad ExpM where
+    return = Stop
+    a >>= f = case a of
+        Stop x -> f x
+        Set a b e -> Set a b $ e >>= f
+        LetMC e x g -> LetMC e x $ g >>= f
+        LetM e (FunM g) -> LetM e $ FunM $ g >=> f
+        IfM b x y -> IfM b (x >>= f) (y >>= f)
+        Replicate n b m (FunM g) -> Replicate n b m $ FunM $ g >=> f
+        Input e (FunM g) -> Input e $ FunM $ g >=> f
+        Output a b e -> Output a b $ e >>= f
+        Jump' _ _ -> error "Jump' >>="
+
+------------------------------------
+
+newtype Co a = Co Int
+
+newtype Fun a b = Fun {getFun :: Exp a -> Exp b}
+
+data List a = Con a (List a) | Nil
+
+data Var :: List * -> * -> * where
+    VarZ :: Var (Con a e) a
+    VarS :: Var e a -> Var (Con b e) a
+
+type EExp e = Exp_ (Var e) (DB e)
+type Exp = Exp_ Co Fun
+
+--------------------------------------------------------------------------------
+
+data Jump' = JumpAddr Word16 Word16
+
+data ExpM_ (v :: * -> *) (cm :: * -> * -> *) (c :: * -> * -> *)  e where
+    Stop :: e -> ExpM_ v cm c e
+    Set :: Part_ (Exp_ v c) a -> Exp_ v c a -> ExpM_ v cm c e -> ExpM_ v cm c e
+
+    Jump' :: Exp_ v c Word16 -> Exp_ v c Word16 -> ExpM_ v cm c Jump'
+    -- constrained let type (with more efficient interpretation) 
+    LetMC :: Exp_ v c a -> cm a () -> ExpM_ v cm c e -> ExpM_ v cm c e
+    LetM :: Exp_ v c a -> cm a e -> ExpM_ v cm c e
+    IfM :: Exp_ v c Bool -> ExpM_ v cm c e -> ExpM_ v cm c e -> ExpM_ v cm c e
+    Replicate :: Integral a => Exp_ v c a -> Exp_ v c Bool -> ExpM_ v cm c () -> cm a e -> ExpM_ v cm c e
+
+    Input :: Exp_ v c Word16 -> cm Word16 e -> ExpM_ v cm c e
+    Output :: Exp_ v c Word16 -> Exp_ v c Word16 -> ExpM_ v cm c e -> ExpM_ v cm c e
+
+set :: Part a -> Exp a -> ExpM ()
+set x y = Set x y (return ())
+
+ifM (C c) a b = if c then a else b
+ifM x a b = IfM x a b
+
+letM :: Exp a -> ExpM (Exp a)
+letM (C c) = return (C c)
+letM x = LetM x $ FunM return
+
+letMC, letMC' :: Exp a -> (Exp a -> ExpM ()) -> ExpM ()
+letMC (C c) f = f (C c)
+letMC x f = LetMC x (FunM f) (return ())
+
+letMC' x f = letM x >>= f
+
+output a b = Output a b (return ())
+
+newtype FunM a b = FunM {getFunM :: Exp a -> ExpM b}
+
+newtype DB e a b = DB {getDB :: EExp (Con a e) b}
+newtype DBM e a b = DBM {getDBM :: EExpM (Con a e) b}
+
+type ExpM = ExpM_ Co FunM Fun
+type EExpM e = ExpM_ (Var e) (DBM e) (DB e)
 

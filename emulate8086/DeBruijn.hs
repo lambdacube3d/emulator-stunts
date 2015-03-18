@@ -14,24 +14,6 @@ import Edsl
 
 --------------------------
 
-data List a = Con a (List a) | Nil
-
-data Var :: List * -> * -> * where
-    VarZ :: Var (Con a e) a
-    VarS :: Var e a -> Var (Con b e) a
-
-type EExp e = Exp_ (Var e) (DB e)
-
-newtype DB e a b = DB {getDB :: EExp (Con a e) b}
-newtype DBM e a b = DBM {getDBM :: EExpM (Con a e) b}
-
-instance Eq a => Eq (EExp e a) where
-    C a == C b = a == b 
-    Get a == Get b = a == b
-    _ == _ = False      -- TODO
-
-type EExpM e = ExpM_ (Var e) (DBM e) (DB e)
-
 data Layout :: List * -> List * -> * where
   EmptyLayout :: Layout env Nil
   PushLayout  :: {-Typeable t =>-} Layout env env' -> Var env t -> Layout env (Con t env')

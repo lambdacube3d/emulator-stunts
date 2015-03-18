@@ -22,7 +22,7 @@ import Helper
 import Edsl
 import MachineState
 import DeBruijn
-import Dos
+import Dos (input, output')
 import CPU
 
 --------------------------------------

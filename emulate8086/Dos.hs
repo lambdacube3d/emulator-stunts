@@ -6,29 +6,22 @@ import Data.Bits hiding (bit)
 import Data.Char
 import Data.List
 import Data.Monoid
-import Data.IORef
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Map as M
 import qualified Data.IntMap.Strict as IM
 import qualified Data.Vector.Storable as V
-import qualified Data.Vector.Storable.Mutable as U
 import Control.Applicative
-import Control.Arrow
 import Control.Monad.State
 import Control.Lens as Lens
 import Control.Concurrent
-import Control.DeepSeq
 import System.Directory
 import System.FilePath (takeFileName)
 import System.FilePath.Glob
 import Sound.ALUT (play, stop, sourceGain, pitch, ($=))
---import Debug.Trace
 
 import Helper
 import MachineState
-import Edsl
-import DeBruijn
 
 ---------------------------------------------- memory allocation
 
@@ -51,165 +44,12 @@ modifyAllocated addr req (alloc, endf) = head $ concatMap f $ getOut $ zip alloc
 
 --------------------------------------
 
-type MachinePart' a = (Machine a, a -> Machine ())
-
 (@:) :: BS.ByteString -> a ->  a
 b @: x = x
 infix 5 @:
 
 haltWith = error
 halt = error "CleanHalt"
-
-infix 4 ..=, .%=, ...=, ..%=
-{-# INLINE (..=) #-}
-w ..= x = snd w x
-(r, w) .%= f = r >>= w . f
-{-# INLINE use' #-}
-use' x = fst x
-
-use'' k = (^. k) <$> readIORef emptyState
-k ...= v = modifyIORef' emptyState $ k .~ v
-k ..%= v = modifyIORef' emptyState $ k %~ v
-
-ax = ff 0
-bx = ff 1
-cx = ff 2
-dx = ff 3
-si = ff 4
-{-# INLINE di #-}
-di = ff 5
-cs = ff 6
-ss = ff 7
-ds = ff 8
-es = ff 9
-sp = ff 10
-bp = ff 11
-ip = ff 12
-{-# INLINE flags_ #-}
-flags_ = ff 13
-
-{-# INLINE ff #-}
-ff i = (U.unsafeRead regs i, U.unsafeWrite regs i) :: MachinePart'' Word16
-
-flags :: MachinePart'' Word16
-flags = id *** (. wordToFlags) $ flags_
-
-al = rLow 0
-bl = rLow 1
-cl = rLow 2
-dl = rLow 3
-
-rLow i = (fromIntegral <$> U.unsafeRead regs i, \v -> U.unsafeRead regs i >>= U.unsafeWrite regs i . (.|. fromIntegral v) . (.&. 0xff00)) :: MachinePart'' Word8
-
-ah = rHigh 0
-bh = rHigh 1
-ch = rHigh 2
-dh = rHigh 3
-
-rHigh i = (fromIntegral . (`shiftR` 8) <$> U.unsafeRead regs i, \v -> U.unsafeRead regs i >>= U.unsafeWrite regs i . (.|. fromIntegral v `shiftL` 8) . (.&. 0x00ff)) :: MachinePart'' Word8
-
-dxax, cxdx :: MachinePart'' Word32
-dxax = comb dx ax
-cxdx = comb cx dx
-
-comb (rh, wh) (rl, wl)
-    = ( liftM2 (\h l -> fromIntegral h `shiftL` 16 .|. fromIntegral l) rh rl
-      , \x -> wh (fromIntegral $ x `shiftR` 16) >> wl (fromIntegral x)
-      )
-
-{-# INLINE overflowF #-}
-overflowF   = flag 11
-directionF  = flag 10
-interruptF  = flag 9
-{-# INLINE signF #-}
-signF       = flag 7
-{-# INLINE zeroF #-}
-zeroF       = flag 6
-{-# INLINE parityF #-}
-parityF     = flag 2
-{-# INLINE carryF #-}
-carryF      = flag 0
-
-{-# INLINE flag #-}
-flag i = ((`testBit` i) <$> r, \b -> r >>= w . if b then (`setBit` i) else (`clearBit` i)) :: MachinePart'' Bool
-  where (r, w) = flags_
-
-
-data Info
-    = System
-    | forall e . Program (EExp e Int)
-
-info :: Info -> a -> a -> a -> a
-info System s1 s2 s3 = s1
-info (Program (SegAddr (C _) (C _))) s1 s2 s3 = s2
-info _ s1 s2 s3 = s3
-
-uRead :: Info -> Int -> IO Word8
-uRead inf i = do
-    b <- use' showReads'
-    when b $ do
-        off <- use' showOffset
-        let j = i - off
-        when (0 <= j && j < 320 * 200) $ do
-            x <- U.unsafeRead showBuffer j
-            U.unsafeWrite showBuffer j $ x .|. info inf 0xff00ff00 0x00008000 0x0000ff00
-    U.unsafeRead heap'' i
-
-uWrite :: Info -> Int -> Word8 -> IO ()
-uWrite inf i v = do
-    U.unsafeWrite heap'' i v
-    b <- use' showReads
-    when b $ do
-        off <- use' showOffset
-        let j = i - off
-        when (0 <= j && j < 320 * 200) $ do
-            x <- U.unsafeRead showBuffer j
-            U.unsafeWrite showBuffer j $ x .|. info inf 0xffff0000 0x00800000 0x00ff0000
-
-bytesAt__ :: Int -> Int -> MachinePart'' [Word8]
-bytesAt__ i' j' = (get_, set)
-  where
-    set ws = zipWithM_ (uWrite System) [i'..]
-        $ (pad (error "pad") j' . take j') ws
-    get_ = mapM (uRead System) [i'..i'+j'-1]
-
-byteAt__ :: Info -> Int -> Machine Word8
-byteAt__ inf i = uRead inf i
-
-getByteAt inf i = uRead inf i
-
-setByteAt :: Info -> Int -> Word8 -> Machine ()
-setByteAt inf i v = uWrite inf i v
-
-wordAt__ :: Info -> Int -> Machine Word16
-wordAt__ = getWordAt --liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead inf (i+1)) (uRead inf i)
-
-getWordAt inf i | even i = do
-    b <- use' showReads'
-    when b $ do
-        off <- use' showOffset
-        let j = i - off
-        when (0 <= j && j < 320 * 200) $ do -- TODO
-            x <- U.unsafeRead showBuffer j
-            U.unsafeWrite showBuffer j $ x .|. info inf 0xff00ff00 0x00008000 0x0000ff00
-    U.unsafeRead (U.unsafeCast heap'') (i `shiftR` 1)
-getWordAt inf i = liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead inf (i+1)) (uRead inf i)
-
-setWordAt :: Info -> Int -> Word16 -> Machine ()
-setWordAt inf i v | even i = do
-    U.unsafeWrite (U.unsafeCast heap'') (i `shiftR` 1) v
-    b <- use' showReads
-    when b $ do -- TODO
-        off <- use' showOffset
-        let j = i - off
-        when (0 <= j && j < 320 * 200) $ do
-            x <- U.unsafeRead showBuffer j
-            U.unsafeWrite showBuffer j $ x .|. info inf 0xffff0000 0x00800000 0x00ff0000
-setWordAt inf i v = uWrite inf i (fromIntegral v) >> uWrite inf (i+1) (fromIntegral $ v `shiftR` 8)
-
-dwordAt__ :: Info -> Int -> MachinePart' Word32
-dwordAt__ inf i = ( liftM2 (\hi lo -> fromIntegral hi `shiftL` 16 .|. fromIntegral lo) (wordAt__ inf $ i+2) (wordAt__ inf i)
-             , \v -> setWordAt inf i (fromIntegral v) >> setWordAt inf (i+2) (fromIntegral $ v `shiftR` 16))
 
 getSender = do
     v <- use'' interruptRequest
@@ -230,28 +70,7 @@ getRetrace = do
     retrace ..%= tail
     return x
 
-trace_ :: String -> Machine ()
-trace_ s = putStr $ " | " ++ s
-
 ----------------------
-
-cacheFile = "cache.txt"
-
---alter i f = IM.alter (Just . maybe (f mempty) f) i
-alter' :: Maybe Word16 -> Int
-alter' (Just i) = fromIntegral i
-alter' Nothing = -1
-
-adjustCache = do
-    trace_ "adjust cache"
-    ch <- use' cache
-    let p (Compiled True cs ss es ds _ _ _) = Just (cs, ss, es, ds)
-        p _ = Nothing
-    do
-        cf <- read <$> readFile cacheFile
-        let cf' = foldr (uncurry IM.insert) cf
-                [(i, (cs, ss, alter' es, alter' ds)) | (i, p -> Just t@(cs, ss, es, ds)) <- IM.toList ch ]
-        cf' `deepseq` writeFile cacheFile (show cf')
 
 --------------------------------------------------------------------------------
 
@@ -884,39 +703,5 @@ relocate table loc exe = BS.concat $ fst: map add (bss ++ [last])
 
 
 ---------------------------------
-
-push :: Word16 -> Machine ()
-push x = do
-    sp .%= (+ (-2))
-    ad <- liftM2 segAddr (use' ss) (use' sp)
-    setWordAt System ad x
-
-pop :: Machine Word16
-pop = do
-    ad <- liftM2 segAddr (use' ss) (use' sp)
-    x <- wordAt__ System ad
-    sp .%= (+ 2)
-    return x
-
-interrupt :: Word8 -> Machine ()
-interrupt v = do
-    use' flags >>= push
-    use' cs >>= push
-    use' ip >>= push
-    interruptF ..= False
-    wordAt__ System (ad + 2) >>= (cs ..=)
-    wordAt__ System ad >>= (ip ..=)
-  where
-    ad = 4 * fromIntegral v
-
-iret :: Machine ()
-iret = do
-    ip' <- pop
-    cs' <- pop
-    flags' <- pop
-    interruptF ..= testBit flags' 9
-    cs ..= cs'
-    ip ..= ip'
-    
 
 

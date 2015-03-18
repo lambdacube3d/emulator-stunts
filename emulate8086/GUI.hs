@@ -17,7 +17,6 @@ import Foreign
 
 import MachineState
 import Helper
-import Dos
 
 ------------------------------------------------
 
