@@ -2,6 +2,7 @@ module Edsl where
 
 import Data.Word
 import Data.Bits
+import qualified Data.IntMap.Strict as IM
 import Control.Applicative
 import Control.Monad
 import Prelude
@@ -148,6 +149,11 @@ highBit = Convert . RotateL
 setHighBit :: (Num a, Bits a) => Exp_ v c Bool -> Exp_ v c a -> Exp_ v c a
 setHighBit c = Or (RotateR $ Convert c)
 
+segAddr_ (C s) (C o) = C $ segAddr s o
+segAddr_ seg off = SegAddr seg off
+
+
+
 -- TODO: abstract add, mul
 {-# INLINE foldExp #-}
 foldExp :: forall v v' c c' a
@@ -213,12 +219,13 @@ type EExp e = Exp_ (Var e) (DB e)
 --------------------------------------------------------------------------------
 
 data Jump' = JumpAddr Word16 Word16
+type JumpInfo e = Maybe ((Word16, Word16), IM.IntMap (e Jump'))
 
 data ExpM_ (e :: * -> *) (c :: * -> * -> *) a where
     Ret :: e a -> ExpM_ e c a
     Set :: Part_ e b -> e b -> ExpM_ e c a -> ExpM_ e c a
 
-    Jump' :: e Word16 -> e Word16 -> ExpM_ e c Jump'
+    Jump' :: JumpInfo (ExpM_ e c) -> e Word16 -> e Word16 -> ExpM_ e c Jump'
     -- constrained let type (with more efficient interpretation) 
     LetMC :: e b -> c b () -> ExpM_ e c a -> ExpM_ e c a
     LetM :: e b -> c b a -> ExpM_ e c a
@@ -260,7 +267,7 @@ instance (CC c, Ex c ~ Exp_ v c') => Monad (ExpM_ (Exp_ v c') c) where
         Replicate n b m g -> Replicate n b m $ g .>=> f
         Input e g -> Input e $ g .>=> f
         Output a b e -> Output a b $ e >>= f
-        Jump' _ _ -> error "Jump' >>="
+        Jump' _ _ _ -> error "Jump' >>="
         Trace s e -> Trace s $ e >>= f
 
 
@@ -289,7 +296,7 @@ foldExpM :: forall e e' c c' a
      . (forall x . e x -> e' x)
     -> (forall x y . c x y -> c' x y)
     -> (forall x b . Part_ e b -> e b -> ExpM_ e c x -> ExpM_ e' c' x)
-    -> (e Word16 -> e Word16 -> ExpM_ e' c' Jump')
+    -> (JumpInfo (ExpM_ e c) -> e Word16 -> e Word16 -> ExpM_ e' c' Jump')
     -> ExpM_ e c a -> ExpM_ e' c' a
 foldExpM q tr set jump = k where
     k :: ExpM_ e c x -> ExpM_ e' c' x
@@ -300,7 +307,7 @@ foldExpM q tr set jump = k where
         IfM a b c -> IfM (q a) (k b) (k c)
         IfM' a b c d -> IfM' (q a) (k b) (k c) (tr d)
         Replicate n b a g -> Replicate (q n) (q b) (k a) (tr g)
-        Jump' cs ip -> jump cs ip
+        Jump' i cs ip -> jump i cs ip
         Set p a g -> set p a g
         Output a b c -> Output (q a) (q b) (k c)
         Ret x -> Ret (q x)

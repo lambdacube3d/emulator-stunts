@@ -7,6 +7,7 @@ import Data.IORef
 import Control.Concurrent.MVar
 import qualified Data.Vector.Storable as V
 import qualified Data.IntMap.Strict as IM
+import qualified Data.IntSet as IS
 import qualified Data.ByteString as BS
 import qualified Data.Vector.Storable.Mutable as U
 import Control.Lens as Lens
@@ -37,6 +38,7 @@ type MemPiece = (Regions, Int)
 
 type UVec = U.IOVector Word8
 type Cache = IM.IntMap CacheEntry
+type Cache2 = IM.IntMap IS.IntSet
 
 data CacheEntry
     = Compiled Bool !Word16{-cs-} !Word16{-ss-} !(Maybe Word16){-es-} !(Maybe Word16){-ds-} !Int{-num of instr-} !Regions !(Machine ())
@@ -80,6 +82,11 @@ cache = refPart _cache
 _cache    :: IORef Cache
 {-# NOINLINE _cache #-}
 _cache = unsafePerformIO $ newIORef IM.empty
+
+cache2 = refPart _cache2
+_cache2    :: IORef Cache2
+{-# NOINLINE _cache2 #-}
+_cache2 = unsafePerformIO $ newIORef IM.empty
 
 data MachineState = MachineState
     { _verboseLevel     :: !Int
@@ -329,24 +336,6 @@ dwordAt__ inf i = ( liftM2 (\hi lo -> fromIntegral hi `shiftL` 16 .|. fromIntegr
 
 trace_ :: String -> Machine ()
 trace_ s = putStr $ " | " ++ s
-
-cacheFile = "cache.txt"
-
---alter i f = IM.alter (Just . maybe (f mempty) f) i
-alter' :: Maybe Word16 -> Int
-alter' (Just i) = fromIntegral i
-alter' Nothing = -1
-
-adjustCache = do
-    trace_ "adjust cache"
-    ch <- use' cache
-    let p (Compiled True cs ss es ds _ _ _) = Just (cs, ss, es, ds)
-        p _ = Nothing
-    do
-        cf <- read <$> readFile cacheFile
-        let cf' = foldr (uncurry IM.insert) cf
-                [(i, (cs, ss, alter' es, alter' ds)) | (i, p -> Just t@(cs, ss, es, ds)) <- IM.toList ch ]
-        cf' `deepseq` writeFile cacheFile (show cf')
 
 push :: Word16 -> Machine ()
 push x = do

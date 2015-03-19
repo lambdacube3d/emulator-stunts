@@ -4,8 +4,10 @@ import Data.Word
 import Data.Bits hiding (bit)
 import Data.List
 import Data.Monoid
+import Data.Maybe
 import qualified Data.ByteString as BS
 import qualified Data.IntMap.Strict as IM
+import qualified Data.IntSet as IS
 import qualified Data.Vector.Storable as US
 import qualified Data.Vector.Storable.Mutable as U
 import Control.Applicative
@@ -58,7 +60,8 @@ evalBlocks cs' ip' e = case IM.lookup (fromIntegral ip') e of
     Nothing -> return ()
 
 fetchBlock_' ca f cs ss es ds ip = do
-    let (n, r, e) = fetchBlock_ (f) cs ss es ds ip
+    jumps <- use' cache2
+    let (n, r, e) = fetchBlock_ (\i -> fromMaybe mempty $ IM.lookup i jumps) f cs ss es ds ip
     _ <- evaluate n
     let !cc = spTrans $ convExpM $ snd $ head $ IM.toList e
         !dd = evalExpM mempty cc
@@ -281,8 +284,6 @@ evalEExpM ca = evalExpM
                             ip .= i
                             m
 -}
-    Jump' (C c) (C i) -> return $ JumpAddr c i
-    Jump' c i -> liftM2 JumpAddr (evalExp c) (evalExp i)
     Ret (C a) -> return a
     Ret a -> evalExp a
 
@@ -299,6 +300,24 @@ evalEExpM ca = evalExpM
     Output a b c -> join (lift <$> liftM2 output' (evalExp a) (evalExp b)) >> evalExpM c
 
     Trace s c -> lift (trace_ s) >> evalExpM c
+
+    Jump' Nothing (C c) (C i) -> return $ JumpAddr c i
+    Jump' Nothing c i -> liftM2 JumpAddr (evalExp c) (evalExp i)
+    Jump' (Just ((cs, ip), table)) cs' ip' -> let
+        table' = IM.map evalExpM table
+        in do
+            cs'' <- evalExp cs'
+            ip'' <- evalExp ip'
+            let end = return $ JumpAddr cs'' ip''
+                ip''' = fromIntegral ip''
+            if cs /= cs'' then end else
+              case IM.lookup ip''' table' of
+                Just m -> m
+                Nothing -> do
+                    lift $ cache2 .%= alter' (segAddr cs ip) (IS.insert ip''')
+                    end
+
+alter' i f = IM.alter (Just . maybe (f mempty) f) i
 
 replicateM' _ _ n@0 = return n
 replicateM' b m n = do
@@ -337,9 +356,32 @@ checkInt changeState cycles cont n = do
 --                  else threadDelay 20000
     when (ns' < cycles) cont
 
+--------------------------------------------------------------------------------
+
+cacheFile = "cache.txt"
+
+adjustCache = do
+    trace_ "adjust cache"
+    ch <- use' cache
+    jumps <- use' cache2
+    let p (Compiled True cs ss es ds _ _ _) = Just (cs, ss, es, ds)
+        p _ = Nothing
+
+    (cf, jumps') <- read <$> readFile cacheFile
+    let cf' = ( foldr (uncurry IM.insert) cf
+                [(i, (cs, ss, alter' es, alter' ds)) | (i, p -> Just t@(cs, ss, es, ds)) <- IM.toList ch ]
+              , IM.union jumps jumps'
+              )
+    cf' `deepseq` writeFile cacheFile (show cf')
+  where
+    alter' :: Maybe Word16 -> Int
+    alter' (Just i) = fromIntegral i
+    alter' Nothing = -1
+
+
 loadCache getInst = do
     trace_ "Loading cache"
-    cf <- readCache
+    (cf, jumps) <- readCache
 --    when (not $ unique [segAddr cs $ fromIntegral ip | (fromIntegral -> cs, ips) <- IM.toList cf, ip <- IS.toList ips]) $ error "corrupt cache"
     let fromIntegral' :: Int -> Maybe Word16
         fromIntegral' x | x == -1 = Nothing
@@ -353,13 +395,16 @@ loadCache getInst = do
 --        ca <- use'' cache
         return cf'
     cache .%= IM.union (IM.fromList cf')
+    cache2 .%= IM.unionWith IS.union jumps
     trace_ "cache loaded"
 
-readCache :: IO (IM.IntMap (Int,Int,Int,Int))
+type CacheFile = (IM.IntMap (Int,Int,Int,Int), Cache2)
+
+readCache :: IO CacheFile
 readCache = do
     let newCache = do
-        writeFile cacheFile "fromList []"
-        return mempty
+            writeFile cacheFile $ show (mempty :: CacheFile)
+            return mempty
     b <- doesFileExist cacheFile
     if not b then newCache else do
         x <- readFile cacheFile

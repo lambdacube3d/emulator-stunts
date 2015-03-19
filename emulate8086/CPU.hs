@@ -26,9 +26,9 @@ type Fetcher = Int -> Metadata
 type Blocks = IM.IntMap (ExpM Jump')
 
 --fetchBlock_ :: (Int -> Metadata) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM ()
-fetchBlock_ fetch cs ss es ds ip
+fetchBlock_ jumps fetch cs ss es ds ip
     = (1, [(ips, ips +1)], IM.singleton (fromIntegral ip) $
-        fetchBlock' IS.empty fetch
+        fetchBlock' IS.empty jumps fetch
             cs ip ss (maybe (Get Es) C es) (maybe (Get Ds) C ds)
             (Get OF) (Get SF) (Get ZF) (Get PF) (Get CF))
   where
@@ -41,33 +41,35 @@ type FlagTr = forall x . (Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> Exp Bo
 
 fetchBlock'
     :: IS.IntSet
+    -> (Int -> IS.IntSet)
     -> Fetcher
     -> Word16 -> Word16 -> Word16 -> Exp Word16 -> Exp Word16
     -> Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool
     -> ExpM Jump'
-fetchBlock' visited fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
+fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
 
-    _ | fromIntegral ip `IS.member` visited -> jump (C cs) (C ip)
+    _ | fromIntegral ip `IS.member` visited -> setFlags >> Jump' Nothing (C cs) (C ip)
 
     _ | length inOperands > 2 -> error "more than 2 operands are not supported"
 
     _ | inOpcode `elem` [Ijmp, Icall] -> do
       let jmp far cs' ip' = do
-            when (inOpcode == Icall) $ do
+            if inOpcode == Icall then do
                 when far $ push $ C cs
                 push $ C nextip
-            jump' cs' ip'
+                Jump' Nothing cs' ip'
+              else jump' cs' ip'
       case op1 of
         Ptr (Pointer seg (Immediate Bits16 v)) -> jmp True (C $ fromIntegral seg) (C $ fromIntegral v)
         Mem _ -> addr2 op1 $ \ad ad2 -> jmp far (if far then ad2 else C cs) ad
         _     -> jmp False (C cs) (getWordOperand op1)
 
     _ | inOpcode `elem` [Iret, Iretf, Iiretw] -> do
-        ip <- pop
-        cs <- if inOpcode == Iret then return $ C cs else pop
+        ip' <- pop
+        cs' <- if inOpcode == Iret then return $ C cs else pop
         if inOpcode == Iiretw then pop' $ set Flags else setFlags
         when (length inOperands == 1) $ modif SP $ add (getWordOperand op1)
-        Jump' cs ip
+        Jump' Nothing cs' ip'
 
     Iint  -> case getByteOperand op1 of C n -> interrupt n
     Iinto -> ifM oF (interrupt 4) cc
@@ -142,14 +144,19 @@ fetchBlock' visited fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
 
     c m = m >> cc
     cc = ccF oF sF zF pF cF
-    ccF = fetchBlock' visited' fetch cs nextip ss es ds
+    ccF = fetchBlock' visited' jumps fetch cs nextip ss es ds
     uSet' f _ = Get f -- const $ C False
     ccClean = ccF (Get OF) (Get SF) (Get ZF) (Get PF) (Get CF)
-    cont' es ds m = m >> fetchBlock' visited' fetch cs nextip ss es ds oF sF zF pF cF
+    cont' es ds m = m >> fetchBlock' visited' jumps fetch cs nextip ss es ds oF sF zF pF cF
     visited' = IS.insert (fromIntegral ip) visited
-    jump' (C cs') (C nextip) | cs == cs' = {-Trace mdAssembly $ -} fetchBlock' visited' fetch cs nextip ss es ds oF sF zF pF cF
-    jump' a b = jump a b
-    jump a b = setFlags >> Jump' a b
+
+    jump' :: Exp Word16 -> Exp Word16 -> ExpM Jump'
+    jump' (C cs') (C nextip) | cs == cs' = continue nextip
+    jump' a b = Jump' (Just ((cs, ip), IM.fromSet (continue . fromIntegral) $ jumps $ segAddr cs ip)) a b
+
+    continue :: Word16 -> ExpM Jump'
+    continue nextip = fetchBlock' visited' jumps fetch cs nextip ss es ds oF sF zF pF cF
+
     setFlags = setF oF sF zF pF cF
     setF oF sF zF pF cF = setOF oF >> setSF sF >> setZF zF >> setPF pF >> setCF cF
       where
@@ -370,10 +377,10 @@ fetchBlock' visited fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
             Reg16 RDI | stringinstruction -> ES
             _         -> DS
 
-    stringinstruction = inOpcode `elem` [Icwd, Icbw, Istosb, Istosw, Ilodsb, Ilodsw, Imovsb, Imovsw, Iscasb, Iscasw, Icmpsb, Icmpsw]
-
     addressOf' :: Memory -> Exp Word16
     addressOf' (Memory _ r r' 0 i) = add (C $ imm i) $ add (getReg r) (getReg r')
+
+    stringinstruction = inOpcode `elem` [Icwd, Icbw, Istosb, Istosw, Ilodsb, Ilodsw, Imovsb, Imovsw, Iscasb, Iscasw, Icmpsb, Icmpsw]
 
     getByteOperand = \case
         Imm (Immediate Bits8 v) -> C $ fromIntegral v
@@ -435,11 +442,10 @@ fetchBlock' visited fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
         push $ C nextip
         set IF $ C False
         let i = fromIntegral $ 4*v
-        Jump' (Get $ Heap16 $ C $ i + 2) (Get $ Heap16 $ C i)
-
-    segAddr_ :: Exp Word16 -> Exp Word16 -> Exp Int
-    segAddr_ (C s) (C o) = C $ segAddr s o
-    segAddr_ seg off = SegAddr seg off
+        Jump' Nothing (Get $ Heap16 $ C $ i + 2) (Get $ Heap16 $ C i)
 
     modif p f = set p $ f $ Get p
+
+
+
 

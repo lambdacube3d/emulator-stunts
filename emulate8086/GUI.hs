@@ -16,6 +16,7 @@ import Graphics.UI.GLFW as GLFW
 import Foreign
 
 import MachineState
+import Emulate
 import Helper
 
 ------------------------------------------------
