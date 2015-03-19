@@ -219,13 +219,16 @@ type EExp e = Exp_ (Var e) (DB e)
 --------------------------------------------------------------------------------
 
 data Jump' = JumpAddr Word16 Word16
-type JumpInfo e = Maybe ((Word16, Word16), IM.IntMap (e Jump'))
+type JumpInfo e = Maybe ((Word16, Word16), IM.IntMap (e Jump'), e Jump')
 
 data ExpM_ (e :: * -> *) (c :: * -> * -> *) a where
     Ret :: e a -> ExpM_ e c a
     Set :: Part_ e b -> e b -> ExpM_ e c a -> ExpM_ e c a
 
+--    Jump' :: e Word16 -> e Word16 -> ExpM_ e c Jump'
     Jump' :: JumpInfo (ExpM_ e c) -> e Word16 -> e Word16 -> ExpM_ e c Jump'
+    Call :: e Word16 -> e Word16 -> Int -> ExpM_ e c a -> ExpM_ e c a
+
     -- constrained let type (with more efficient interpretation) 
     LetMC :: e b -> c b () -> ExpM_ e c a -> ExpM_ e c a
     LetM :: e b -> c b a -> ExpM_ e c a
@@ -267,6 +270,7 @@ instance (CC c, Ex c ~ Exp_ v c') => Monad (ExpM_ (Exp_ v c') c) where
         Replicate n b m g -> Replicate n b m $ g .>=> f
         Input e g -> Input e $ g .>=> f
         Output a b e -> Output a b $ e >>= f
+        Call a b i g -> Call a b i $ g >>= f
         Jump' _ _ _ -> error "Jump' >>="
         Trace s e -> Trace s $ e >>= f
 
@@ -308,6 +312,7 @@ foldExpM q tr set jump = k where
         IfM' a b c d -> IfM' (q a) (k b) (k c) (tr d)
         Replicate n b a g -> Replicate (q n) (q b) (k a) (tr g)
         Jump' i cs ip -> jump i cs ip
+        Call a b i g -> Call (q a) (q b) i (k g)
         Set p a g -> set p a g
         Output a b c -> Output (q a) (q b) (k c)
         Ret x -> Ret (q x)

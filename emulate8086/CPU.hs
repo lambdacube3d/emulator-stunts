@@ -152,7 +152,10 @@ fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
 
     jump' :: Exp Word16 -> Exp Word16 -> ExpM Jump'
     jump' (C cs') (C nextip) | cs == cs' = continue nextip
-    jump' a b = Jump' (Just ((cs, ip), IM.fromSet (continue . fromIntegral) $ jumps $ segAddr cs ip)) a b
+    jump' a b = Jump' ( Just ((cs, ip)
+                      , IM.fromSet (continue . fromIntegral) $ jumps $ segAddr cs ip
+                      , setFlags >> Jump' Nothing a b)
+                      ) a b
 
     continue :: Word16 -> ExpM Jump'
     continue nextip = fetchBlock' visited' jumps fetch cs nextip ss es ds oF sF zF pF cF

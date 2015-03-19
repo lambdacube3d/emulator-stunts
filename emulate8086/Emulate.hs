@@ -303,13 +303,13 @@ evalEExpM ca = evalExpM
 
     Jump' Nothing (C c) (C i) -> return $ JumpAddr c i
     Jump' Nothing c i -> liftM2 JumpAddr (evalExp c) (evalExp i)
-    Jump' (Just ((cs, ip), table)) cs' ip' -> let
+    Jump' (Just ((cs, ip), table, fallback)) cs' ip' -> let
         table' = IM.map evalExpM table
+        end = evalExpM fallback
         in do
             cs'' <- evalExp cs'
             ip'' <- evalExp ip'
-            let end = return $ JumpAddr cs'' ip''
-                ip''' = fromIntegral ip''
+            let ip''' = fromIntegral ip''
             if cs /= cs'' then end else
               case IM.lookup ip''' table' of
                 Just m -> m

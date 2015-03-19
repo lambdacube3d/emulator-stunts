@@ -38,7 +38,7 @@ convExpM = convM EmptyLayout where
         (conv lyt)
         (\(FunM g) -> DBM $ convM (inc lyt `PushLayout` VarZ) $ g $ Var $ Co $ size lyt)
         (\p a g -> Set (convPart lyt p) (conv lyt a) (convM lyt g))
-        (\i cs ip -> Jump' ((id *** IM.map (convM lyt)) <$> i) (conv lyt cs) (conv lyt ip))
+        (\i cs ip -> Jump' ((\(x,y,z) -> (x, IM.map (convM lyt) y, convM lyt z)) <$> i) (conv lyt cs) (conv lyt ip))
 
     conv :: forall a e . Layout e e -> Exp a -> EExp e a
     conv lyt = foldExp
@@ -82,10 +82,11 @@ spTrans = spTr (Get SP)
         set p v c = Set p (spTrE sp v) (spTr sp c)
 
         jump :: JumpInfo (EExpM e) -> EExp e Word16 -> EExp e Word16 -> EExpM e Jump'
-        jump i cs ip = case sp of
+        jump (Just (x, y, z)) cs ip = Jump' (Just (x, IM.map (spTr sp) y, spTr sp z)) (spTrE sp cs) (spTrE sp ip)
+        jump Nothing cs ip = case sp of
             Get SP -> cont
             sp -> Set SP sp cont
-          where cont = Jump' ((id *** IM.map (spTr sp)) <$> i) cs ip
+          where cont = Jump' Nothing cs ip
 
 add_ (Add (C j) x) = (j, x)
 add_ v = (0, v)
