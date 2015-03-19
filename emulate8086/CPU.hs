@@ -5,10 +5,11 @@ import Data.Maybe
 import Data.Int
 import Data.Word
 import Data.Bits
+import qualified Data.IntSet as IS
 import qualified Data.IntMap.Strict as IM
 import Control.Monad
 import Hdis86
---import Debug.Trace
+import Debug.Trace
 
 import Helper
 import Edsl
@@ -27,7 +28,7 @@ type Blocks = IM.IntMap (ExpM Jump')
 --fetchBlock_ :: (Int -> Metadata) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM ()
 fetchBlock_ fetch cs ss es ds ip
     = (1, [(ips, ips +1)], IM.singleton (fromIntegral ip) $
-        fetchBlock' fetch
+        fetchBlock' IS.empty fetch
             cs ip ss (maybe (Get Es) C es) (maybe (Get Ds) C ds)
             (Get OF) (Get SF) (Get ZF) (Get PF) (Get CF))
   where
@@ -39,11 +40,14 @@ type FlagTr = forall x . (Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> Exp Bo
                       -> (Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> ExpM x)
 
 fetchBlock'
-    :: Fetcher
+    :: IS.IntSet
+    -> Fetcher
     -> Word16 -> Word16 -> Word16 -> Exp Word16 -> Exp Word16
     -> Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool
     -> ExpM Jump'
-fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
+fetchBlock' visited fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
+
+    _ | fromIntegral ip `IS.member` visited -> jump (C cs) (C ip)
 
     _ | length inOperands > 2 -> error "more than 2 operands are not supported"
 
@@ -52,7 +56,7 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
             when (inOpcode == Icall) $ do
                 when far $ push $ C cs
                 push $ C nextip
-            jump cs' ip'
+            jump' cs' ip'
       case op1 of
         Ptr (Pointer seg (Immediate Bits16 v)) -> jmp True (C $ fromIntegral seg) (C $ fromIntegral v)
         Mem _ -> addr2 op1 $ \ad ad2 -> jmp far (if far then ad2 else C cs) ad
@@ -138,10 +142,13 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
 
     c m = m >> cc
     cc = ccF oF sF zF pF cF
-    ccF = fetchBlock' fetch cs nextip ss es ds
+    ccF = fetchBlock' visited' fetch cs nextip ss es ds
     uSet' f _ = Get f -- const $ C False
     ccClean = ccF (Get OF) (Get SF) (Get ZF) (Get PF) (Get CF)
-    cont' es ds m = m >> fetchBlock' fetch cs nextip ss es ds oF sF zF pF cF
+    cont' es ds m = m >> fetchBlock' visited' fetch cs nextip ss es ds oF sF zF pF cF
+    visited' = IS.insert (fromIntegral ip) visited
+    jump' (C cs') (C nextip) | cs == cs' = {-Trace mdAssembly $ -} fetchBlock' visited' fetch cs nextip ss es ds oF sF zF pF cF
+    jump' a b = jump a b
     jump a b = setFlags >> Jump' a b
     setFlags = setF oF sF zF pF cF
     setF oF sF zF pF cF = setOF oF >> setSF sF >> setZF zF >> setPF pF >> setCF cF
@@ -303,7 +310,7 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
         condJump $ and'' cond $ Not $ Eq (C 0) (Get CX)
 
     condJump :: Exp Bool -> ExpM Jump'
-    condJump b = ifM b (jump (C cs) (getWordOperand op1)) cc
+    condJump b = ifM b (jump' (C cs) (getWordOperand op1)) cc
 
     sizeByte :: Word16
     sizeByte = case inOpcode of

@@ -298,6 +298,7 @@ evalEExpM ca = evalExpM
 
     Output a b c -> join (lift <$> liftM2 output' (evalExp a) (evalExp b)) >> evalExpM c
 
+    Trace s c -> lift (trace_ s) >> evalExpM c
 
 replicateM' _ _ n@0 = return n
 replicateM' b m n = do

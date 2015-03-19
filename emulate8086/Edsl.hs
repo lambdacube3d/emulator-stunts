@@ -85,6 +85,9 @@ data Exp_ (v :: * -> *) (c :: * -> * -> *) a where
     Convert :: (Integral a, Num b) => Exp_ v c a -> Exp_ v c b
     SegAddr :: Exp_ v c Word16 -> Exp_ v c Word16 -> Exp_ v c Int
 
+--instance Functor (Exp_ v c) where
+--instance Applicative (Exp_ v c) where
+
 unTup x = (fst' x, snd' x)
 
 pattern Neg a = Mul (C (-1)) a
@@ -225,8 +228,9 @@ data ExpM_ (e :: * -> *) (c :: * -> * -> *) a where
 
     Input :: e Word16 -> c Word16 a -> ExpM_ e c a
     Output :: e Word16 -> e Word16 -> ExpM_ e c a -> ExpM_ e c a
+    Trace :: String -> ExpM_ e c a -> ExpM_ e c a
 
-class CC c where
+class {-Applicative (Ex c) => -} CC c where
     type Ex c :: * -> *
     cid :: c a a
     (.>=>) :: c a b -> (b -> ExM c x) -> c a x
@@ -257,6 +261,7 @@ instance (CC c, Ex c ~ Exp_ v c') => Monad (ExpM_ (Exp_ v c') c) where
         Input e g -> Input e $ g .>=> f
         Output a b e -> Output a b $ e >>= f
         Jump' _ _ -> error "Jump' >>="
+        Trace s e -> Trace s $ e >>= f
 
 
 --set :: CC c => Part_ (Ex c) a -> Ex c a -> ExM c ()
@@ -299,6 +304,7 @@ foldExpM q tr set jump = k where
         Set p a g -> set p a g
         Output a b c -> Output (q a) (q b) (k c)
         Ret x -> Ret (q x)
+        Trace s x -> Trace s (k x)
 
 ---------------------- HOAS
 
