@@ -20,9 +20,6 @@ Extra-Source-Files:
   Dos.hs
   GUI.hs
 
-Data-Files:
-  invalid.txt
-
 Executable stuntsemulator
   HS-Source-Dirs: .
   Main-IS:        Main.hs
@@ -32,6 +29,7 @@ Executable stuntsemulator
                 -fno-warn-incomplete-patterns
                 -fno-warn-unused-matches
                 -fno-warn-name-shadowing
+--                -fno-warn-unticked-promoted-constructors
                 -rtsopts
   Extensions:
     NoMonomorphismRestriction, ScopedTypeVariables,
