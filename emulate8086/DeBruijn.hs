@@ -1,11 +1,7 @@
 module DeBruijn
-    {-( EExp (..), Sub'
-    , EExpM (..)
-    , List (..)
-    , Var (..)
-    , convExpM
+    ( convExpM
     , spTrans
-    )-} where
+    ) where
 
 import Data.Word
 import Unsafe.Coerce
@@ -31,41 +27,24 @@ prjIx _ EmptyLayout       = error "Convert.prjIx: internal error"
 prjIx 0 (PushLayout _ ix) = unsafeCoerce ix
 prjIx n (PushLayout l _)  = prjIx (n - 1) l
 
-convExp_ :: forall a e . Layout e e -> Exp a -> EExp e a
-convExp_ lyt = foldExp
-    (\(Fun f) -> DB $ convExp_ (inc lyt `PushLayout` VarZ) $ f $ Var $ Co $ size lyt)
-    (\(Co sz) -> Var (prjIx (size lyt - sz - 1) lyt))
-    (Get . convPart lyt)
-
 convExpM :: ExpM a -> EExpM Nil a
-convExpM = f EmptyLayout where
-    h :: forall a e . Layout e e -> Exp a -> EExp e a
-    h = convExp_
+convExpM = convM EmptyLayout where
 
-    f :: forall e a . Layout e e -> ExpM a -> EExpM e a
-    f lyt = k where
-      q :: forall a . Exp a -> EExp e a
-      q = h lyt
+    convM :: forall e a . Layout e e -> ExpM a -> EExpM e a
+    convM lyt = foldExpM
+        (conv lyt)
+        (\(FunM g) -> DBM $ convM (inc lyt `PushLayout` VarZ) $ g $ Var $ Co $ size lyt)
+        (\p a g -> Set (convPart lyt p) (conv lyt a) (convM lyt g))
+        (\cs ip -> Jump' (conv lyt cs) (conv lyt ip))
 
-      k :: forall a . ExpM a -> EExpM e a
-      k = \case
-        LetM e (FunM g) -> LetM (q e) $ DBM $ f (inc lyt `PushLayout` VarZ) $ g $ Var $ Co $ size lyt
---        LetMC e g x -> LetMC (q e) (f (inc lyt `PushLayout` VarZ) $ g $ Var (size lyt)) (k x)
-        Input e (FunM g) -> Input (q e) $ DBM $ f (inc lyt `PushLayout` VarZ) $ g $ Var $ Co $ size lyt
+    conv :: forall a e . Layout e e -> Exp a -> EExp e a
+    conv lyt = foldExp
+        (\(Fun convM) -> DB $ conv (inc lyt `PushLayout` VarZ) $ convM $ Var $ Co $ size lyt)
+        (\(Co sz) -> Var (prjIx (size lyt - sz - 1) lyt))
+        (Get . convPart lyt)
 
---        Seq a b -> Seq' (k a) (k b)
-        IfM a b c -> IfM (q a) (k b) (k c)
-        Replicate n b a (FunM g) -> Replicate (q n) (q b) (k a) $ DBM $ f (inc lyt `PushLayout` VarZ) $ g $ Var $ Co $ size lyt
---        Nop -> Nop'
-        Jump' cs ip -> Jump' (q cs) (q ip) --Seq' (Set (convPart lyt Cs) (q cs)) (Set (convPart lyt IP) (q ip))
-        Set Cs _ _ -> error "convExpM: set cs"
---        Set IP _ -> error "convExpM: set ip"
-        Set p e cont -> Set (convPart lyt p) (q e) $ k cont
-        Output a b cont -> Output (q a) (q b) $ k cont
-        Stop a -> Stop a
-
-convPart :: Layout e e -> Part_ Exp a -> Part_ (EExp e) a
-convPart lyt = mapPart (convExp_ lyt)
+    convPart :: Layout e e -> Part_ Exp a -> Part_ (EExp e) a
+    convPart lyt = mapPart (conv lyt)
 
 ----------------------------
 
@@ -79,35 +58,32 @@ incV f (VarS x) = VarS $ f x
 lift'' :: forall e e' . (forall x . Var e x -> Var e' x) -> forall a . EExp e a -> EExp e' a
 lift'' gv = foldExp (\(DB x) -> DB $ lift'' (incV gv) x) (Var . gv) (Get . mapPart (lift'' gv))
 
-spTrE :: forall e a . EExp e Word16 -> EExp e a -> EExp e a
-spTrE sp = foldExp (\(DB c) -> DB $ spTrE (lift' sp) c) Var get
-  where
-    get :: Part_ (EExp e) x -> EExp e x
-    get SP = sp
-    get x = Get x
+------------------------------
 
-------------------------------------
+spTrans :: EExpM e a -> EExpM e a
+spTrans = spTr (Get SP)
+  where
+    spTrE :: forall e a . EExp e Word16 -> EExp e a -> EExp e a
+    spTrE sp = foldExp (\(DB c) -> DB $ spTrE (lift' sp) c) Var get
+      where
+        get :: Part_ (EExp e) x -> EExp e x
+        get SP = sp
+        get x = Get x
+
+    spTr :: forall e a . EExp e Word16 -> EExpM e a -> EExpM e a
+    spTr sp = foldExpM (spTrE sp) (\(DBM c) -> DBM $ spTr (lift' sp) c) set jump
+      where
+        set :: Part_ (EExp e) b -> EExp e b -> EExpM e x -> EExpM e x
+        set SP (add_ -> (i, Get SP)) c = spTr (add (C i) sp) c
+        set SP v c = Set SP (spTrE sp v) (spTr (Get SP) c)
+        set p v c = Set p (spTrE sp v) (spTr sp c)
+
+        jump :: EExp e Word16 -> EExp e Word16 -> EExpM e Jump'
+        jump cs ip = case sp of
+            Get SP -> Jump' cs ip
+            sp -> Set SP sp $ Jump' cs ip
 
 add_ (Add (C j) x) = (j, x)
 add_ v = (0, v)
 
-pattern Neg' a = Mul (C (-1)) a
-pattern Sub' a b = Add a (Neg' b)
-
-spTrans :: EExpM e a -> EExpM e a
-spTrans = spTr (Get SP)
-
-spTr :: EExp e Word16 -> EExpM e a -> EExpM e a
-spTr sp (Set SP (add_ -> (i, Get SP)) c) = spTr (add (C i) sp) c
-spTr sp (Set SP v c) = Set SP (spTrE sp v) (spTr (Get SP) c)
-spTr sp (Set p v c) = Set p (spTrE sp v) (spTr sp c)
-spTr (Get SP) x@Jump'{} = x
-spTr sp x@Jump'{} = Set SP sp x
-spTr sp (IfM a b c) = IfM (spTrE sp a) (spTr sp b) (spTr sp c)
-spTr sp (Output a b c) = Output (spTrE sp a) (spTrE sp b) (spTr sp c) 
-spTr sp (Input a (DBM c)) = Input (spTrE sp a) (DBM $ spTr (lift' sp) c)
-spTr sp (LetM a (DBM c)) = LetM (spTrE sp a) (DBM $ spTr (lift' sp) c)
-spTr sp (Replicate n b x (DBM c)) = Replicate n b x (DBM $ spTr (lift' sp) c)
-spTr _ Stop{} = error "spTr Stop"
---spTr _ LetMC{} = error "spTr LetMC"
 

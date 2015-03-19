@@ -273,6 +273,26 @@ letMC' x f = letM x >>= f
 
 output a b = Output a b (return ())
 
+{-# INLINE foldExpM #-}
+foldExpM :: forall e e' c c' a
+     . (forall x . e x -> e' x)
+    -> (forall x y . c x y -> c' x y)
+    -> (forall x b . Part_ e b -> e b -> ExpM_ e c x -> ExpM_ e' c' x)
+    -> (e Word16 -> e Word16 -> ExpM_ e' c' Jump')
+    -> ExpM_ e c a -> ExpM_ e' c' a
+foldExpM q tr set jump = k where
+    k :: ExpM_ e c x -> ExpM_ e' c' x
+    k = \case
+        LetM e g -> LetM (q e) (tr g)
+--        LetMC e g x -> LetMC (q e) ...
+        Input e g -> Input (q e) (tr g)
+        IfM a b c -> IfM (q a) (k b) (k c)
+        Replicate n b a g -> Replicate (q n) (q b) (k a) (tr g)
+        Jump' cs ip -> jump cs ip
+        Set p a g -> set p a g
+        Output a b c -> Output (q a) (q b) (k c)
+        Stop a -> Stop a
+
 ---------------------- HOAS
 
 newtype FunM a b = FunM {getFunM :: Exp a -> ExpM b}

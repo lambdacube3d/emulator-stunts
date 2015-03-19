@@ -17,6 +17,7 @@ import Control.Exception
 import Control.DeepSeq
 import System.Directory
 --import Debug.Trace
+import Prelude
 
 import Helper
 import Edsl

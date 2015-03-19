@@ -19,6 +19,7 @@ import System.Directory
 import System.FilePath (takeFileName)
 import System.FilePath.Glob
 import Sound.ALUT (play, stop, sourceGain, pitch, ($=))
+import Prelude
 
 import Helper
 import MachineState

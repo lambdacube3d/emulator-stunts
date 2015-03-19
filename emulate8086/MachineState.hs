@@ -15,6 +15,7 @@ import Control.Arrow
 import Control.Monad.State
 import Control.DeepSeq
 import Sound.ALUT
+import Prelude
 
 import Helper
 import Edsl
