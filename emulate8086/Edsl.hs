@@ -2,9 +2,9 @@ module Edsl where
 
 import Data.Word
 import Data.Bits
+import Control.Applicative
 import Control.Monad
-import Control.Category
-import Prelude hiding ((.))
+import Prelude
 
 import Helper
 
@@ -211,30 +211,35 @@ type EExp e = Exp_ (Var e) (DB e)
 
 data Jump' = JumpAddr Word16 Word16
 
-data ExpM_ (v :: * -> *) (cm :: * -> * -> *) (c :: * -> * -> *)  e where
-    Stop :: e -> ExpM_ v cm c e
-    Set :: Part_ (Exp_ v c) a -> Exp_ v c a -> ExpM_ v cm c e -> ExpM_ v cm c e
+data ExpM_ (e :: * -> *) (c :: * -> * -> *) a where
+    Stop :: a -> ExpM_ e c a
+    Set :: Part_ e b -> e b -> ExpM_ e c a -> ExpM_ e c a
 
-    Jump' :: Exp_ v c Word16 -> Exp_ v c Word16 -> ExpM_ v cm c Jump'
+    Jump' :: e Word16 -> e Word16 -> ExpM_ e c Jump'
     -- constrained let type (with more efficient interpretation) 
-    LetMC :: Exp_ v c a -> cm a () -> ExpM_ v cm c e -> ExpM_ v cm c e
-    LetM :: Exp_ v c a -> cm a e -> ExpM_ v cm c e
-    IfM :: Exp_ v c Bool -> ExpM_ v cm c e -> ExpM_ v cm c e -> ExpM_ v cm c e
-    Replicate :: Integral a => Exp_ v c a -> Exp_ v c Bool -> ExpM_ v cm c () -> cm a e -> ExpM_ v cm c e
+    LetMC :: e b -> c b () -> ExpM_ e c a -> ExpM_ e c a
+    LetM :: e b -> c b a -> ExpM_ e c a
+    IfM :: e Bool -> ExpM_ e c a -> ExpM_ e c a -> ExpM_ e c a
+    Replicate :: Integral b => e b -> e Bool -> ExpM_ e c () -> c b a -> ExpM_ e c a
 
-    Input :: Exp_ v c Word16 -> cm Word16 e -> ExpM_ v cm c e
-    Output :: Exp_ v c Word16 -> Exp_ v c Word16 -> ExpM_ v cm c e -> ExpM_ v cm c e
+    Input :: e Word16 -> c Word16 a -> ExpM_ e c a
+    Output :: e Word16 -> e Word16 -> ExpM_ e c a -> ExpM_ e c a
 
-class CC cm where
-    type VarOf cm :: * -> *
-    type COf cm :: * -> * -> *
-    ret :: cm a (Ex cm a)
-    (.>=>) :: cm a b -> (b -> ExM cm c) -> cm a c
+class CC c where
+    type Ex c :: * -> *
+    ret :: c a (Ex c a)
+    (.>=>) :: c a b -> (b -> ExM c x) -> c a x
 
-type Ex cm = Exp_ (VarOf cm) (COf cm)
-type ExM cm = ExpM_ (VarOf cm) cm (COf cm)
+type ExM c = ExpM_ (Ex c) c
 
-instance (CC cm, c ~ COf cm, v ~ VarOf cm) => Monad (ExpM_ v cm c) where
+instance (CC c, e ~ Ex c) => Functor (ExpM_ e c) where
+    fmap  = liftM
+
+instance (CC c, e ~ Ex c) => Applicative (ExpM_ e c) where
+    pure  = return
+    (<*>) = ap  -- defined in Control.Monad
+
+instance (CC c, e ~ Ex c) => Monad (ExpM_ e c) where
     return = Stop
     a >>= f = case a of
         Stop x -> f x
@@ -248,17 +253,19 @@ instance (CC cm, c ~ COf cm, v ~ VarOf cm) => Monad (ExpM_ v cm c) where
         Jump' _ _ -> error "Jump' >>="
 
 
-set :: CC cm => Part_ (Ex cm) a -> Ex cm a -> ExM cm ()
+set :: CC c => Part_ (Ex c) a -> Ex c a -> ExM c ()
 set x y = Set x y (return ())
 
 ifM (C c) a b = if c then a else b
 ifM x a b = IfM x a b
 
-letM :: CC cm => Ex cm a -> ExM cm (Ex cm a)
-letM (C c) = return (C c)
+-- letM :: CC c => Ex c a -> ExM c (Ex c a)  -- ambiguous
+letM :: Exp a -> ExpM (Exp a)
+letM x@(C c) = return x
 letM x = LetM x ret
 
-letMC, letMC' :: CC cm => Ex cm a -> (Ex cm a -> ExM cm ()) -> ExM cm ()
+-- letMC, letMC' :: CC c => Ex c a -> (Ex c a -> ExM c ()) -> ExM c () -- ambiguous
+letMC, letMC' :: Exp a -> (Exp a -> ExpM ()) -> ExpM ()
 letMC (C c) f = f (C c)
 letMC x f = LetMC x (ret .>=> f) (return ())
 
@@ -271,8 +278,7 @@ output a b = Output a b (return ())
 newtype FunM a b = FunM {getFunM :: Exp a -> ExpM b}
 
 instance CC FunM where
-    type VarOf FunM = Co
-    type COf FunM = Fun
+    type Ex FunM = Exp
     FunM f .>=> g = FunM $ f >=> g
     ret = FunM return
 
@@ -283,8 +289,7 @@ type ExpM = ExM FunM
 newtype DBM e a b = DBM {getDBM :: EExpM (Con a e) b}
 {-
 instance CC (DBM e) where
-    type VarOf (DBM e) = Var e
-    type COf (DBM e) = DB e
+    type Ex (DBM e) = EExp
 -}
-type EExpM e = ExpM_ (Var e) (DBM e) (DB e)
+type EExpM e = ExpM_ (EExp e) (DBM e)
 
