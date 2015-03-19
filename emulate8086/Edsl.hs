@@ -3,12 +3,12 @@ module Edsl where
 import Data.Word
 import Data.Bits
 import Control.Monad
+import Control.Category
+import Prelude hiding ((.))
 
 import Helper
 
 ----------------------------------------
-
-type Part = Part_ Exp
 
 data Part_ e a where
     Heap8  :: e Int -> Part_ e Word8
@@ -125,7 +125,7 @@ fst' e = Fst e
 snd' (Tuple _ b) = b
 snd' e = Snd e
 
-convert :: (Num b, Integral a) => Exp a -> Exp b
+convert :: (Num b, Integral a) => Exp_ v c a -> Exp_ v c b
 convert (C a) = C $ fromIntegral a
 convert e = Convert e
 
@@ -133,16 +133,16 @@ iterate' (C 0) f e = e
 iterate' (C 1) f e = f e
 iterate' n f e = Iterate n (Fun f) e
 
-extend' :: Extend a => Exp a -> Exp (X2 a)
+extend' :: Extend a => Exp_ v c a -> Exp_ v c (X2 a)
 extend' = convert
 
-signed :: AsSigned a => Exp a -> Exp (Signed a)
+signed :: AsSigned a => Exp_ v c a -> Exp_ v c (Signed a)
 signed = convert
 
-highBit :: (Integral a, Bits a) => Exp a -> Exp Bool
+highBit :: (Integral a, Bits a) => Exp_ v c a -> Exp_ v c Bool
 highBit = Convert . RotateL
 
-setHighBit :: (Num a, Bits a) => Exp Bool -> Exp a -> Exp a
+setHighBit :: (Num a, Bits a) => Exp_ v c Bool -> Exp_ v c a -> Exp_ v c a
 setHighBit c = Or (RotateR $ Convert c)
 
 -- TODO: abstract add, mul
@@ -180,23 +180,10 @@ foldExp tr var get = f where
     EvenParity a -> EvenParity (f a)
     Convert a -> Convert (f a)
 
-instance Eq a => Eq (EExp e a) where
+instance Eq a => Eq (Exp_ v c a) where
     C a == C b = a == b 
     Get a == Get b = a == b
     _ == _ = False      -- TODO
-
-instance Monad ExpM where
-    return = Stop
-    a >>= f = case a of
-        Stop x -> f x
-        Set a b e -> Set a b $ e >>= f
-        LetMC e x g -> LetMC e x $ g >>= f
-        LetM e (FunM g) -> LetM e $ FunM $ g >=> f
-        IfM b x y -> IfM b (x >>= f) (y >>= f)
-        Replicate n b m (FunM g) -> Replicate n b m $ FunM $ g >=> f
-        Input e (FunM g) -> Input e $ FunM $ g >=> f
-        Output a b e -> Output a b $ e >>= f
-        Jump' _ _ -> error "Jump' >>="
 
 ------------------------------------ HOAS
 
@@ -205,6 +192,8 @@ newtype Co a = Co Int
 newtype Fun a b = Fun {getFun :: Exp a -> Exp b}
 
 type Exp = Exp_ Co Fun
+
+type Part = Part_ Exp
 
 ---------------------- DeBruijn
 
@@ -236,19 +225,42 @@ data ExpM_ (v :: * -> *) (cm :: * -> * -> *) (c :: * -> * -> *)  e where
     Input :: Exp_ v c Word16 -> cm Word16 e -> ExpM_ v cm c e
     Output :: Exp_ v c Word16 -> Exp_ v c Word16 -> ExpM_ v cm c e -> ExpM_ v cm c e
 
-set :: Part a -> Exp a -> ExpM ()
+class CC cm where
+    type VarOf cm :: * -> *
+    type COf cm :: * -> * -> *
+    ret :: cm a (Ex cm a)
+    (.>=>) :: cm a b -> (b -> ExM cm c) -> cm a c
+
+type Ex cm = Exp_ (VarOf cm) (COf cm)
+type ExM cm = ExpM_ (VarOf cm) cm (COf cm)
+
+instance (CC cm, c ~ COf cm, v ~ VarOf cm) => Monad (ExpM_ v cm c) where
+    return = Stop
+    a >>= f = case a of
+        Stop x -> f x
+        Set a b e -> Set a b $ e >>= f
+        LetMC e x g -> LetMC e x $ g >>= f
+        LetM e g -> LetM e $ g .>=> f
+        IfM b x y -> IfM b (x >>= f) (y >>= f)
+        Replicate n b m g -> Replicate n b m $ g .>=> f
+        Input e g -> Input e $ g .>=> f
+        Output a b e -> Output a b $ e >>= f
+        Jump' _ _ -> error "Jump' >>="
+
+
+set :: CC cm => Part_ (Ex cm) a -> Ex cm a -> ExM cm ()
 set x y = Set x y (return ())
 
 ifM (C c) a b = if c then a else b
 ifM x a b = IfM x a b
 
-letM :: Exp a -> ExpM (Exp a)
+letM :: CC cm => Ex cm a -> ExM cm (Ex cm a)
 letM (C c) = return (C c)
-letM x = LetM x $ FunM return
+letM x = LetM x ret
 
-letMC, letMC' :: Exp a -> (Exp a -> ExpM ()) -> ExpM ()
+letMC, letMC' :: CC cm => Ex cm a -> (Ex cm a -> ExM cm ()) -> ExM cm ()
 letMC (C c) f = f (C c)
-letMC x f = LetMC x (FunM f) (return ())
+letMC x f = LetMC x (ret .>=> f) (return ())
 
 letMC' x f = letM x >>= f
 
@@ -258,11 +270,21 @@ output a b = Output a b (return ())
 
 newtype FunM a b = FunM {getFunM :: Exp a -> ExpM b}
 
-type ExpM = ExpM_ Co FunM Fun
+instance CC FunM where
+    type VarOf FunM = Co
+    type COf FunM = Fun
+    FunM f .>=> g = FunM $ f >=> g
+    ret = FunM return
+
+type ExpM = ExM FunM
 
 -------------------------- DeBruijn
 
 newtype DBM e a b = DBM {getDBM :: EExpM (Con a e) b}
-
+{-
+instance CC (DBM e) where
+    type VarOf (DBM e) = Var e
+    type COf (DBM e) = DB e
+-}
 type EExpM e = ExpM_ (Var e) (DBM e) (DB e)
 
