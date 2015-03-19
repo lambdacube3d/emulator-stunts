@@ -283,10 +283,13 @@ evalEExpM ca = evalExpM
 -}
     Jump' (C c) (C i) -> return $ JumpAddr c i
     Jump' c i -> liftM2 JumpAddr (evalExp c) (evalExp i)
-    Stop a -> return a
+    Ret (C a) -> return a
+    Ret a -> evalExp a
 
     IfM (C b) x y -> if b then evalExpM x else evalExpM y
     IfM b x y -> evalExp b >>= iff (evalExpM x) (evalExpM y)
+
+    IfM' b x y (DBM f) -> evalExp b >>= iff (evalExpM x) (evalExpM y) >>= pushVal (evalExpM f)
 
     Replicate n (C True) e (DBM f) -> evalExp n >>= \n -> replicateM_ (fromIntegral n) (evalExpM e) >> pushVal (evalExpM f) (0 `asTypeOf` n)
     Replicate n b e (DBM f) -> evalExp n >>= replicateM' (evalExp b) (evalExpM e) >>= pushVal (evalExpM f)

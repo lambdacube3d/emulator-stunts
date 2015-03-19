@@ -241,8 +241,8 @@ fetchBlock' fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
             ccF c (uSet' SF sF) (C False){-needed for Stunts-} (uSet' PF pF) c
 
         shiftOp :: (forall b . (AsSigned b) => Exp Bool -> Exp b -> (Exp Bool, Exp b)) -> ExpM Jump'
-        shiftOp op = letM (and' (C 0x1f) $ getByteOperand op2) >>= \n -> do
-             ifM (eq' (C 0) n) cc $ do        -- TODO!
+        shiftOp op = letM (and' (C 0x1f) $ getByteOperand op2) >>= \n ->
+             ifM' (eq' (C 0) n) cc $ do
                 letM (iterate' (convert n) (uncurry Tuple . uncurry op . unTup) $ Tuple cF op1v) >>= \t -> do
                 let r = snd' t
                 setTr op1 r

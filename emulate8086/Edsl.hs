@@ -212,7 +212,7 @@ type EExp e = Exp_ (Var e) (DB e)
 data Jump' = JumpAddr Word16 Word16
 
 data ExpM_ (e :: * -> *) (c :: * -> * -> *) a where
-    Stop :: a -> ExpM_ e c a
+    Ret :: e a -> ExpM_ e c a
     Set :: Part_ e b -> e b -> ExpM_ e c a -> ExpM_ e c a
 
     Jump' :: e Word16 -> e Word16 -> ExpM_ e c Jump'
@@ -220,6 +220,7 @@ data ExpM_ (e :: * -> *) (c :: * -> * -> *) a where
     LetMC :: e b -> c b () -> ExpM_ e c a -> ExpM_ e c a
     LetM :: e b -> c b a -> ExpM_ e c a
     IfM :: e Bool -> ExpM_ e c a -> ExpM_ e c a -> ExpM_ e c a
+    IfM' :: e Bool -> ExpM_ e c a -> ExpM_ e c a -> c a b -> ExpM_ e c b
     Replicate :: Integral b => e b -> e Bool -> ExpM_ e c () -> c b a -> ExpM_ e c a
 
     Input :: e Word16 -> c Word16 a -> ExpM_ e c a
@@ -227,45 +228,50 @@ data ExpM_ (e :: * -> *) (c :: * -> * -> *) a where
 
 class CC c where
     type Ex c :: * -> *
-    ret :: c a (Ex c a)
+    cid :: c a a
     (.>=>) :: c a b -> (b -> ExM c x) -> c a x
+
+    ret :: c a (Ex c a) -- TODO: eliminate?
+    --ret = cid .>=> \x -> Ret $ pure $ pure x
 
 type ExM c = ExpM_ (Ex c) c
 
-instance (CC c, e ~ Ex c) => Functor (ExpM_ e c) where
+instance (CC c, Ex c ~ Exp_ v c') => Functor (ExpM_ (Exp_ v c') c) where
     fmap  = liftM
 
-instance (CC c, e ~ Ex c) => Applicative (ExpM_ e c) where
+instance (CC c, Ex c ~ Exp_ v c') => Applicative (ExpM_ (Exp_ v c') c) where
     pure  = return
     (<*>) = ap  -- defined in Control.Monad
 
-instance (CC c, e ~ Ex c) => Monad (ExpM_ e c) where
-    return = Stop
+instance (CC c, Ex c ~ Exp_ v c') => Monad (ExpM_ (Exp_ v c') c) where
+    return a = Ret (C a)
     a >>= f = case a of
-        Stop x -> f x
+        Ret (C x) -> f x
+        Ret x -> LetM x $ cid .>=> f
         Set a b e -> Set a b $ e >>= f
         LetMC e x g -> LetMC e x $ g >>= f
         LetM e g -> LetM e $ g .>=> f
         IfM b x y -> IfM b (x >>= f) (y >>= f)
+        IfM' b x y g -> IfM' b x y $ g .>=> f
         Replicate n b m g -> Replicate n b m $ g .>=> f
         Input e g -> Input e $ g .>=> f
         Output a b e -> Output a b $ e >>= f
         Jump' _ _ -> error "Jump' >>="
 
 
-set :: CC c => Part_ (Ex c) a -> Ex c a -> ExM c ()
+--set :: CC c => Part_ (Ex c) a -> Ex c a -> ExM c ()
 set x y = Set x y (return ())
 
 ifM (C c) a b = if c then a else b
 ifM x a b = IfM x a b
 
--- letM :: CC c => Ex c a -> ExM c (Ex c a)  -- ambiguous
-letM :: Exp a -> ExpM (Exp a)
+--ifM' :: CC c => Ex c Bool -> ExM c a -> ExM c a -> ExM c a
+ifM' (C c) a b = if c then a else b
+ifM' x a b = IfM' x a b cid
+
 letM x@(C c) = return x
 letM x = LetM x ret
 
--- letMC, letMC' :: CC c => Ex c a -> (Ex c a -> ExM c ()) -> ExM c () -- ambiguous
-letMC, letMC' :: Exp a -> (Exp a -> ExpM ()) -> ExpM ()
 letMC (C c) f = f (C c)
 letMC x f = LetMC x (ret .>=> f) (return ())
 
@@ -287,11 +293,12 @@ foldExpM q tr set jump = k where
 --        LetMC e g x -> LetMC (q e) ...
         Input e g -> Input (q e) (tr g)
         IfM a b c -> IfM (q a) (k b) (k c)
+        IfM' a b c d -> IfM' (q a) (k b) (k c) (tr d)
         Replicate n b a g -> Replicate (q n) (q b) (k a) (tr g)
         Jump' cs ip -> jump cs ip
         Set p a g -> set p a g
         Output a b c -> Output (q a) (q b) (k c)
-        Stop a -> Stop a
+        Ret x -> Ret (q x)
 
 ---------------------- HOAS
 
@@ -301,6 +308,7 @@ instance CC FunM where
     type Ex FunM = Exp
     FunM f .>=> g = FunM $ f >=> g
     ret = FunM return
+    cid = FunM Ret
 
 type ExpM = ExM FunM
 
