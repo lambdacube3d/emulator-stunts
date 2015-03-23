@@ -296,11 +296,10 @@ uWrite inf i v = do
                 U.unsafeWrite showBuffer j $ x .|. info inf 0xffff0000 0x00800000 0x00ff0000
 
 bytesAt__ :: Int -> Int -> MachinePart'' [Word8]
-bytesAt__ i' j' = (get_, set)
-  where
-    set ws = zipWithM_ (uWrite System) [i'..]
-        $ (pad (error "pad") j' . take j') ws
-    get_ = mapM (uRead System) [i'..i'+j'-1]
+bytesAt__ i' j' =
+    ( mapM (uRead System) $ take j' [i'..]
+    , zipWithM_ (uWrite System) [i'..] . pad (error "pad") j' . take j'
+    )
 
 byteAt__ :: Info -> Int -> Machine Word8
 byteAt__ inf i = uRead inf i
@@ -345,8 +344,9 @@ dwordAt__ :: Info -> Int -> MachinePart' Word32
 dwordAt__ inf i = ( liftM2 (\hi lo -> fromIntegral hi `shiftL` 16 .|. fromIntegral lo) (wordAt__ inf $ i+2) (wordAt__ inf i)
              , \v -> setWordAt inf i (fromIntegral v) >> setWordAt inf (i+2) (fromIntegral $ v `shiftR` 16))
 
-trace_ :: String -> Machine ()
+trace_, trace_' :: String -> Machine ()
 trace_ s = putStr $ " | " ++ s
+trace_' s = putStr $ " " ++ s
 
 push :: Word16 -> Machine ()
 push x = do

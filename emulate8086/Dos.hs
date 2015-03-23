@@ -262,7 +262,7 @@ origInterrupt = M.fromList
     halt
 
   , item 0x21 (0xf000,0x14c0) $ do
-    trace_ "DOS rutine"
+--    trace_ "DOS rutine"
     v <- use' ah
     case v of
         0x00 -> do
@@ -296,7 +296,7 @@ origInterrupt = M.fromList
             wordAt__ System (4*v + 2) >>= (es ..=)   -- Es:BX = pointer to interrupt handler
 
         0x3c -> do
-            trace_ "Create File"
+            trace_ "Create"
             (f, fn) <- getFileName
             attributes <- use' cx
             b <- doesFileExist fn
@@ -305,7 +305,7 @@ origInterrupt = M.fromList
                 writeFile fn ""
                 newHandle fn
         0x3d -> do
-            trace_ "Open File Using Handle"
+            trace_ "Open"
             open_access_mode <- use' al
             case open_access_mode of
               0 -> do   -- read mode
@@ -313,13 +313,11 @@ origInterrupt = M.fromList
                 checkExists fn $ newHandle fn
 
         0x3e -> do
-            trace_ "Close file"
             handle <- fromIntegral <$> use' bx
-            trace_ $ "handle " ++ showHex' 4 handle
+            trace_ $ "Close " ++ showHandle handle
             x <- IM.lookup handle <$> use'' files
             case x of
               Just (fn, _) -> do
-                trace_ $ "file: " ++ fn
                 files ..%= IM.delete handle
                 returnOK
 
@@ -327,7 +325,7 @@ origInterrupt = M.fromList
             handle <- fromIntegral <$> use' bx
             (fn, seek) <- (IM.! handle) <$> use'' files
             num <- fromIntegral <$> use' cx
-            trace_ $ "Read " ++ showHex' 4 handle ++ ":" ++ fn ++ " " ++ showHex' 4 num
+            trace_ $ "Read " ++ showHandle handle ++ " " ++ showBytes num
             loc <- dxAddr
             s <- BS.take num . BS.drop seek <$> BS.readFile fn
             let len = BS.length s
@@ -338,17 +336,18 @@ origInterrupt = M.fromList
 
         0x40 -> do
             handle <- fromIntegral <$> use' bx
-            trace_ $ "Write to " ++ showHex' 4 handle
             num <- fromIntegral <$> use' cx
+            trace_ $ "Write " ++ showHandle handle ++ " " ++ showBytes num
             loc <- dxAddr
+            this <- fst $ bytesAt__ loc num
             case handle of
-              1 -> trace_ . ("STDOUT: " ++) . map (chr . fromIntegral) =<< fst (bytesAt__ loc num)
-              2 -> trace_ . ("STDERR: " ++) . map (chr . fromIntegral) =<< fst (bytesAt__ loc num)
+              1 -> trace_ . ("STDOUT: " ++) . map (chr . fromIntegral) $ this
+              2 -> trace_ . ("STDERR: " ++) . map (chr . fromIntegral) $ this
               _ -> return ()
             returnOK
 
         0x41 -> do
-            trace_ "Delete File"
+            trace_ "Delete"
             (f,fn) <- getFileName
             checkExists fn $ do
                 removeFile fn
@@ -359,7 +358,11 @@ origInterrupt = M.fromList
             fn <- (^. _1) . (IM.! handle) <$> use'' files
             mode <- use' al
             pos <- fromIntegral . (fromIntegral :: Word32 -> Int32) <$> use' cxdx
-            trace_ $ "Seek " ++ showHex' 4 handle ++ ":" ++ fn ++ " to " ++ show mode ++ ":" ++ showHex' 8 pos
+            let showMode = \case
+                    0 -> ""
+                    1 -> "+"
+                    2 -> "-"
+            trace_ $ "Seek " ++ showHandle handle ++ " " ++ showMode mode ++ show pos
             s <- BS.readFile fn
             files ..%= (flip IM.adjust handle $ \(fn, p) -> case mode of
                 0 -> (fn, pos)
@@ -371,7 +374,7 @@ origInterrupt = M.fromList
             returnOK
 
         0x44 -> do
-            trace_ "I/O Control for Devices (IOCTL)"
+--            trace_ "I/O Control for Devices (IOCTL)"
             0x44 <- use' ah
             function_value <- use' al
 {-
@@ -383,7 +386,7 @@ origInterrupt = M.fromList
             case function_value of
               0x00 -> do
                 handle <- use' bx
-                trace_ $ "Get Device Information of " ++ show handle 
+                trace_ $ "Get Device Information of " ++ showHandle handle 
                 let v = case handle of
                       4 -> 0x80A0        --  0010 1000 00 000100   no D: drive
                       3 -> 0x80D3        --  0010 1000 00 000011   no C: drive
@@ -437,13 +440,13 @@ origInterrupt = M.fromList
             case s of
               Just (f, s) -> do
                 trace_ $ "found: " ++ show f
+                setByteAt System (ad + 0x00) 1
                 snd (bytesAt__ (ad + 0x02) 13 {- !!! -}) $ pad 0 13 (map (fromIntegral . ord) (strip $ takeFileName f_) ++ [0])
                 setByteAt System (ad + 0x15) $ "attribute of matching file" @: fromIntegral attribute_used_during_search
                 setWordAt System (ad + 0x16) $ "file time" @: 0 -- TODO
                 setWordAt System (ad + 0x18) $ "file date" @: 0 -- TODO
                 snd (dwordAt__ System $ ad + 0x1a) $ fromIntegral (BS.length s)
                 snd (bytesAt__ (ad + 0x1e) 13) $ pad 0 13 (map (fromIntegral . ord) (strip $ takeFileName f) ++ [0])
-                setByteAt System (ad + 0x00) 1
                 ax ..= 0 -- ?
                 returnOK
               Nothing -> dosFail 0x02  -- File not found
@@ -458,7 +461,7 @@ origInterrupt = M.fromList
                     b <- globDir1 (compile $ map toUpper f_) "../original"
                     case drop (fromIntegral n) b of
                         filenames@(f:_) -> do
-                            trace_ $ "alternatives: " ++ show filenames
+--                            trace_ $ "alternatives: " ++ show filenames
                             Just . (,) f <$> (BS.readFile f)
                         _ -> return Nothing
             case s of
@@ -518,7 +521,7 @@ origInterrupt = M.fromList
     newHandle fn = do
         handle <- max 5 . imMax <$> use'' files
         files ..%= IM.insert handle (fn, 0)
-        trace_ $ "handle " ++ showHex' 4 handle
+        trace_' $ showHandle handle
         ax ..= "file handle" @: fromIntegral handle
         returnOK
 
@@ -526,9 +529,12 @@ origInterrupt = M.fromList
         addr <- dxAddr
         fname <- fst $ bytesAt__ addr 40
         let f = map (toUpper . chr . fromIntegral) $ takeWhile (/=0) fname
-        trace_ f
+        trace_' f
         let fn = "../original/" ++ f
         return (f, fn)
+
+    showHandle h = "#" ++ show h
+    showBytes i = show i ++ " bytes"
 
     dxAddr = liftM2 segAddr (use' ds) (use' dx)
     dxAddr' = liftM2 segAddr (use' es) (use' dx)
