@@ -126,7 +126,7 @@ output' v x = do
             frequency ..%= (.|. (x `shiftL` 8)) . (`shiftR` 8)
             f <- use'' frequency
             source <- use'' soundSource
-            when (fromIntegral f >= 128) $ pitch source $= 2711 / fromIntegral f
+            when (fromIntegral f >= 256) $ pitch source $= 2711 / fromIntegral f
         0x43 -> do
             trace_ $ "set timer control " ++ showHex' 2 x
             case x of
