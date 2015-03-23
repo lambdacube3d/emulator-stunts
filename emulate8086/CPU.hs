@@ -198,7 +198,7 @@ fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
         setCF (Get CF) = return ()
         setCF x = set CF x
 
-    withSize :: forall a . (Integral a, FiniteBits a, Integral (Signed a), Bits (Signed a), Integral (X2 a), FiniteBits (X2 a), Integral (Signed (X2 a)), FiniteBits (Signed (X2 a)), X2 (Signed a) ~ Signed (X2 a))
+    withSize :: forall a . (Integral a, Bits a, Integral (Signed a), Bits (Signed a), Integral (X2 a), Bits (X2 a), Integral (Signed (X2 a)), Bits (Signed (X2 a)), X2 (Signed a) ~ Signed (X2 a))
         => (Operand -> Exp a)
         -> (Operand -> Exp a -> ExpM ())
         -> Part a
@@ -274,7 +274,7 @@ fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
             set alx $ Convert $ Fst t
             set ahd $ Convert $ Snd t
 
-        multiply :: forall c . (Integral c, Integral (X2 c), FiniteBits (X2 c)) => (Exp a -> Exp c) -> ExpM Jump'
+        multiply :: forall c . (Integral c, Integral (X2 c), Bits (X2 c)) => (Exp a -> Exp c) -> ExpM Jump'
         multiply signed =
             letM (mul (extend $ signed $ Get alx) (extend $ signed op1v)) >>= \r ->
             letM (Not $ Eq r $ extend (convert r :: Exp c)) >>= \c -> do
@@ -293,16 +293,16 @@ fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
                   else   -- [Ircl, Ircr, Irol, Iror]
                     ccF (uSet' OF oF) (uSet' SF sF) (uSet' ZF zF) (uSet' PF pF) (fst' t)
 
-        twoOp :: Bool -> (forall b . (Integral b, FiniteBits b) => Exp b -> Exp b -> Exp b) -> ExpM Jump'
+        twoOp :: Bool -> (forall b . (Integral b, Bits b) => Exp b -> Exp b -> Exp b) -> ExpM Jump'
         twoOp store op = twoOp_ op (if store then setTr op1 else const $ return ()) op1v op2v
 
         twoOp_ :: {-AsSigned a
-            => -}(forall a . (Integral a, FiniteBits a) => Exp a -> Exp a -> Exp a)
+            => -}(forall a . (Integral a, Bits a) => Exp a -> Exp a -> Exp a)
             -> (Exp a -> ExpM ()) -> Exp a -> Exp a -> ExpM Jump'
         twoOp_ op store a b = twoOp__ op store a b ccF oF sF zF pF cF
 
         twoOp__ :: {-AsSigned a
-                => -}(forall a . (Integral a, FiniteBits a) => Exp a -> Exp a -> Exp a)
+                => -}(forall a . (Integral a, Bits a) => Exp a -> Exp a -> Exp a)
                 -> (Exp a -> ExpM ()) -> Exp a -> Exp a
                 -> FlagTr
         twoOp__ op store op1 b cont oF sF zF pF cF =
