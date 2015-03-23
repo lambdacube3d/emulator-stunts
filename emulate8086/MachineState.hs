@@ -270,8 +270,8 @@ info System s1 s2 s3 = s1
 info (Program (SegAddr (C _) (C _))) s1 s2 s3 = s2
 info _ s1 s2 s3 = s3
 
-uRead :: Info -> Int -> IO Word8
-uRead inf i = do
+getByteAt :: Info -> Int -> IO Word8
+getByteAt inf i = do
     when debug $ do
         b <- use' showReads'
         when b $ do
@@ -282,8 +282,8 @@ uRead inf i = do
                 U.unsafeWrite showBuffer j $ x .|. info inf 0xff00ff00 0x00008000 0x0000ff00
     U.unsafeRead heap'' i
 
-uWrite :: Info -> Int -> Word8 -> IO ()
-uWrite inf i v = do
+setByteAt :: Info -> Int -> Word8 -> IO ()
+setByteAt inf i v = do
     U.unsafeWrite heap'' i v
     when debug $ do
         b <- use' showReads
@@ -294,23 +294,7 @@ uWrite inf i v = do
                 x <- U.unsafeRead showBuffer j
                 U.unsafeWrite showBuffer j $ x .|. info inf 0xffff0000 0x00800000 0x00ff0000
 
-bytesAt__ :: Int -> Int -> MachinePart'' [Word8]
-bytesAt__ i' j' =
-    ( mapM (uRead System) $ take j' [i'..]
-    , zipWithM_ (uWrite System) [i'..] . pad (error "pad") j' . take j'
-    )
-
-byteAt__ :: Info -> Int -> Machine Word8
-byteAt__ inf i = uRead inf i
-
-getByteAt inf i = uRead inf i
-
-setByteAt :: Info -> Int -> Word8 -> Machine ()
-setByteAt inf i v = uWrite inf i v
-
-wordAt__ :: Info -> Int -> Machine Word16
-wordAt__ = getWordAt --liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead inf (i+1)) (uRead inf i)
-
+getWordAt :: Info -> Int -> Machine Word16
 getWordAt inf i | even i = do
     when debug $ do
         b <- use' showReads'
@@ -321,7 +305,7 @@ getWordAt inf i | even i = do
                 x <- U.unsafeRead showBuffer j
                 U.unsafeWrite showBuffer j $ x .|. info inf 0xff00ff00 0x00008000 0x0000ff00
     U.unsafeRead heap''' (i `shiftR` 1)
-getWordAt inf i = liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead inf (i+1)) (uRead inf i)
+getWordAt inf i = liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (getByteAt inf (i+1)) (getByteAt inf i)
 
 heap''' :: U.IOVector Word16
 heap''' = U.unsafeCast heap''
@@ -337,11 +321,10 @@ setWordAt inf i v | even i = do
                 x <- U.unsafeRead showBuffer j
                 U.unsafeWrite showBuffer j $ x .|. info inf 0xffff0000 0x00800000 0x00ff0000
     U.unsafeWrite heap''' (i `shiftR` 1) v
-setWordAt inf i v = uWrite inf i (fromIntegral v) >> uWrite inf (i+1) (fromIntegral $ v `shiftR` 8)
+setWordAt inf i v = setByteAt inf i (fromIntegral v) >> setByteAt inf (i+1) (fromIntegral $ v `shiftR` 8)
 
 dwordAt__ :: Info -> Int -> MachinePart' Word32
-dwordAt__ inf i = ( liftM2 (\hi lo -> fromIntegral hi `shiftL` 16 .|. fromIntegral lo) (wordAt__ inf $ i+2) (wordAt__ inf i)
-             , \v -> setWordAt inf i (fromIntegral v) >> setWordAt inf (i+2) (fromIntegral $ v `shiftR` 16))
+dwordAt__ inf i = comb (getWordAt inf (i+2), setWordAt inf (i+2)) (getWordAt inf i, setWordAt inf i)
 
 trace_, trace_' :: String -> Machine ()
 trace_ s = putStr $ " | " ++ s
@@ -356,7 +339,7 @@ push x = do
 pop :: Machine Word16
 pop = do
     ad <- liftM2 segAddr (use' ss) (use' sp)
-    x <- wordAt__ System ad
+    x <- getWordAt System ad
     sp .%= (+ 2)
     return x
 

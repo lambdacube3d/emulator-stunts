@@ -35,8 +35,8 @@ interrupt v = do
     use' cs >>= push
     use' ip >>= push
     interruptF ..= False
-    wordAt__ System (ad + 2) >>= (cs ..=)
-    wordAt__ System ad >>= (ip ..=)
+    getWordAt System (ad + 2) >>= (cs ..=)
+    getWordAt System ad >>= (ip ..=)
   where
     ad = 4 * fromIntegral v
 

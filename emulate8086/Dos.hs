@@ -216,7 +216,7 @@ origInterrupt = M.fromList
                 number_of_registers <- use' cx -- (0-00ffH)
                 -- Es:DX addr of a table of R,G,B values (it will be CX*3 bytes long)
                 addr <- dxAddr'
-                colors <- fst $ bytesAt__ addr $ 3 * fromIntegral number_of_registers
+                colors <- getBytesAt addr $ 3 * fromIntegral number_of_registers
                 palette ..%= \cs -> cs V.//
                     zip [fromIntegral first_DAC_register .. fromIntegral (first_DAC_register + number_of_registers - 1)]
                         -- shift 2 more positions because there are 64 intesity levels
@@ -292,8 +292,8 @@ origInterrupt = M.fromList
         0x35 -> do
             v <- fromIntegral <$> use' al
             trace_ $ "Get Interrupt Vector " ++ showHex' 2 v
-            wordAt__ System (4*v) >>= (bx ..=)
-            wordAt__ System (4*v + 2) >>= (es ..=)   -- Es:BX = pointer to interrupt handler
+            getWordAt System (4*v) >>= (bx ..=)
+            getWordAt System (4*v + 2) >>= (es ..=)   -- Es:BX = pointer to interrupt handler
 
         0x3c -> do
             trace_ "Create"
@@ -330,7 +330,7 @@ origInterrupt = M.fromList
             s <- BS.take num . BS.drop seek <$> BS.readFile fn
             let len = BS.length s
             files ..%= flip IM.adjust handle (\(fn, p) -> (fn, p+len))
-            snd (bytesAt__ loc len) (BS.unpack s)
+            setBytesAt loc $ BS.unpack s
             ax ..= "length" @: fromIntegral len
             returnOK
 
@@ -339,7 +339,7 @@ origInterrupt = M.fromList
             num <- fromIntegral <$> use' cx
             trace_ $ "Write " ++ showHandle handle ++ " " ++ showBytes num
             loc <- dxAddr
-            this <- fst $ bytesAt__ loc num
+            this <- getBytesAt loc num
             case handle of
               1 -> trace_' . ("STDOUT: " ++) . map (chr . fromIntegral) $ this
               2 -> trace_' . ("STDERR: " ++) . map (chr . fromIntegral) $ this
@@ -442,22 +442,22 @@ origInterrupt = M.fromList
                 let f' = strip $ takeFileName f
                 trace_' $ "found " ++ f'
                 setByteAt System (ad + 0x00) 1
-                snd (bytesAt__ (ad + 0x02) 13 {- !!! -}) $ pad 0 13 (map (fromIntegral . ord) (strip {- $ takeFileName -} f_) ++ [0])
+                setBytesAt (ad + 0x02) $ map (fromIntegral . ord) (take 12 $ strip f_) ++ [0]
                 setByteAt System (ad + 0x15) $ "attribute of matching file" @: fromIntegral attribute_used_during_search
                 setWordAt System (ad + 0x16) $ "file time" @: 0 -- TODO
                 setWordAt System (ad + 0x18) $ "file date" @: 0 -- TODO
                 snd (dwordAt__ System $ ad + 0x1a) $ fromIntegral (BS.length s)
-                snd (bytesAt__ (ad + 0x1e) 13) $ pad 0 13 (map (fromIntegral . ord) f' ++ [0])
+                setBytesAt (ad + 0x1e) $ map (fromIntegral . ord) (take 12 f') ++ [0]
                 ax ..= 0 -- ?
                 returnOK
               Nothing -> dosFail 0x02  -- File not found
 
         0x4f -> do
             ad <- use'' dta
-            fname <- fst $ bytesAt__ (ad + 0x02) 13
+            fname <- getBytesAt (ad + 0x02) 13
             let f_ = map (chr . fromIntegral) $ takeWhile (/=0) fname
             trace_ $ "Find next matching file " ++ show f_
-            n <- byteAt__ System $ ad + 0x00
+            n <- getByteAt System $ ad + 0x00
             s <- do
                     b <- globDir1 (compile $ map toUpper f_) "../original"
                     case drop (fromIntegral n) b of
@@ -471,7 +471,7 @@ origInterrupt = M.fromList
                 setWordAt System (ad + 0x16) $ "file time" @: 0 -- TODO
                 setWordAt System (ad + 0x18) $ "file date" @: 0 -- TODO
                 snd (dwordAt__ System $ ad + 0x1a) $ fromIntegral (BS.length s)
-                snd (bytesAt__ (ad + 0x1e) 13) $ pad 0 13 (map (fromIntegral . ord) (strip $ takeFileName f) ++ [0])
+                setBytesAt (ad + 0x1e) $ map (fromIntegral . ord) (take 12 $ strip $ takeFileName f) ++ [0]
                 setByteAt System (ad + 0x00) $ n+1
                 ax ..= 0 -- ?
                 returnOK
@@ -528,7 +528,7 @@ origInterrupt = M.fromList
 
     getFileName = do
         addr <- dxAddr
-        fname <- fst $ bytesAt__ addr 40
+        fname <- getBytesAt addr 40
         let f = map (toUpper . chr . fromIntegral) $ takeWhile (/=0) fname
         trace_' f
         let fn = "../original/" ++ f
@@ -593,7 +593,7 @@ programSegmentPrefix' baseseg envseg endseg args = do
     -- 3Ch-3Fh     4 bytes     Reserved
 --    wordAt 0x40 .= 0x0005 -- DOS version to return (DOS 4 and later, alterable via SETVER in DOS 5 and later)
     -- 42h-4Fh     14 bytes     Reserved
-    bytesAt_ 0x50 3 [0xcd, 0x21, 0xcb] -- (code) Far call to DOS (always contain INT 21h + RETF)
+    bytesAt_ 0x50 [0xcd, 0x21, 0xcb] -- (code) Far call to DOS (always contain INT 21h + RETF)
     -- 53h-54h     2 bytes     Reserved
     -- 55h-5Bh     7 bytes     Reserved (can be used to make first FCB into an extended FCB)
 
@@ -602,15 +602,19 @@ programSegmentPrefix' baseseg envseg endseg args = do
 --    bytesAt 0x5c (16 + 20) .= repeat 0
 
     byteAt_ 0x80 $ "args length" @: fromIntegral (min maxlength $ BS.length args)
-    bytesAt_ 0x81 (maxlength + 1) $ pad 0 (maxlength + 1) (take maxlength (BS.unpack args) ++ [0x0D])  -- Command line string
+    bytesAt_ 0x81 $ take maxlength (BS.unpack args) ++ [0x0D]  -- Command line string
 --    byteAt 0xff .= 0x36   -- dosbox specific?
   where
     base = baseseg & paragraph
     wordAt_ i = setWordAt System (i+base)
     byteAt_ i = setByteAt System (i+base)
-    bytesAt_ i l = snd (bytesAt__ (i+base) l) 
+    bytesAt_ i = setBytesAt (i+base)
 
     maxlength = 125
+
+getBytesAt i j = mapM (getByteAt System) $ take j [i..]
+
+setBytesAt i = zipWithM_ (setByteAt System) [i..]
 
 pspSegSize = 16
 envvarsSegment = 0x1f4
@@ -624,8 +628,8 @@ loadExe loadSegment gameExe = do
     flags ..= wordToFlags 0xf202
 
     heap ...= ( [(pspSegment - 1, endseg)], 0xa000 - 1)
-    snd (bytesAt__ (envvarsSegment & paragraph) $ length envvars) envvars
-    snd (bytesAt__ exeStart $ BS.length relocatedExe) $ BS.unpack relocatedExe
+    setBytesAt (envvarsSegment & paragraph) envvars
+    setBytesAt exeStart $ BS.unpack relocatedExe
     ss ..=  (ssInit + loadSegment)
     sp ..=  spInit
     cs ..=  (csInit + loadSegment)
