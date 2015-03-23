@@ -23,13 +23,23 @@ import Prelude
 
 import Helper
 import Edsl
-import MachineState
 import DeBruijn
+import MachineState
 import Dos (input, output')
 import CPU
 
 --------------------------------------
 
+interrupt :: Word8 -> Machine ()
+interrupt v = do
+    use' flags >>= push
+    use' cs >>= push
+    use' ip >>= push
+    interruptF ..= False
+    wordAt__ System (ad + 2) >>= (cs ..=)
+    wordAt__ System ad >>= (ip ..=)
+  where
+    ad = 4 * fromIntegral v
 
 getFetcher :: Machine Fetcher
 getFetcher = do
@@ -339,24 +349,19 @@ checkInt changeState cycles cont n = do
         mask <- use'' intMask
         ivar <- use'' interruptRequest
         ints <- takeMVar ivar
+        cc <- use'' counter
         let ibit = \case
                 AskTimerInterrupt{} -> 0
                 AskKeyInterrupt{}   -> 1
-            (now, later) = partition (not . testBit mask . ibit) ints
+            getFirst [] = (return (), [])
+            getFirst (x:xs) = case x of
+               AskTimerInterrupt c | c /= cc -> getFirst xs
+               _ | testBit mask $ ibit x -> (m, x:xs') where (m, xs') = getFirst xs
+               AskTimerInterrupt _ -> (timerOn ...= False >> interrupt 0x08, xs)
+               AskKeyInterrupt scancode -> (keyDown ...= scancode >> interrupt 0x09, xs)
+            (now, later) = getFirst ints
         putMVar ivar later
-        forM_ now $ \case
-           AskTimerInterrupt id -> do
-              cc <- use'' counter
-              when (id == cc) $ do
-                timerOn ...= False
-                interrupt 0x08
-           AskKeyInterrupt scancode -> do
-              keyDown ...= scancode
-              interrupt 0x09
-
---    sp <- use'' speed
---    if sp > 0 then do
---                  else threadDelay 20000
+        now
     when (ns' < cycles) cont
 
 --------------------------------------------------------------------------------

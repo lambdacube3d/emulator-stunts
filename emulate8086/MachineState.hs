@@ -361,23 +361,3 @@ pop = do
     sp .%= (+ 2)
     return x
 
-interrupt :: Word8 -> Machine ()
-interrupt v = do
-    use' flags >>= push
-    use' cs >>= push
-    use' ip >>= push
-    interruptF ..= False
-    wordAt__ System (ad + 2) >>= (cs ..=)
-    wordAt__ System ad >>= (ip ..=)
-  where
-    ad = 4 * fromIntegral v
-
-iret :: Machine ()
-iret = do
-    ip' <- pop
-    cs' <- pop
-    flags' <- pop
-    interruptF ..= testBit flags' 9
-    cs ..= cs'
-    ip ..= ip'
-

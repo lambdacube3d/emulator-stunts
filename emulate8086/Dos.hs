@@ -64,6 +64,15 @@ bitAlign n i = (i + complement mask) .&. mask
   where
     mask = (-1) `shiftL` n
 
+iret :: Machine ()
+iret = do
+    ip' <- pop
+    cs' <- pop
+    flags' <- pop
+    interruptF ..= testBit flags' 9
+    cs ..= cs'
+    ip ..= ip'
+
 haltWith = error
 halt = error "CleanHalt"
 
