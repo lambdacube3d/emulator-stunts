@@ -13,7 +13,6 @@ import qualified Data.Vector.Storable.Mutable as U
 import Control.Applicative
 import Control.Monad.State
 import Control.Monad.Reader
---import Control.Lens as Lens
 import Control.Concurrent
 import Control.Exception
 import Control.DeepSeq

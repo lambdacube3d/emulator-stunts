@@ -3,12 +3,7 @@ module Helper where
 
 import Numeric
 import Data.Word
---import Data.Int
 import Data.Bits hiding (bit)
---import Data.Char
---import Control.Lens as Lens
-
---------------------------------------------------------------------------------
 
 instance Num Bool where
     (+) = xor
@@ -28,22 +23,11 @@ instance Integral Bool where
 
 ----------------------------------------------
 
-everyNth n [] = []
-everyNth n xs = take n xs: everyNth n (drop n xs)
+{-# INLINE debug #-}
+debug = False
 
 showHex' :: (Show a, Integral a) => Int -> a -> String
 showHex' i x = replicate (i - length s) '0' ++ s where s = showHex x ""
-
---showHex''' :: (Show a, Integral a) => Int -> a -> String
---showHex''' i x = map toUpper $ showHex' i x
-
-pad :: a -> Int -> [a] -> [a]
-pad x i xs = xs ++ replicate (i - length xs) x
-
--------------------
-
-{-# INLINE debug #-}
-debug = False
 
 segAddr :: Word16 -> Word16 -> Int
 segAddr s w = fromIntegral s `shiftL` 4 + fromIntegral w

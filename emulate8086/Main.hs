@@ -1,6 +1,4 @@
 import qualified Data.ByteString as BS
---import Control.Monad.State
---import Control.Lens as Lens
 import Control.Concurrent
 import System.IO
 import Sound.ALUT

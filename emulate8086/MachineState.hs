@@ -14,7 +14,6 @@ import Control.Lens as Lens
 import Control.Applicative
 import Control.Arrow
 import Control.Monad.State
---import Control.DeepSeq
 import Sound.ALUT
 import Prelude
 
@@ -360,4 +359,7 @@ pop = do
     x <- wordAt__ System ad
     sp .%= (+ 2)
     return x
+
+pad :: a -> Int -> [a] -> [a]
+pad x i xs = xs ++ replicate (i - length xs) x
 

@@ -46,6 +46,9 @@ modifyAllocated addr req (alloc, endf) = head $ concatMap f $ getOut $ zip alloc
 
 --------------------------------------
 
+everyNth n [] = []
+everyNth n xs = take n xs: everyNth n (drop n xs)
+
 (@:) :: BS.ByteString -> a ->  a
 b @: x = x
 infix 5 @:
@@ -270,7 +273,7 @@ origInterrupt = M.fromList
             halt
 
         0x1a -> do
-            trace_ "Set Disk Transfer Address (DTA)"
+            trace_ "Set DTA" -- Disk Transfer Address
             addr <- dxAddr
             dta ...= addr
 
@@ -439,14 +442,15 @@ origInterrupt = M.fromList
                         _ -> return Nothing
             case s of
               Just (f, s) -> do
-                trace_' $ "found: " ++ show f
+                let f' = strip $ takeFileName f
+                trace_' $ "found " ++ f'
                 setByteAt System (ad + 0x00) 1
-                snd (bytesAt__ (ad + 0x02) 13 {- !!! -}) $ pad 0 13 (map (fromIntegral . ord) (strip $ takeFileName f_) ++ [0])
+                snd (bytesAt__ (ad + 0x02) 13 {- !!! -}) $ pad 0 13 (map (fromIntegral . ord) (strip {- $ takeFileName -} f_) ++ [0])
                 setByteAt System (ad + 0x15) $ "attribute of matching file" @: fromIntegral attribute_used_during_search
                 setWordAt System (ad + 0x16) $ "file time" @: 0 -- TODO
                 setWordAt System (ad + 0x18) $ "file date" @: 0 -- TODO
                 snd (dwordAt__ System $ ad + 0x1a) $ fromIntegral (BS.length s)
-                snd (bytesAt__ (ad + 0x1e) 13) $ pad 0 13 (map (fromIntegral . ord) (strip $ takeFileName f) ++ [0])
+                snd (bytesAt__ (ad + 0x1e) 13) $ pad 0 13 (map (fromIntegral . ord) f' ++ [0])
                 ax ..= 0 -- ?
                 returnOK
               Nothing -> dosFail 0x02  -- File not found
@@ -477,7 +481,7 @@ origInterrupt = M.fromList
               Nothing -> dosFail 0x02
 
         0x62 -> do
-            trace_ "Get PSP address (DOS 3.x)"
+            trace_ "Get PSP address"
             bx ..= "segment address of current process" @: 0x1fe  -- hack!!!  !!!
             returnOK
 
@@ -568,21 +572,6 @@ strip = reverse . dropWhile (==' ') . reverse . dropWhile (==' ')
 
 ----------------------------------------------
 
-prelude1'
-     = [error' $ "interruptTable " ++ showHex' 2 (i `div` 4) | i <- [0..1023]]
-    ++ replicate 172 (error' "BIOS communication area")
-    ++ replicate 68 (error' "reserved by IBM")
-    ++ replicate 16 (error' "user communication area")
-    ++ replicate 256 (error' "DOS communication area")
-    ++ [error' $ "dos area " ++ showHex' 2 i | i <- [0x600 ..0x700-1]]
-prelude'
-     = prelude1'
-    ++ [error' $ "dos area " ++ showHex' 2 i | i <- [length prelude1'..0x1f40-1]]
-
-error' :: String -> Word8
-error' _ = 0
-memUndefined'' i = replicate i 0
-
 programSegmentPrefix' :: Int -> Word16 -> Word16 -> BS.ByteString -> Machine ()
 programSegmentPrefix' base envseg endseg args = do
 
@@ -626,19 +615,19 @@ programSegmentPrefix' base envseg endseg args = do
 
 pspSize = 256 :: Int
 
+envvarsSegment = 0x1f4
+
 envvars :: [Word8]
 envvars = map (fromIntegral . ord) "PATH=Z:\\\NULCOMSPEC=Z:\\COMMAND.COM\NULBLASTER=A220 I7 D1 H5 T6\0\0\1\0C:\\GAME.EXE" ++
  replicate 20 0
-
-replicate' n _ | n < 0 = error "replicate'"
-replicate' n x = replicate n x
 
 loadExe :: Word16 -> BS.ByteString -> Machine (Int -> BSC.ByteString)
 loadExe loadSegment gameExe = do
     flags ..= wordToFlags 0xf202
 
-    heap ...= ( [(length rom', length rom2')], 0xa0000 - 16)
-    zipWithM_ (setByteAt System) [0..] rom2'
+    heap ...= ( [(lengthRom, lengthRom2)], 0xa0000 - 16)
+    snd (bytesAt__ (envvarsSegment ^. paragraph) $ length envvars) envvars
+    snd (bytesAt__ (loadSegment ^. paragraph) $ BS.length relocatedExe) $ BS.unpack relocatedExe
     ss ..=  (ssInit + loadSegment)
     sp ..=  spInit
     cs ..=  (csInit + loadSegment)
@@ -663,7 +652,7 @@ loadExe loadSegment gameExe = do
         setWordAt System (4*i + 2) $ "interrupt hi" @: hi
         cache .%= IM.insert (segAddr hi lo) (BuiltIn m)
 
-    programSegmentPrefix' (length rom' + 16) (length prelude' ^. from paragraph) endseg ""
+    programSegmentPrefix' (lengthRom + 16) envvarsSegment endseg ""
 
     gameexe ...= (exeStart, relocatedExe)
 
@@ -682,18 +671,8 @@ loadExe loadSegment gameExe = do
       where
         j = i - exeStart
 
-    rom' = concat
-            [ prelude'
-            , envvars
-            , replicate' (loadSegment ^. paragraph - length prelude' - length envvars - pspSize - 16) 0
-            ]
-    rom2' = concat
-        [ rom'
-        , replicate 16 0
-        , replicate pspSize 0
-        , BS.unpack $ relocatedExe
-        , memUndefined'' $ additionalMemoryAllocated ^. paragraph
-        ]
+    lengthRom = loadSegment ^. paragraph - pspSize - 16
+    lengthRom2 = loadSegment ^. paragraph + BS.length relocatedExe + additionalMemoryAllocated ^. paragraph
 
     exeStart = loadSegment ^. paragraph
     relocatedExe = relocate relocationTable loadSegment $ BS.drop headerSize gameExe
@@ -730,8 +709,4 @@ relocate table loc exe = BS.concat $ fst: map add (bss ++ [last])
 
     add (BS.uncons -> Just (x, BS.uncons -> Just (y, xs))) = BS.cons x' $ BS.cons y' xs
         where (y',x') = combine %~ (+ loc) $ (y,x)
-
-
----------------------------------
-
 
