@@ -101,11 +101,11 @@ input v = do
     case v of
         0x21 -> do
             x <- use'' intMask
-            trace_ $ "get interrupt mask " ++ showHex' 2 x
+            trace_ $ "Get interrupt mask " ++ showHex' 2 x
             return $ "???" @: fromIntegral x
         0x60 -> do
             k <- use'' keyDown
-            trace_ $ "keyboard scan code: " ++ showHex' 4 k
+            trace_ $ "Keyboard scan code " ++ showHex' 4 k
             return $ "???" @: k
         0x61 -> do
             x <- use'' speaker
@@ -128,11 +128,11 @@ output' v x = do
               0x20 -> setCounter
 --              v -> trace_ "int resume " ++ show
         0x21 -> do
-            trace_ $ "set interrupt mask " ++ showHex' 2 x  -- ?
+            trace_ $ "Set interrupt mask " ++ showHex' 2 x  -- ?
             intMask ...= fromIntegral x
             when (not $ testBit x 0) setCounter
         0x40 -> do
-            trace_ $ "set timer frequency " ++ showHex' 2 x --show (1193182 / fromIntegral x) ++ " HZ"
+            trace_ $ "Set timer frequency " ++ showHex' 2 x --show (1193182 / fromIntegral x) ++ " HZ"
         0x41 -> do
             trace_ $ "ch #41 " ++ showHex' 2 x  -- ?
         0x42 -> do
@@ -142,10 +142,10 @@ output' v x = do
             source <- use'' soundSource
             when (fromIntegral f >= 256) $ pitch source $= 2711 / fromIntegral f
         0x43 -> do
-            trace_ $ "set timer control " ++ showHex' 2 x
+            trace_ $ "Set timer control " ++ showHex' 2 x
             case x of
-                0x36  -> trace_ "set timer frequency lsb+msb, square wave"
-                0xb6  -> trace_ "set speaker frequency lsb+msb, square wave"
+                0x36  -> trace_' "set timer frequency lsb+msb, square wave"
+                0xb6  -> trace_' "set speaker frequency lsb+msb, square wave"
         0x61 -> do
             x' <- use'' speaker
             source <- use'' soundSource
@@ -154,8 +154,8 @@ output' v x = do
             do
                 when (testBit x 0 /= testBit x' 0) $ sourceGain source $= if testBit x 0 then 0.1 else 0
                 when (testBit x 1 /= testBit x' 1) $ (if testBit x 1 then play else stop) [source]
-        0xf100 -> do
-            trace_ "implemented for jmpmov test"
+--        0xf100 -> do
+--            trace_ "implemented for jmpmov test"
         _ -> haltWith $ "output #" ++ showHex' 4 v ++ " 0x" ++ showHex' 4 x
 
 --------------------------------------------------------
@@ -167,7 +167,7 @@ origInterrupt :: M.Map (Word16, Word16) (Word8, Machine ())
 origInterrupt = M.fromList
 
   [ item 0x00 (0xf000,0x1060) $ do
-    trace_ "divison by zero interrupt"
+    trace_ "Divison by zero interrupt"
     haltWith $ "int 00"
 
   , item 0x08 (0xf000,0xfea5) $ do
@@ -175,7 +175,7 @@ origInterrupt = M.fromList
     output' 0x20 0x20
 
   , item 0x09 (0xf000,0xe987) $ do
-    trace_ "orig keyboard interrupt"
+    trace_ "Orig keyboard interrupt"
     haltWith $ "int 09"
 
   , item 0x10 (0xf000,0x1320) $ do
@@ -187,9 +187,9 @@ origInterrupt = M.fromList
             trace_ $ "Set Video Mode #" ++ showHex' 2 video_mode_number
             case video_mode_number of
                 0x00 -> do
-                    trace_ "text mode"
+                    trace_' "text mode"
                 0x03 -> do
-                    trace_ "mode 3"
+                    trace_' "mode 3"
                 0x13 -> do
                     bx ..= 0  -- 4  -- ???
                 _ -> haltWith $ "#" ++ showHex' 2 video_mode_number
@@ -207,11 +207,11 @@ origInterrupt = M.fromList
             ah ..= "width of screen, in character columns" @: 80
             bh ..= "current active video page (0-based)" @: 0x00 --b8
         0x10 -> do
-            trace_ "Set/Get Palette Registers (EGA/VGA)"
+--            trace_ "Set/Get Palette Registers (EGA/VGA)"
             f <- use' al
             case f of
               0x12 -> do
-                trace_ "set block of DAC color registers"
+                trace_ "Set block of DAC color registers"
                 first_DAC_register <- use' bx -- (0-00ffH)
                 number_of_registers <- use' cx -- (0-00ffH)
                 -- Es:DX addr of a table of R,G,B values (it will be CX*3 bytes long)
@@ -228,13 +228,13 @@ origInterrupt = M.fromList
         v  -> haltWith $ "interrupt #10,#" ++ showHex' 2 v
 
   , item 0x15 (0xf000,0x11e0) $ do     -- 15h
-    trace_ "Misc System Services"
+--    trace_ "Misc System Services"
     v <- use' ah
     case v of
 --      0x00 -> do
 --        trace_ "Turn on casette driver motor"
       0xc2 -> do
-        trace_ "Pointing device BIOS interface"
+--        trace_ "Pointing device BIOS interface"
         w <- use' al
         case w of
           0x01 -> do
@@ -245,7 +245,7 @@ origInterrupt = M.fromList
       v  -> haltWith $ "interrupt #15,#" ++ showHex' 2 v
 
   , item 0x16 (0xf000,0x1200) $ do
-    trace_ "Keyboard Services"
+--    trace_ "Keyboard Services"
     v <- use' ah
     case v of
         0x00 -> do
@@ -341,8 +341,8 @@ origInterrupt = M.fromList
             loc <- dxAddr
             this <- fst $ bytesAt__ loc num
             case handle of
-              1 -> trace_ . ("STDOUT: " ++) . map (chr . fromIntegral) $ this
-              2 -> trace_ . ("STDERR: " ++) . map (chr . fromIntegral) $ this
+              1 -> trace_' . ("STDOUT: " ++) . map (chr . fromIntegral) $ this
+              2 -> trace_' . ("STDERR: " ++) . map (chr . fromIntegral) $ this
               _ -> return ()
             returnOK
 
@@ -414,7 +414,7 @@ origInterrupt = M.fromList
             case modifyAllocated (segment_of_the_block ^. paragraph) (new_requested_block_size_in_paragraphs ^. paragraph) h of
               Left x -> do
                 bx ..= "maximum block size possible" @: (x ^. from paragraph)
-                trace_ $ "insufficient, max possible: " ++ showHex' 4 (x ^. from paragraph)
+                trace_' $ "insufficient, max possible: " ++ showHex' 4 (x ^. from paragraph)
                 dosFail 0x08 -- insufficient memory
               Right h -> do
                 ds <- use' ds
@@ -439,7 +439,7 @@ origInterrupt = M.fromList
                         _ -> return Nothing
             case s of
               Just (f, s) -> do
-                trace_ $ "found: " ++ show f
+                trace_' $ "found: " ++ show f
                 setByteAt System (ad + 0x00) 1
                 snd (bytesAt__ (ad + 0x02) 13 {- !!! -}) $ pad 0 13 (map (fromIntegral . ord) (strip $ takeFileName f_) ++ [0])
                 setByteAt System (ad + 0x15) $ "attribute of matching file" @: fromIntegral attribute_used_during_search
@@ -466,7 +466,7 @@ origInterrupt = M.fromList
                         _ -> return Nothing
             case s of
               Just (f, s) -> do
-                trace_ $ "found: " ++ show f
+                trace_' $ "found: " ++ show f
                 setWordAt System (ad + 0x16) $ "file time" @: 0 -- TODO
                 setWordAt System (ad + 0x18) $ "file date" @: 0 -- TODO
                 snd (dwordAt__ System $ ad + 0x1a) $ fromIntegral (BS.length s)
@@ -546,7 +546,7 @@ origInterrupt = M.fromList
     returnOK = carryF ..= False
 
     dosFail errcode = do
-        trace_ $ showerr errcode
+        trace_' $ "! " ++ showerr errcode
         ax ..= errcode
         carryF ..= True
       where
