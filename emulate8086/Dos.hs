@@ -27,20 +27,20 @@ import MachineState
 
 ---------------------------------------------- memory allocation
 
-allocateMem :: Int -> MemPiece -> (Int, MemPiece)
-allocateMem req' (alloc, end) = (r + 16, (alloc ++ [(r, r + req' + 16)], end))
+allocateMem :: Word16 -> MemPiece -> (Word16, MemPiece)
+allocateMem req' (alloc, end) = (r + 1, (alloc ++ [(r, r + req' + 1)], end))
   where
-    r = bitAlign 4 $ snd $ last alloc
+    r = snd $ last alloc
 
-modifyAllocated :: Int -> Int -> MemPiece -> Either Int MemPiece
+modifyAllocated :: Word16 -> Word16 -> MemPiece -> Either Word16 MemPiece
 modifyAllocated addr req (alloc, endf) = head $ concatMap f $ getOut $ zip alloc $ tail $ map fst alloc ++ [endf]
   where
     getOut xs = zip (inits xs) (tails xs)
 
-    f (ys, ((beg,end),max): xs) | beg == addr - 16
-        = [ if req > max - beg - 16
-            then Left $ max - beg - 16
-            else Right (map fst ys ++ (beg, beg + req + 16): map fst xs, endf)
+    f (ys, ((beg,end),max): xs) | beg == addr - 1
+        = [ if req > max - beg - 1
+            then Left $ max - beg - 1
+            else Right (map fst ys ++ (beg, beg + req + 1): map fst xs, endf)
           ]
     f _ = []
 
@@ -402,22 +402,22 @@ origInterrupt = M.fromList
 
         0x48 -> do
             memory_paragraphs_requested <- use' bx
-            trace_ $ "Allocate Memory " ++ showHex' 5 (memory_paragraphs_requested ^. paragraph)
+            trace_ $ "Allocate Memory " ++ showBlocks memory_paragraphs_requested
             h <- use'' heap
-            let (x, h') = allocateMem (memory_paragraphs_requested ^. paragraph) h
+            let (x, h') = allocateMem memory_paragraphs_requested h
             heap ...= h'
-            ax ..= "segment address of allocated memory block" @: (x ^. from paragraph) -- (MCB + 1para)
+            ax ..= "segment address of allocated memory block" @: x -- (MCB + 1para)
             returnOK
 
         0x4a -> do
             new_requested_block_size_in_paragraphs <- use' bx
-            trace_ $ "Modify allocated memory blocks to " ++ showHex' 4 new_requested_block_size_in_paragraphs
+            trace_ $ "Modify allocated memory blocks to " ++ showBlocks new_requested_block_size_in_paragraphs
             segment_of_the_block <- use' es      -- (MCB + 1para)
             h <- use'' heap
-            case modifyAllocated (segment_of_the_block ^. paragraph) (new_requested_block_size_in_paragraphs ^. paragraph) h of
+            case modifyAllocated segment_of_the_block new_requested_block_size_in_paragraphs h of
               Left x -> do
-                bx ..= "maximum block size possible" @: (x ^. from paragraph)
-                trace_' $ "insufficient, max possible: " ++ showHex' 4 (x ^. from paragraph)
+                bx ..= "maximum block size possible" @: x
+                trace_' $ "max possible: " ++ showBlocks x
                 dosFail 0x08 -- insufficient memory
               Right h -> do
                 ds <- use' ds
@@ -539,6 +539,7 @@ origInterrupt = M.fromList
 
     showHandle h = "#" ++ show h
     showBytes i = show i ++ " bytes"
+    showBlocks i = "0x" ++ showHex' 4 i ++ " blocks"
 
     dxAddr = liftM2 segAddr (use' ds) (use' dx)
     dxAddr' = liftM2 segAddr (use' es) (use' dx)
@@ -572,8 +573,8 @@ strip = reverse . dropWhile (==' ') . reverse . dropWhile (==' ')
 
 ----------------------------------------------
 
-programSegmentPrefix' :: Int -> Word16 -> Word16 -> BS.ByteString -> Machine ()
-programSegmentPrefix' base envseg endseg args = do
+programSegmentPrefix' :: Word16 -> Word16 -> Word16 -> BS.ByteString -> Machine ()
+programSegmentPrefix' baseseg envseg endseg args = do
 
     wordAt_ 0x00 $ "CP/M exit, always contain code 'int 20h'" @: 0x20CD
     wordAt_ 0x02 $ "Segment of the first byte beyond the memory allocated to the program" @: endseg
@@ -607,14 +608,14 @@ programSegmentPrefix' base envseg endseg args = do
     bytesAt_ 0x81 (maxlength + 1) $ pad 0 (maxlength + 1) (take maxlength (BS.unpack args) ++ [0x0D])  -- Command line string
 --    byteAt 0xff .= 0x36   -- dosbox specific?
   where
+    base = baseseg ^. paragraph
     wordAt_ i = setWordAt System (i+base)
     byteAt_ i = setByteAt System (i+base)
     bytesAt_ i l = snd (bytesAt__ (i+base) l) 
 
     maxlength = 125
 
-pspSize = 256 :: Int
-
+pspSegSize = 16
 envvarsSegment = 0x1f4
 
 envvars :: [Word8]
@@ -625,7 +626,7 @@ loadExe :: Word16 -> BS.ByteString -> Machine (Int -> BSC.ByteString)
 loadExe loadSegment gameExe = do
     flags ..= wordToFlags 0xf202
 
-    heap ...= ( [(lengthRom, lengthRom2)], 0xa0000 - 16)
+    heap ...= ( [(lengthRom, lengthRom2)], 0xa000 - 1)
     snd (bytesAt__ (envvarsSegment ^. paragraph) $ length envvars) envvars
     snd (bytesAt__ (loadSegment ^. paragraph) $ BS.length relocatedExe) $ BS.unpack relocatedExe
     ss ..=  (ssInit + loadSegment)
@@ -652,7 +653,7 @@ loadExe loadSegment gameExe = do
         setWordAt System (4*i + 2) $ "interrupt hi" @: hi
         cache .%= IM.insert (segAddr hi lo) (BuiltIn m)
 
-    programSegmentPrefix' (lengthRom + 16) envvarsSegment endseg ""
+    programSegmentPrefix' (lengthRom + 1) envvarsSegment endseg ""
 
     gameexe ...= (exeStart, relocatedExe)
 
@@ -671,14 +672,14 @@ loadExe loadSegment gameExe = do
       where
         j = i - exeStart
 
-    lengthRom = loadSegment ^. paragraph - pspSize - 16
-    lengthRom2 = loadSegment ^. paragraph + BS.length relocatedExe + additionalMemoryAllocated ^. paragraph
+    lengthRom = pspSegment - 1
+    lengthRom2 = endseg
 
     exeStart = loadSegment ^. paragraph
     relocatedExe = relocate relocationTable loadSegment $ BS.drop headerSize gameExe
 
-    pspSegment = loadSegment - (pspSize ^. from paragraph)
-    endseg = loadSegment + executableSize ^. from paragraph + additionalMemoryAllocated
+    pspSegment = loadSegment - pspSegSize
+    endseg = loadSegment + executableSegSize + additionalMemoryAllocated
 
     additionalMemoryAllocated = additionalMemoryNeeded
         -- could be anything between additionalMemoryNeeded and maxAdditionalMemoryNeeded
@@ -690,10 +691,9 @@ loadExe loadSegment gameExe = do
         = map (\[low, high] -> (high, low) ^. combine) $ everyNth 2 $ BS.unpack $ gameExe
 
     headerSize = paragraphsInHeader ^. paragraph
-    executableSize = (fromIntegral pagesInExecutable `shiftL` 9)
-            + (if (bytesInLastPage > 0) then fromIntegral bytesInLastPage - 0x200 else 0)
-            - 0x22f0  -- ???
-            :: Int
+    executableSegSize = pagesInExecutable `shiftL` 5
+            + (if (bytesInLastPage > 0) then bytesInLastPage - 0x20 else 0)
+            - 0x22f  -- ???
 
     relocationTable = sort $ take (fromIntegral relocationEntries)
         $ map (\[a,b]-> segAddr b a) $ everyNth 2 $ drop (fromIntegral firstRelocationItemOffset `div` 2 - 14) headerLeft

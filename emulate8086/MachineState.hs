@@ -33,7 +33,7 @@ type Flags = Word16
 
 type Region = (Int, Int)
 type Regions = [Region]
-type MemPiece = (Regions, Int)
+type MemPiece = ([(Word16, Word16)], Word16)
 
 type UVec = U.IOVector Word8
 type Cache = IM.IntMap CacheEntry
@@ -126,7 +126,7 @@ wordToFlags w = fromIntegral $ (w .&. 0x0ed3) .|. 0x2
 emptyState = unsafePerformIO $ do
   ivar <- newMVar []
   newIORef $ MachineState
-    { _heap     = ([],0xa0000)
+    { _heap     = ([],0xa000)
     , _labels   = IM.empty
     , _files    = IM.empty
     , _dta      = 0
