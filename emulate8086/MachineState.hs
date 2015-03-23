@@ -222,6 +222,7 @@ bl = rLow 1
 cl = rLow 2
 dl = rLow 3
 
+{-# INLINE rLow #-}
 rLow i = (fromIntegral <$> U.unsafeRead regs i, \v -> U.unsafeRead regs i >>= U.unsafeWrite regs i . (.|. fromIntegral v) . (.&. 0xff00)) :: MachinePart'' Word8
 
 ah = rHigh 0
@@ -229,6 +230,7 @@ bh = rHigh 1
 ch = rHigh 2
 dh = rHigh 3
 
+{-# INLINE rHigh #-}
 rHigh i = (fromIntegral . (`shiftR` 8) <$> U.unsafeRead regs i, \v -> U.unsafeRead regs i >>= U.unsafeWrite regs i . (.|. fromIntegral v `shiftL` 8) . (.&. 0x00ff)) :: MachinePart'' Word8
 
 dxax, cxdx :: MachinePart'' Word32
@@ -269,25 +271,27 @@ info _ s1 s2 s3 = s3
 
 uRead :: Info -> Int -> IO Word8
 uRead inf i = do
-    b <- use' showReads'
-    when b $ do
-        off <- use' showOffset
-        let j = i - off
-        when (0 <= j && j < 320 * 200) $ do
-            x <- U.unsafeRead showBuffer j
-            U.unsafeWrite showBuffer j $ x .|. info inf 0xff00ff00 0x00008000 0x0000ff00
+    when debug $ do
+        b <- use' showReads'
+        when b $ do
+            off <- use' showOffset
+            let j = i - off
+            when (0 <= j && j < 320 * 200) $ do
+                x <- U.unsafeRead showBuffer j
+                U.unsafeWrite showBuffer j $ x .|. info inf 0xff00ff00 0x00008000 0x0000ff00
     U.unsafeRead heap'' i
 
 uWrite :: Info -> Int -> Word8 -> IO ()
 uWrite inf i v = do
     U.unsafeWrite heap'' i v
-    b <- use' showReads
-    when b $ do
-        off <- use' showOffset
-        let j = i - off
-        when (0 <= j && j < 320 * 200) $ do
-            x <- U.unsafeRead showBuffer j
-            U.unsafeWrite showBuffer j $ x .|. info inf 0xffff0000 0x00800000 0x00ff0000
+    when debug $ do
+        b <- use' showReads
+        when b $ do
+            off <- use' showOffset
+            let j = i - off
+            when (0 <= j && j < 320 * 200) $ do
+                x <- U.unsafeRead showBuffer j
+                U.unsafeWrite showBuffer j $ x .|. info inf 0xffff0000 0x00800000 0x00ff0000
 
 bytesAt__ :: Int -> Int -> MachinePart'' [Word8]
 bytesAt__ i' j' = (get_, set)
@@ -308,26 +312,31 @@ wordAt__ :: Info -> Int -> Machine Word16
 wordAt__ = getWordAt --liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead inf (i+1)) (uRead inf i)
 
 getWordAt inf i | even i = do
-    b <- use' showReads'
-    when b $ do
-        off <- use' showOffset
-        let j = i - off
-        when (0 <= j && j < 320 * 200) $ do -- TODO
-            x <- U.unsafeRead showBuffer j
-            U.unsafeWrite showBuffer j $ x .|. info inf 0xff00ff00 0x00008000 0x0000ff00
-    U.unsafeRead (U.unsafeCast heap'') (i `shiftR` 1)
+    when debug $ do
+        b <- use' showReads'
+        when b $ do
+            off <- use' showOffset
+            let j = i - off
+            when (0 <= j && j < 320 * 200) $ do -- TODO
+                x <- U.unsafeRead showBuffer j
+                U.unsafeWrite showBuffer j $ x .|. info inf 0xff00ff00 0x00008000 0x0000ff00
+    U.unsafeRead heap''' (i `shiftR` 1)
 getWordAt inf i = liftM2 (\hi lo -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (uRead inf (i+1)) (uRead inf i)
+
+heap''' :: U.IOVector Word16
+heap''' = U.unsafeCast heap''
 
 setWordAt :: Info -> Int -> Word16 -> Machine ()
 setWordAt inf i v | even i = do
-    U.unsafeWrite (U.unsafeCast heap'') (i `shiftR` 1) v
-    b <- use' showReads
-    when b $ do -- TODO
-        off <- use' showOffset
-        let j = i - off
-        when (0 <= j && j < 320 * 200) $ do
-            x <- U.unsafeRead showBuffer j
-            U.unsafeWrite showBuffer j $ x .|. info inf 0xffff0000 0x00800000 0x00ff0000
+    when debug $ do
+        b <- use' showReads
+        when b $ do -- TODO
+            off <- use' showOffset
+            let j = i - off
+            when (0 <= j && j < 320 * 200) $ do
+                x <- U.unsafeRead showBuffer j
+                U.unsafeWrite showBuffer j $ x .|. info inf 0xffff0000 0x00800000 0x00ff0000
+    U.unsafeWrite heap''' (i `shiftR` 1) v
 setWordAt inf i v = uWrite inf i (fromIntegral v) >> uWrite inf (i+1) (fromIntegral $ v `shiftR` 8)
 
 dwordAt__ :: Info -> Int -> MachinePart' Word32

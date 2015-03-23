@@ -114,6 +114,12 @@ and' (C 0) _ = C 0
 and' (C c) (C c') = C $ c .&. c'
 and' a b = And a b
 
+or' (C c) (C c') = C $ c .|. c'
+or' a b = Or a b
+
+xor' (C c) (C c') = C $ xor c c'
+xor' a b = Xor a b
+
 and'' (C False) _ = C False
 and'' (C True) b = b
 and'' a b = And a b

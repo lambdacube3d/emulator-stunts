@@ -198,7 +198,7 @@ pushVal (ReaderT m) v = ReaderT $ \x -> m (x `Push` v)
 
 evalExp :: EExp e a -> Machine' e a
 evalExp = \case
-    Var ix -> reader $ prj ix
+    Var ix -> let f = prj ix in reader f
 --    Let (C e) f -> pushVal (evalExp f) e
     Let e (DB f) -> evalExp e >>= pushVal (evalExp f)
     Iterate n (DB f) a -> evalExp n >>= \i -> evalExp a >>= iterateM i (pushVal (evalExp f))

@@ -101,27 +101,27 @@ fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
     Ihlt  -> interrupt 0x20
 
     Ijp   -> condJump pF
-    Ijnp  -> condJump $ Not pF
+    Ijnp  -> condJump $ not' pF
     Ijz   -> condJump zF
-    Ijnz  -> condJump $ Not zF
+    Ijnz  -> condJump $ not' zF
     Ijo   -> condJump oF
-    Ijno  -> condJump $ Not oF
+    Ijno  -> condJump $ not' oF
     Ijs   -> condJump sF
-    Ijns  -> condJump $ Not sF
+    Ijns  -> condJump $ not' sF
     Ijb   -> condJump cF
-    Ijae  -> condJump $ Not cF
-    Ijbe  -> condJump $ Or cF zF
-    Ija   -> condJump $ Not $ Or cF zF
-    Ijl   -> condJump $ Xor sF oF
-    Ijge  -> condJump $ Not $ Xor sF oF
-    Ijle  -> condJump $ Or (Xor sF oF) zF
-    Ijg   -> condJump $ Not $ Or (Xor sF oF) zF
+    Ijae  -> condJump $ not' cF
+    Ijbe  -> condJump $ or' cF zF
+    Ija   -> condJump $ not' $ or' cF zF
+    Ijl   -> condJump $ xor' sF oF
+    Ijge  -> condJump $ not' $ xor' sF oF
+    Ijle  -> condJump $ or' (xor' sF oF) zF
+    Ijg   -> condJump $ not' $ or' (xor' sF oF) zF
 
     Ijcxz -> condJump $ Eq (C 0) (Get CX)
 
     Iloop   -> loop $ C True
     Iloope  -> loop zF
-    Iloopnz -> loop $ Not zF
+    Iloopnz -> loop $ not' zF
 
     -- hack for stunts!  TODO: do it in a postprocessing phase?
     Ipop | op1 == Reg (RegSeg DS) -> cont' es (Get Ds) $ pop' $ set Ds
@@ -141,7 +141,7 @@ fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
     Ilahf   -> setFlags >> set AH (Convert $ Get Flags) >> ccClean
 
     Iclc  -> ccF oF sF zF pF (C False)
-    Icmc  -> ccF oF sF zF pF (Not cF)
+    Icmc  -> ccF oF sF zF pF (not' cF)
     Istc  -> ccF oF sF zF pF (C True)
     Icld  -> c $ set DF $ C False
     Istd  -> c $ set DF $ C True
@@ -214,7 +214,7 @@ fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
 
         Isal  -> shiftOp $ \_ x -> (highBit x, ShiftL x)
         Ishl  -> shiftOp $ \_ x -> (highBit x, ShiftL x)
-        Ircl  -> shiftOp $ \c x -> (highBit x, Xor (Convert c) $ ShiftL x)
+        Ircl  -> shiftOp $ \c x -> (highBit x, xor' (Convert c) $ ShiftL x)
         Irol  -> shiftOp $ \_ x -> (highBit x, RotateL x)
         Isar  -> shiftOp $ \_ x -> (Convert x, convert $ ShiftR $ signed x)
         Ishr  -> shiftOp $ \_ x -> (Convert x, ShiftR x)
@@ -224,10 +224,10 @@ fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
         Iadd  -> twoOp True  add
         Isub  -> twoOp True  sub
         Icmp  -> twoOp False sub
-        Ixor  -> twoOp True  Xor
-        Ior   -> twoOp True  Or
-        Iand  -> twoOp True  And
-        Itest -> twoOp False And
+        Ixor  -> twoOp True  xor'
+        Ior   -> twoOp True  or'
+        Iand  -> twoOp True  and'
+        Itest -> twoOp False and'
         Iadc  -> twoOp True $ \a b -> add (add a b) $ Convert cF
         Isbb  -> twoOp True $ \a b -> sub (sub a b) $ Convert cF
         Ineg  -> twoOp_ (flip sub) (setTr op1) op1v $ C 0

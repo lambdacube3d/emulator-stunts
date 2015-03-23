@@ -42,6 +42,7 @@ pad x i xs = xs ++ replicate (i - length xs) x
 
 -------------------
 
+{-# INLINE debug #-}
 debug = False
 
 segAddr :: Word16 -> Word16 -> Int
