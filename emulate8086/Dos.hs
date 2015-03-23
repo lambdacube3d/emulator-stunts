@@ -72,13 +72,18 @@ getSender = do
     return $ \r -> modifyMVar_ v $ return . (++ [r])
 
 setCounter = do
-    counter ..%= (+1)
-    c <- use'' counter
+    timerOn ...= True
+
+timerThread = do
     v <- use'' instPerSec
-    send <- getSender
-    void $ forkIO $ do
-        threadDelay $ round $ 1000000 / v
+    threadDelay $ round $ 1000000 / v
+    o <- use'' timerOn
+    when o $ do
+        counter ..%= (+1)
+        c <- use'' counter
+        send <- getSender
         send $ AskTimerInterrupt c
+    timerThread
 
 --------------------------------------------------------------------------------
 

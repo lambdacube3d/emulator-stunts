@@ -347,7 +347,9 @@ checkInt changeState cycles cont n = do
         forM_ now $ \case
            AskTimerInterrupt id -> do
               cc <- use'' counter
-              when (id == cc) $ interrupt 0x08
+              when (id == cc) $ do
+                timerOn ...= False
+                interrupt 0x08
            AskKeyInterrupt scancode -> do
               keyDown ...= scancode
               interrupt 0x09

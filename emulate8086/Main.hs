@@ -39,6 +39,7 @@ main = withProgNameAndArgs runALUT $ \_ args -> do
         soundSource ...= source
         getInst <- loadExe loadSegment game
         loadCache getInst
+        _ <- forkIO timerThread
         let cyc = mkStep >>= checkInt changeState cycles cyc
         cyc
         killThread tid

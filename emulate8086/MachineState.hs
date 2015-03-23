@@ -94,6 +94,7 @@ data MachineState = MachineState
     , _instPerSec       :: !Float  -- Hz
     , _speed            :: !Int  -- 0: stop
     , _counter          :: !Int -- timer interrupt counter
+    , _timerOn          :: !Bool
     , _palette          :: !(V.Vector Word32)
     , _gameexe          :: (Int, BS.ByteString)
 
@@ -137,6 +138,7 @@ emptyState = unsafePerformIO $ do
     , _instPerSec   = 100
     , _speed        = 3000
     , _counter      = 0
+    , _timerOn      = False
     , _speaker      = 0x30 -- ??
     , _palette      = defaultPalette
     , _keyDown      = 0x00
