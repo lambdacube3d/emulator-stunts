@@ -227,7 +227,7 @@ data ExpM_ (e :: * -> *) (c :: * -> * -> *) a where
 
 --    Jump' :: e Word16 -> e Word16 -> ExpM_ e c Jump'
     Jump' :: JumpInfo (ExpM_ e c) -> e Word16 -> e Word16 -> ExpM_ e c Jump'
-    Call :: e Word16 -> e Word16 -> Int -> ExpM_ e c a -> ExpM_ e c a
+    Call :: e Word16 -> e Word16 -> Int -> ExpM_ e c Jump' -> ExpM_ e c Jump'
 
     -- constrained let type (with more efficient interpretation) 
     LetMC :: e b -> c b () -> ExpM_ e c a -> ExpM_ e c a
@@ -270,7 +270,7 @@ instance (CC c, Ex c ~ Exp_ v c') => Monad (ExpM_ (Exp_ v c') c) where
         Replicate n b m g -> Replicate n b m $ g .>=> f
         Input e g -> Input e $ g .>=> f
         Output a b e -> Output a b $ e >>= f
-        Call a b i g -> Call a b i $ g >>= f
+        Call a b i g -> error "Call >>= " --Call a b i $ g >>= f
         Jump' _ _ _ -> error "Jump' >>="
         Trace s e -> Trace s $ e >>= f
 

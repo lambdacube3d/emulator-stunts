@@ -57,12 +57,15 @@ fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
             if inOpcode == Icall then do
                 when far $ push $ C cs
                 push $ C nextip
-                Jump' Nothing cs' ip'
+                setFlags
+                Call cs' ip' (segAddr cs nextip) ccClean
               else jump' cs' ip'
       case op1 of
         Ptr (Pointer seg (Immediate Bits16 v)) -> jmp True (C $ fromIntegral seg) (C $ fromIntegral v)
         Mem _ -> addr2 op1 $ \ad ad2 -> jmp far (if far then ad2 else C cs) ad
-        _     -> jmp False (C cs) (getWordOperand op1)
+        _     -> do
+            x <- letM $ getWordOperand op1
+            jmp False (C cs) x
 
     _ | inOpcode `elem` [Iret, Iretf, Iiretw] -> do
         ip' <- pop

@@ -301,6 +301,7 @@ evalEExpM ca = evalExpM
 
     Trace s c -> lift (trace_ s) >> evalExpM c
 
+    Call c i _ _ -> liftM2 JumpAddr (evalExp c) (evalExp i)
     Jump' Nothing (C c) (C i) -> return $ JumpAddr c i
     Jump' Nothing c i -> liftM2 JumpAddr (evalExp c) (evalExp i)
     Jump' (Just ((cs, ip), table, fallback)) cs' ip' -> let
