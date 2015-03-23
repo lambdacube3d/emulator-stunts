@@ -25,6 +25,8 @@ import Prelude
 import Helper
 import MachineState
 
+exePath = "../original"
+
 ---------------------------------------------- memory allocation
 
 allocateMem :: Word16 -> MemPiece -> (Word16, MemPiece)
@@ -59,11 +61,6 @@ combine = iso (\(hi,lo) -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (\d -
 paragraph :: Word16 -> Int
 paragraph = (`shiftL` 4) . fromIntegral
 
-bitAlign :: (Bits a, Num a) => Int -> a -> a
-bitAlign n i = (i + complement mask) .&. mask
-  where
-    mask = (-1) `shiftL` n
-
 iret :: Machine ()
 iret = do
     ip' <- pop
@@ -80,8 +77,7 @@ getSender = do
     v <- use'' interruptRequest
     return $ \r -> modifyMVar_ v $ return . (++ [r])
 
-setCounter = do
-    timerOn ...= True
+setCounter = timerOn ...= True
 
 timerThread = do
     v <- use'' instPerSec
@@ -97,66 +93,62 @@ timerThread = do
 --------------------------------------------------------------------------------
 
 input :: Word16 -> Machine (Word16)
-input v = do
-    case v of
-        0x21 -> do
-            x <- use'' intMask
-            trace_ $ "Get interrupt mask " ++ showHex' 2 x
-            return $ "???" @: fromIntegral x
-        0x60 -> do
-            k <- use'' keyDown
-            trace_ $ "Keyboard scan code " ++ showHex' 4 k
-            return $ "???" @: k
-        0x61 -> do
-            x <- use'' speaker
-            when ((x .&. 0xfc) /= 0x30) $ trace_ $ "speaker -> " ++ showHex' 2 x
-            return $ "???" @: fromIntegral x
-        0x03da -> do
-            -- TODO
-            r <- head <$> use'' retrace
-            retrace ..%= tail
-            trace_ $ "VGA hardware " ++ showHex' 4 r
-            return $ "Vretrace | DD" @: r
-        _ -> haltWith $ "input #" ++ showHex' 4 v
+input = \case
+    0x21 -> do
+        x <- use'' intMask
+        trace_ $ "Get interrupt mask " ++ showHex' 2 x
+        return $ "???" @: fromIntegral x
+    0x60 -> do
+        k <- use'' keyDown
+        trace_ $ "Keyboard scan code " ++ showHex' 4 k
+        return $ "???" @: k
+    0x61 -> do
+        x <- use'' speaker
+        when ((x .&. 0xfc) /= 0x30) $ trace_ $ "speaker -> " ++ showHex' 2 x
+        return $ "???" @: fromIntegral x
+    0x03da -> do
+        -- TODO
+        r <- head <$> use'' retrace
+        retrace ..%= tail
+        trace_ $ "VGA hardware " ++ showHex' 4 r
+        return $ "Vretrace | DD" @: r
+    v -> haltWith $ "input #" ++ showHex' 4 v
 
 output' :: Word16 -> Word16 -> Machine ()
-output' v x = do
-    case v of
-        0x20 -> do
+output' v x = case v of
+    0x20 -> do
 --            trace_ $ "int resume " ++ showHex' 2 x  -- ?
-            case x of
-              0x20 -> setCounter
+        case x of
+          0x20 -> setCounter
 --              v -> trace_ "int resume " ++ show
-        0x21 -> do
-            trace_ $ "Set interrupt mask " ++ showHex' 2 x  -- ?
-            intMask ...= fromIntegral x
-            when (not $ testBit x 0) setCounter
-        0x40 -> do
-            trace_ $ "Set timer frequency " ++ showHex' 2 x --show (1193182 / fromIntegral x) ++ " HZ"
-        0x41 -> do
-            trace_ $ "ch #41 " ++ showHex' 2 x  -- ?
-        0x42 -> do
+    0x21 -> do
+        trace_ $ "Set interrupt mask " ++ showHex' 2 x  -- ?
+        intMask ...= fromIntegral x
+        when (not $ testBit x 0) setCounter
+    0x40 -> do
+        trace_ $ "Set timer frequency " ++ showHex' 2 x --show (1193182 / fromIntegral x) ++ " HZ"
+    0x41 -> do
+        trace_ $ "ch #41 " ++ showHex' 2 x  -- ?
+    0x42 -> do
 --            trace_ $ "ch #42 " ++ showHex' 2 x
-            frequency ..%= (.|. (x `shiftL` 8)) . (`shiftR` 8)
-            f <- use'' frequency
-            source <- use'' soundSource
-            when (fromIntegral f >= 256) $ pitch source $= 2711 / fromIntegral f
-        0x43 -> do
-            trace_ $ "Set timer control " ++ showHex' 2 x
-            case x of
-                0x36  -> trace_' "set timer frequency lsb+msb, square wave"
-                0xb6  -> trace_' "set speaker frequency lsb+msb, square wave"
-        0x61 -> do
-            x' <- use'' speaker
-            source <- use'' soundSource
-            speaker ...= fromIntegral x
-            when (x .&. 0xfc /= 0x30) $ trace_ $ "speaker <- " ++ showHex' 2 x
-            do
-                when (testBit x 0 /= testBit x' 0) $ sourceGain source $= if testBit x 0 then 0.1 else 0
-                when (testBit x 1 /= testBit x' 1) $ (if testBit x 1 then play else stop) [source]
---        0xf100 -> do
---            trace_ "implemented for jmpmov test"
-        _ -> haltWith $ "output #" ++ showHex' 4 v ++ " 0x" ++ showHex' 4 x
+        frequency ..%= (.|. (x `shiftL` 8)) . (`shiftR` 8)
+        f <- use'' frequency
+        source <- use'' soundSource
+        when (fromIntegral f >= 256) $ pitch source $= 2711 / fromIntegral f
+    0x43 -> do
+        trace_ $ "Set timer control " ++ showHex' 2 x
+        case x of
+            0x36  -> trace_' "set timer frequency lsb+msb, square wave"
+            0xb6  -> trace_' "set speaker frequency lsb+msb, square wave"
+    0x61 -> do
+        x' <- use'' speaker
+        source <- use'' soundSource
+        speaker ...= fromIntegral x
+        when (x .&. 0xfc /= 0x30) $ trace_ $ "speaker <- " ++ showHex' 2 x
+        do
+            when (testBit x 0 /= testBit x' 0) $ sourceGain source $= if testBit x 0 then 0.1 else 0
+            when (testBit x 1 /= testBit x' 1) $ (if testBit x 1 then play else stop) [source]
+    _ -> haltWith $ "output #" ++ showHex' 4 v ++ " 0x" ++ showHex' 4 x
 
 --------------------------------------------------------
 
@@ -197,17 +189,14 @@ origInterrupt = M.fromList
             trace_ "Select Graphics Palette or Text Border Color"
         0x0e -> do
             a <- use' al
-            putChar $ chr . fromIntegral $ a
-            trace_ $ "Write Character as TTY: " ++ showHex' 2 a
-            
---            traceM $ (:[]) . chr . fromIntegral $ a
+--            putChar $ chr . fromIntegral $ a
+            trace_ $ "Write Character as TTY: " ++ show (chr $ fromIntegral a)
         0x0f -> do
             trace_ "Get Current Video Mode"
             al ..= "text mode" @: 3
             ah ..= "width of screen, in character columns" @: 80
             bh ..= "current active video page (0-based)" @: 0x00 --b8
-        0x10 -> do
---            trace_ "Set/Get Palette Registers (EGA/VGA)"
+        0x10 -> do          -- Set/Get Palette Registers (EGA/VGA)
             f <- use' al
             case f of
               0x12 -> do
@@ -227,14 +216,10 @@ origInterrupt = M.fromList
 
         v  -> haltWith $ "interrupt #10,#" ++ showHex' 2 v
 
-  , item 0x15 (0xf000,0x11e0) $ do     -- 15h
---    trace_ "Misc System Services"
+  , item 0x15 (0xf000,0x11e0) $ do     -- Misc System Services
     v <- use' ah
     case v of
---      0x00 -> do
---        trace_ "Turn on casette driver motor"
-      0xc2 -> do
---        trace_ "Pointing device BIOS interface"
+      0xc2 -> do    -- Pointing device BIOS interface
         w <- use' al
         case w of
           0x01 -> do
@@ -244,8 +229,7 @@ origInterrupt = M.fromList
             returnOK
       v  -> haltWith $ "interrupt #15,#" ++ showHex' 2 v
 
-  , item 0x16 (0xf000,0x1200) $ do
---    trace_ "Keyboard Services"
+  , item 0x16 (0xf000,0x1200) $ do  -- Keyboard Services
     v <- use' ah
     case v of
         0x00 -> do
@@ -261,8 +245,7 @@ origInterrupt = M.fromList
     trace_ "interrupt halt"
     halt
 
-  , item 0x21 (0xf000,0x14c0) $ do
---    trace_ "DOS rutine"
+  , item 0x21 (0xf000,0x14c0) $ do  -- DOS rutine
     v <- use' ah
     case v of
         0x00 -> do
@@ -373,16 +356,9 @@ origInterrupt = M.fromList
             dxax ..= fromIntegral pos'
             returnOK
 
-        0x44 -> do
---            trace_ "I/O Control for Devices (IOCTL)"
+        0x44 -> do      -- I/O Control for Devices (IOCTL)
             0x44 <- use' ah
             function_value <- use' al
-{-
-            file_handle <- use bx
-            logical_device_number <- use bl -- 0=default, 1=A:, 2=B:, 3=C:, ...
-            number_of_bytes_to_read_or_write <- use cx
-            data_or_buffer <- use dx
--}
             case function_value of
               0x00 -> do
                 handle <- use' bx
@@ -433,7 +409,7 @@ origInterrupt = M.fromList
             attribute_used_during_search <- use' cx
             ad <- use'' dta
             s <- do
-                    b <- globDir1 (compile $ map toUpper f_) "../original"
+                    b <- globDir1 (compile $ map toUpper f_) exePath
                     case b of
                         (f:_) -> Just . (,) f <$> BS.readFile f
                         _ -> return Nothing
@@ -459,11 +435,9 @@ origInterrupt = M.fromList
             trace_ $ "Find next matching file " ++ show f_
             n <- getByteAt System $ ad + 0x00
             s <- do
-                    b <- globDir1 (compile $ map toUpper f_) "../original"
+                    b <- globDir1 (compile $ map toUpper f_) exePath
                     case drop (fromIntegral n) b of
-                        filenames@(f:_) -> do
---                            trace_ $ "alternatives: " ++ show filenames
-                            Just . (,) f <$> (BS.readFile f)
+                        filenames@(f:_) -> Just . (,) f <$> (BS.readFile f)
                         _ -> return Nothing
             case s of
               Just (f, s) -> do
@@ -484,12 +458,11 @@ origInterrupt = M.fromList
 
         _    -> haltWith $ "dos function #" ++ showHex' 2 v
 
-  , item 0x24 (0x0118,0x0110) $ do     -- 24h
+  , item 0x24 (0x0118,0x0110) $ do
     trace_ "critical error handler interrupt"
-    haltWith $ "int 24"
+    haltWith "int 24"
 
-  , item 0x33 (0xc7ff,0x0010) $ do     -- 33h
---    trace_ "Mouse Services"
+  , item 0x33 (0xc7ff,0x0010) $ do     -- Mouse Services
     v <- use' ax
     case v of
         0x00 -> do
@@ -531,8 +504,7 @@ origInterrupt = M.fromList
         fname <- getBytesAt addr 40
         let f = map (toUpper . chr . fromIntegral) $ takeWhile (/=0) fname
         trace_' f
-        let fn = "../original/" ++ f
-        return (f, fn)
+        return (f, exePath ++ "/" ++ f)
 
     showHandle h = "#" ++ show h
     showBytes i = show i ++ " bytes"
