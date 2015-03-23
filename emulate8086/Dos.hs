@@ -53,6 +53,17 @@ infix 5 @:
 combine :: Iso' (Word8, Word8) Word16
 combine = iso (\(hi,lo) -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (\d -> (fromIntegral $ d `shiftR` 8, fromIntegral d))
 
+paragraph :: Iso' Word16 Int
+paragraph = if debug then iso ((`shiftL` 4) . fromIntegral) (fromIntegral . (`shiftR` 4) . check16)
+            else iso ((`shiftL` 4) . fromIntegral) (fromIntegral . (`shiftR` 4))
+  where
+    check16 x = if x .&. complement 0xf == 0 then x else error "paragraph"
+
+bitAlign :: (Bits a, Num a) => Int -> a -> a
+bitAlign n i = (i + complement mask) .&. mask
+  where
+    mask = (-1) `shiftL` n
+
 haltWith = error
 halt = error "CleanHalt"
 

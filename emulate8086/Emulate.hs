@@ -13,7 +13,7 @@ import qualified Data.Vector.Storable.Mutable as U
 import Control.Applicative
 import Control.Monad.State
 import Control.Monad.Reader
-import Control.Lens as Lens
+--import Control.Lens as Lens
 import Control.Concurrent
 import Control.Exception
 import Control.DeepSeq
@@ -392,7 +392,7 @@ loadCache getInst = do
     cf' <- cf `deepseq` do
         let ca = mempty :: Cache
         cf' <- forM (IM.toList cf) $ \(ip, (fromIntegral_ -> cs, fromIntegral_ -> ss, fromIntegral' -> es, fromIntegral' -> ds)) ->
-                 (,) ip <$> fetchBlock_' ca (disassemble . getInst) cs ss es ds (fromIntegral $ ip - cs ^. paragraph)
+                 (,) ip <$> fetchBlock_' ca (disassemble . getInst) cs ss es ds (fromIntegral $ ip - segAddr cs 0)
 --        ca <- use'' cache
         return cf'
     cache .%= IM.union (IM.fromList cf')

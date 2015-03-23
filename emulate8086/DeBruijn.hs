@@ -6,7 +6,7 @@ module DeBruijn
 import Data.Word
 import qualified Data.IntMap.Strict as IM
 import Control.Applicative
-import Control.Arrow
+--import Control.Arrow
 import Unsafe.Coerce
 
 import Edsl

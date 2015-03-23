@@ -14,7 +14,7 @@ import Control.Lens as Lens
 import Control.Applicative
 import Control.Arrow
 import Control.Monad.State
-import Control.DeepSeq
+--import Control.DeepSeq
 import Sound.ALUT
 import Prelude
 

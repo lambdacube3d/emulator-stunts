@@ -1,11 +1,12 @@
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 module Helper where
 
 import Numeric
 import Data.Word
-import Data.Int
+--import Data.Int
 import Data.Bits hiding (bit)
-import Data.Char
-import Control.Lens as Lens
+--import Data.Char
+--import Control.Lens as Lens
 
 --------------------------------------------------------------------------------
 
@@ -33,26 +34,15 @@ everyNth n xs = take n xs: everyNth n (drop n xs)
 showHex' :: (Show a, Integral a) => Int -> a -> String
 showHex' i x = replicate (i - length s) '0' ++ s where s = showHex x ""
 
-showHex''' :: (Show a, Integral a) => Int -> a -> String
-showHex''' i x = map toUpper $ showHex' i x
+--showHex''' :: (Show a, Integral a) => Int -> a -> String
+--showHex''' i x = map toUpper $ showHex' i x
 
 pad :: a -> Int -> [a] -> [a]
 pad x i xs = xs ++ replicate (i - length xs) x
 
-bitAlign :: (Bits a, Num a) => Int -> a -> a
-bitAlign n i = (i + complement mask) .&. mask
-  where
-    mask = (-1) `shiftL` n
-
 -------------------
 
 debug = False
-
-paragraph :: Iso' Word16 Int
-paragraph = if debug then iso ((`shiftL` 4) . fromIntegral) (fromIntegral . (`shiftR` 4) . check16)
-            else iso ((`shiftL` 4) . fromIntegral) (fromIntegral . (`shiftR` 4))
-  where
-    check16 x = if x .&. complement 0xf == 0 then x else error "paragraph"
 
 segAddr :: Word16 -> Word16 -> Int
 segAddr s w = fromIntegral s `shiftL` 4 + fromIntegral w
