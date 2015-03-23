@@ -2,6 +2,7 @@
 module Dos where
 
 import Data.Word
+import Data.Int
 import Data.Bits hiding (bit)
 import Data.Char
 import Data.List
@@ -48,6 +49,9 @@ modifyAllocated addr req (alloc, endf) = head $ concatMap f $ getOut $ zip alloc
 (@:) :: BS.ByteString -> a ->  a
 b @: x = x
 infix 5 @:
+
+combine :: Iso' (Word8, Word8) Word16
+combine = iso (\(hi,lo) -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (\d -> (fromIntegral $ d `shiftR` 8, fromIntegral d))
 
 haltWith = error
 halt = error "CleanHalt"
@@ -329,7 +333,7 @@ origInterrupt = M.fromList
             handle <- fromIntegral <$> use' bx
             fn <- (^. _1) . (IM.! handle) <$> use'' files
             mode <- use' al
-            pos <- fromIntegral . asSigned <$> use' cxdx
+            pos <- fromIntegral . (fromIntegral :: Word32 -> Int32) <$> use' cxdx
             trace_ $ "Seek " ++ showHex' 4 handle ++ ":" ++ fn ++ " to " ++ show mode ++ ":" ++ showHex' 8 pos
             s <- BS.readFile fn
             files ..%= (flip IM.adjust handle $ \(fn, p) -> case mode of

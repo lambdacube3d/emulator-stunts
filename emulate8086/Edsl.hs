@@ -129,19 +129,13 @@ fst' e = Fst e
 snd' (Tuple _ b) = b
 snd' e = Snd e
 
-convert :: (Num b, Integral a) => Exp_ v c a -> Exp_ v c b
-convert (C a) = C $ fromIntegral a
-convert e = Convert e
-
 iterate' (C 0) f e = e
 iterate' (C 1) f e = f e
 iterate' n f e = Iterate n (Fun f) e
 
-extend' :: Extend a => Exp_ v c a -> Exp_ v c (X2 a)
-extend' = convert
-
-signed :: AsSigned a => Exp_ v c a -> Exp_ v c (Signed a)
-signed = convert
+convert :: (Num b, Integral a) => Exp_ v c a -> Exp_ v c b
+convert (C a) = C $ fromIntegral a
+convert e = Convert e
 
 highBit :: (Integral a, Bits a) => Exp_ v c a -> Exp_ v c Bool
 highBit = Convert . RotateL

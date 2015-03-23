@@ -44,47 +44,6 @@ bitAlign n i = (i + complement mask) .&. mask
   where
     mask = (-1) `shiftL` n
 
----------------------------------
-
-class (Integral a, FiniteBits a, Integral (Signed a), FiniteBits (Signed a)) => AsSigned a where
-    type Signed a :: *
-
-instance AsSigned Word8  where    type Signed Word8  = Int8
-instance AsSigned Word16 where    type Signed Word16 = Int16
-instance AsSigned Word32 where    type Signed Word32 = Int32
-instance AsSigned Word64 where    type Signed Word64 = Int64
-
-asSigned :: AsSigned a => a -> Signed a
-asSigned = fromIntegral
-
-class (Integral a, Integral (X2 a), FiniteBits a, FiniteBits (X2 a)) => Extend a where
-    type X2 a :: *
-
-instance Extend Word8  where    type X2 Word8  = Word16
-instance Extend Word16 where    type X2 Word16 = Word32
-instance Extend Word32 where    type X2 Word32 = Word64
-
-instance Extend Int8   where    type X2 Int8   = Int16
-instance Extend Int16  where    type X2 Int16  = Int32
-instance Extend Int32  where    type X2 Int32  = Int64
-
-extend :: Extend a => a -> X2 a
-extend = fromIntegral
-
-combine :: forall a . Extend a => Iso' (a, a) (X2 a)
-combine = iso (\(hi,lo) -> fromIntegral hi `shiftL` s .|. fromIntegral lo) (\d -> (fromIntegral $ d `shiftR` s, fromIntegral d))
-  where
-    s = finiteBitSize (undefined :: a)
-
-high, low :: forall a . Extend a => Lens' (X2 a) a
-low = lens fromIntegral (\st lo -> (st `shiftR` s) `shiftL` s .|. fromIntegral lo)
-  where
-    s = finiteBitSize (undefined :: a)
-
-high = lens (fromIntegral . (`shiftR` s)) (\st hi -> fromIntegral hi `shiftL` s .|. fromIntegral (fromIntegral st :: a))
-  where
-    s = finiteBitSize (undefined :: a)
-
 -------------------
 
 debug = False

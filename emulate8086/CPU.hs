@@ -16,6 +16,27 @@ import Edsl
 
 --------------------------------------------------------------------------------
 
+type family Signed a :: *
+type instance Signed Word8  = Int8
+type instance Signed Word16 = Int16
+type instance Signed Word32 = Int32
+type instance Signed Word64 = Int64
+
+type family X2 a :: *
+type instance X2 Word8  = Word16
+type instance X2 Word16 = Word32
+type instance X2 Word32 = Word64
+type instance X2 Int8   = Int16
+type instance X2 Int16  = Int32
+type instance X2 Int32  = Int64
+
+extend :: (Integral a, Num (X2 a)) => Exp_ v c a -> Exp_ v c (X2 a)
+extend = convert
+
+signed :: (Integral a, Num (Signed a)) => Exp_ v c a -> Exp_ v c (Signed a)
+signed = convert
+
+
 disasmConfig = Config Intel Mode16 SyntaxIntel 0
 
 disassemble = head . disassembleMetadata disasmConfig
@@ -127,7 +148,7 @@ fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
     Icli  -> c $ set IF $ C False
     Isti  -> c $ set IF $ C True
 
-    Ixlatb -> c $ set AL $ Get $ Heap8 $ segAddr_ (segmentPrefix DS) $ add (extend' $ Get AL) (Get BX)
+    Ixlatb -> c $ set AL $ Get $ Heap8 $ segAddr_ (segmentPrefix DS) $ add (extend $ Get AL) (Get BX)
 
     Ilea -> c $ setWordOperand op1 $ addressOf' (unMem op2)
     _ | inOpcode `elem` [Iles, Ilds] -> addr2 op2 $ \ad ad2 -> do
@@ -177,7 +198,7 @@ fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
         setCF (Get CF) = return ()
         setCF x = set CF x
 
-    withSize :: forall a . (AsSigned a, Extend a, Extend (Signed a), AsSigned (X2 a), X2 (Signed a) ~ Signed (X2 a))
+    withSize :: forall a . (Integral a, FiniteBits a, Integral (Signed a), Bits (Signed a), Integral (X2 a), FiniteBits (X2 a), Integral (Signed (X2 a)), FiniteBits (Signed (X2 a)), X2 (Signed a) ~ Signed (X2 a))
         => (Operand -> Exp a)
         -> (Operand -> Exp a -> ExpM ())
         -> Part a
@@ -249,18 +270,19 @@ fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
         op2v = getTr op2
 
         divide :: (Integral a, Integral c, Integral (X2 c)) => (Exp a -> Exp c) -> (Exp (X2 a) -> Exp (X2 c)) -> ExpM Jump'
-        divide asSigned asSigned' = c $ letMC' (QuotRem (asSigned' $ Get axd) (convert $ asSigned op1v)) $ \t -> do
+        divide signed signed' = c $ letMC' (QuotRem (signed' $ Get axd) (convert $ signed op1v)) $ \t -> do
             set alx $ Convert $ Fst t
             set ahd $ Convert $ Snd t
 
-        multiply :: forall c . (Extend c, FiniteBits (X2 c)) => (Exp a -> Exp c) -> ExpM Jump'
-        multiply asSigned =
-            letM (mul (extend' $ asSigned $ Get alx) (extend' $ asSigned op1v)) >>= \r ->
-            letM (Not $ Eq r $ extend' (convert r :: Exp c)) >>= \c -> do
+        multiply :: forall c . (Integral c, Integral (X2 c), FiniteBits (X2 c)) => (Exp a -> Exp c) -> ExpM Jump'
+        multiply signed =
+            letM (mul (extend $ signed $ Get alx) (extend $ signed op1v)) >>= \r ->
+            letM (Not $ Eq r $ extend (convert r :: Exp c)) >>= \c -> do
             set axd $ convert r
             ccF c (uSet' SF sF) (C False){-needed for Stunts-} (uSet' PF pF) c
 
-        shiftOp :: (forall b . (AsSigned b) => Exp Bool -> Exp b -> (Exp Bool, Exp b)) -> ExpM Jump'
+        shiftOp :: (forall b . (Integral b, Bits b, Integral (Signed b), Bits (Signed b))
+                    => Exp Bool -> Exp b -> (Exp Bool, Exp b)) -> ExpM Jump'
         shiftOp op = letM (and' (C 0x1f) $ getByteOperand op2) >>= \n ->
              ifM' (eq' (C 0) n) cc $ do
                 letM (iterate' (convert n) (uncurry Tuple . uncurry op . unTup) $ Tuple cF op1v) >>= \t -> do
@@ -274,13 +296,13 @@ fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
         twoOp :: Bool -> (forall b . (Integral b, FiniteBits b) => Exp b -> Exp b -> Exp b) -> ExpM Jump'
         twoOp store op = twoOp_ op (if store then setTr op1 else const $ return ()) op1v op2v
 
-        twoOp_ :: AsSigned a
-            => (forall a . (Integral a, FiniteBits a) => Exp a -> Exp a -> Exp a)
+        twoOp_ :: {-AsSigned a
+            => -}(forall a . (Integral a, FiniteBits a) => Exp a -> Exp a -> Exp a)
             -> (Exp a -> ExpM ()) -> Exp a -> Exp a -> ExpM Jump'
         twoOp_ op store a b = twoOp__ op store a b ccF oF sF zF pF cF
 
-        twoOp__ :: AsSigned a
-                => (forall a . (Integral a, FiniteBits a) => Exp a -> Exp a -> Exp a)
+        twoOp__ :: {-AsSigned a
+                => -}(forall a . (Integral a, FiniteBits a) => Exp a -> Exp a -> Exp a)
                 -> (Exp a -> ExpM ()) -> Exp a -> Exp a
                 -> FlagTr
         twoOp__ op store op1 b cont oF sF zF pF cF =
