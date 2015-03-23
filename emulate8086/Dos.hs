@@ -56,11 +56,8 @@ infix 5 @:
 combine :: Iso' (Word8, Word8) Word16
 combine = iso (\(hi,lo) -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (\d -> (fromIntegral $ d `shiftR` 8, fromIntegral d))
 
-paragraph :: Iso' Word16 Int
-paragraph = if debug then iso ((`shiftL` 4) . fromIntegral) (fromIntegral . (`shiftR` 4) . check16)
-            else iso ((`shiftL` 4) . fromIntegral) (fromIntegral . (`shiftR` 4))
-  where
-    check16 x = if x .&. complement 0xf == 0 then x else error "paragraph"
+paragraph :: Word16 -> Int
+paragraph = (`shiftL` 4) . fromIntegral
 
 bitAlign :: (Bits a, Num a) => Int -> a -> a
 bitAlign n i = (i + complement mask) .&. mask
@@ -608,7 +605,7 @@ programSegmentPrefix' baseseg envseg endseg args = do
     bytesAt_ 0x81 (maxlength + 1) $ pad 0 (maxlength + 1) (take maxlength (BS.unpack args) ++ [0x0D])  -- Command line string
 --    byteAt 0xff .= 0x36   -- dosbox specific?
   where
-    base = baseseg ^. paragraph
+    base = baseseg & paragraph
     wordAt_ i = setWordAt System (i+base)
     byteAt_ i = setByteAt System (i+base)
     bytesAt_ i l = snd (bytesAt__ (i+base) l) 
@@ -626,9 +623,9 @@ loadExe :: Word16 -> BS.ByteString -> Machine (Int -> BSC.ByteString)
 loadExe loadSegment gameExe = do
     flags ..= wordToFlags 0xf202
 
-    heap ...= ( [(lengthRom, lengthRom2)], 0xa000 - 1)
-    snd (bytesAt__ (envvarsSegment ^. paragraph) $ length envvars) envvars
-    snd (bytesAt__ (loadSegment ^. paragraph) $ BS.length relocatedExe) $ BS.unpack relocatedExe
+    heap ...= ( [(pspSegment - 1, endseg)], 0xa000 - 1)
+    snd (bytesAt__ (envvarsSegment & paragraph) $ length envvars) envvars
+    snd (bytesAt__ exeStart $ BS.length relocatedExe) $ BS.unpack relocatedExe
     ss ..=  (ssInit + loadSegment)
     sp ..=  spInit
     cs ..=  (csInit + loadSegment)
@@ -642,9 +639,6 @@ loadExe loadSegment gameExe = do
     di ..=  0x1f40 -- why?
     labels ...= mempty
 
-    print $ showHex' 5 $ loadSegment ^. paragraph
-    print $ showHex' 5 headerSize
-
     setWordAt System (0x410) $ "equipment word" @: 0xd426 --- 0x4463   --- ???
     setByteAt System (0x417) $ "keyboard shift flag 1" @: 0x20
 
@@ -653,7 +647,7 @@ loadExe loadSegment gameExe = do
         setWordAt System (4*i + 2) $ "interrupt hi" @: hi
         cache .%= IM.insert (segAddr hi lo) (BuiltIn m)
 
-    programSegmentPrefix' (lengthRom + 1) envvarsSegment endseg ""
+    programSegmentPrefix' pspSegment envvarsSegment endseg ""
 
     gameexe ...= (exeStart, relocatedExe)
 
@@ -672,10 +666,7 @@ loadExe loadSegment gameExe = do
       where
         j = i - exeStart
 
-    lengthRom = pspSegment - 1
-    lengthRom2 = endseg
-
-    exeStart = loadSegment ^. paragraph
+    exeStart = loadSegment & paragraph
     relocatedExe = relocate relocationTable loadSegment $ BS.drop headerSize gameExe
 
     pspSegment = loadSegment - pspSegSize
@@ -690,9 +681,9 @@ loadExe loadSegment gameExe = do
      firstRelocationItemOffset: _overlayNumber: headerLeft)
         = map (\[low, high] -> (high, low) ^. combine) $ everyNth 2 $ BS.unpack $ gameExe
 
-    headerSize = paragraphsInHeader ^. paragraph
+    headerSize = paragraphsInHeader & paragraph
     executableSegSize = pagesInExecutable `shiftL` 5
-            + (if (bytesInLastPage > 0) then bytesInLastPage - 0x20 else 0)
+            + (if (bytesInLastPage > 0) then (bytesInLastPage + 0xf) `shiftL` 4 - 0x20 else 0)
             - 0x22f  -- ???
 
     relocationTable = sort $ take (fromIntegral relocationEntries)
