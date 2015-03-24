@@ -45,7 +45,7 @@ type Blocks = IM.IntMap (ExpM Jump')
 
 --fetchBlock_ :: (Int -> Metadata) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM ()
 fetchBlock_ jumps fetch cs ss es ds ip
-    = (1, [(ips, ips +1)], IM.singleton (fromIntegral ip) $
+    = (1, [(ips, ips +1)], IM.singleton (fromIntegral ip) $ Loc ip $
         fetchBlock' IM.empty jumps fetch
             cs ip ss (maybe (Get Es) C es) (maybe (Get Ds) C ds)
             (Get OF) (Get SF) (Get ZF) (Get PF) (Get CF))
@@ -59,6 +59,12 @@ type FlagTr = forall x . (Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> Exp Bo
 
 type JoinPoints = IM.IntMap (Exp Word16, Exp Word16, Exp Bool, Exp Bool, Exp Bool, Exp Bool, Exp Bool)
 
+solveFlag :: Part a -> Exp a -> Exp a -> Maybe (ExpM ())
+solveFlag f (Get f') (Get f'') | f == f' && f == f'' = Just $ return ()
+solveFlag f x (Get f'') | f == f'' = Just $ set f x
+solveFlag _ _ _ = Nothing
+solveReg = solveFlag
+
 fetchBlock'
     :: JoinPoints
     -> (Int -> IS.IntSet)
@@ -69,8 +75,13 @@ fetchBlock'
 fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case IM.lookup (fromIntegral ip) visited of
 
   Just (es', ds', oF', sF', zF', pF', cF') -> do
-    setFlags
-    Jump' (Left False) (C cs) (C ip)
+    let fallback = do
+            setFlags
+            Jump' (Left False) (C cs) (C ip)
+    case sequence [ solveReg Es es es', solveReg Ds ds ds'
+                  , solveFlag OF oF oF', solveFlag SF sF sF', solveFlag ZF zF zF', solveFlag PF pF pF', solveFlag CF cF cF'] of
+        Nothing -> fallback
+        Just m -> SelfJump (sequence_ m) fallback ip
 
   Nothing -> case inOpcode of
 
@@ -181,7 +192,7 @@ fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case IM.lookup (
     continue nextip = fetchBlock_ nextip es ds oF sF zF pF cF
 
     fetchBlock_ ip' es' ds' oF' sF' zF' pF' cF'
-        = fetchBlock'
+        = Loc ip' $ fetchBlock'
             (IM.insert (fromIntegral ip) (es, ds, oF, sF, zF, pF, cF) visited)
             jumps fetch cs ip' ss es' ds' oF' sF' zF' pF' cF'
 

@@ -24,7 +24,35 @@ data Part_ e a where
     DXAX :: Part_ e Word32
 
 instance Eq (Part_ e a) where
+    AL == AL = True
+    BL == BL = True
+    CL == CL = True
+    DL == DL = True
+    AH == AH = True
+    BH == BH = True
+    CH == CH = True
+    DH == DH = True
     AX == AX = True
+    BX == BX = True
+    CX == CX = True
+    DX == DX = True
+    SI == SI = True
+    DI == DI = True
+    BP == BP = True
+    SP == SP = True
+    Es == Es = True
+    Ds == Ds = True
+    Ss == Ss = True
+    Cs == Cs = True
+    CF == CF = True
+    PF == PF = True
+    ZF == ZF = True
+    SF == SF = True
+    IF == IF = True
+    DF == DF = True
+    OF == OF = True
+    Flags == Flags = True
+    DXAX == DXAX = True
     _ == _ = False  -- TODO
 
 mapPart :: (forall a . e a -> f a) -> Part_ e a -> Part_ f a
@@ -227,6 +255,7 @@ data ExpM_ (e :: * -> *) (c :: * -> * -> *) a where
 
 --    Jump' :: e Word16 -> e Word16 -> ExpM_ e c Jump'
     Jump' :: JumpInfo (ExpM_ e c) -> e Word16 -> e Word16 -> ExpM_ e c Jump'
+    SelfJump :: ExpM_ e c () -> ExpM_ e c Jump' -> Word16 -> ExpM_ e c Jump'
     Call :: e Word16 -> e Word16 -> Int -> ExpM_ e c Jump' -> ExpM_ e c Jump'
 
     -- constrained let type (with more efficient interpretation) 
@@ -238,6 +267,7 @@ data ExpM_ (e :: * -> *) (c :: * -> * -> *) a where
 
     Input :: e Word16 -> c Word16 a -> ExpM_ e c a
     Output :: e Word16 -> e Word16 -> ExpM_ e c a -> ExpM_ e c a
+    Loc :: Word16 -> ExpM_ e c a -> ExpM_ e c a     -- location info (ip)
     Trace :: String -> ExpM_ e c a -> ExpM_ e c a
 
 class {-Applicative (Ex c) => -} CC c where
@@ -272,6 +302,8 @@ instance (CC c, Ex c ~ Exp_ v c') => Monad (ExpM_ (Exp_ v c') c) where
         Output a b e -> Output a b $ e >>= f
         Call a b i g -> error "Call >>= " --Call a b i $ g >>= f
         Jump' _ _ _ -> error "Jump' >>="
+        SelfJump _ _ _ -> error "SelfJump >>="
+        Loc s e -> Loc s $ e >>= f
         Trace s e -> Trace s $ e >>= f
 
 
@@ -301,8 +333,9 @@ foldExpM :: forall e e' c c' a
     -> (forall x y . c x y -> c' x y)
     -> (forall x b . Part_ e b -> e b -> ExpM_ e c x -> ExpM_ e' c' x)
     -> (JumpInfo (ExpM_ e c) -> e Word16 -> e Word16 -> ExpM_ e' c' Jump')
+    -> (ExpM_ e c () -> ExpM_ e' c' Jump' -> Word16 -> ExpM_ e' c' Jump')
     -> ExpM_ e c a -> ExpM_ e' c' a
-foldExpM q tr set jump = k where
+foldExpM q tr set jump selfjump = k where
     k :: ExpM_ e c x -> ExpM_ e' c' x
     k = \case
         LetM e g -> LetM (q e) (tr g)
@@ -312,10 +345,12 @@ foldExpM q tr set jump = k where
         IfM' a b c d -> IfM' (q a) (k b) (k c) (tr d)
         Replicate n b a g -> Replicate (q n) (q b) (k a) (tr g)
         Jump' i cs ip -> jump i cs ip
+        SelfJump m m' ip -> selfjump m (k m') ip
         Call a b i g -> Call (q a) (q b) i (k g)
         Set p a g -> set p a g
         Output a b c -> Output (q a) (q b) (k c)
         Ret x -> Ret (q x)
+        Loc s x -> Loc s (k x)
         Trace s x -> Trace s (k x)
 
 ---------------------- HOAS

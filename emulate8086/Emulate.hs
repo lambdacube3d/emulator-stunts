@@ -306,6 +306,7 @@ evalEExpM ca = evalExpM
 
     Output a b c -> join (lift <$> liftM2 output' (evalExp a) (evalExp b)) >> evalExpM c
 
+    Loc _ c -> evalExpM c
     Trace s c -> lift (trace_ s) >> evalExpM c
 
     Call c i ips cont -> do
