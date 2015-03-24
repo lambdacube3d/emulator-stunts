@@ -73,7 +73,7 @@ fetchBlock_' ca f cs ss es ds ip = do
     let (n, r, e) = fetchBlock_ (\i -> fromMaybe mempty $ IM.lookup i jumps) f cs ss es ds ip
     _ <- evaluate n
     let !cc = spTrans $ convExpM $ snd $ head $ IM.toList e
-        !dd = evalExpM cc
+        !dd = evalExpM' cc
     return $ Compiled (not $ highAddr $ segAddr cs ip) cs ss es ds n r $ do
         _ <- dd
         b <- use' showReads
@@ -190,7 +190,7 @@ data Env :: List * -> * where
 
 prj :: Var env t -> Env env -> t
 prj VarZ = getPushVal
-prj (VarS ix) = prj ix . getPushEnv
+prj (VarS ix) = \e -> prj ix (getPushEnv e)
 
 type Machine' e = ReaderT (Env e) IO
 
@@ -203,166 +203,179 @@ iff x y _ = y
 pushVal :: Machine' (Con b e) a -> b -> Machine' e a
 pushVal (ReaderT m) v = ReaderT $ \x -> m (x `Push` v)
 
+{-# NOINLINE evalExp #-}
 evalExp :: EExp e a -> Machine' e a
-evalExp = \case
-    Var ix -> let f = prj ix in reader f
+evalExp (Var ix) = reader (prj ix)
 --    Let (C e) f -> pushVal (evalExp f) e
-    Let e (DB f) -> evalExp e >>= pushVal (evalExp f)
-    Iterate n (DB f) a -> evalExp n >>= \i -> evalExp a >>= iterateM i (pushVal (evalExp f))
+evalExp (Let e (DB f)) = evalExp e >>= pushVal (evalExp f)
+evalExp (Iterate n (DB f) a) = do
+    i <- evalExp n
+    evalExp a >>= iterateM i (pushVal (evalExp f))
 
-    C a -> return a
-    Get p -> case p of
+evalExp (C a) = return a
 --        Heap16 (C e) -> lift $ getWordAt (Program $ C e) e
-        Heap16 e -> evalExp e >>= lift . getWordAt (Program e)
+evalExp (Get (Heap16 e)) = evalExp e >>= lift . getWordAt (Program e)
 --        Heap8 (C e) -> lift $ getByteAt (Program $ C e) e
-        Heap8 e -> evalExp e >>= lift . getByteAt (Program e)
-        p -> let x = fst $ evalPart_ p in lift x
+evalExp (Get (Heap8 e)) = evalExp e >>= lift . getByteAt (Program e)
+evalExp (Get p) = let !x = fst $ evalPart_ p in lift x
 
 --    If (C b) x y -> if b then evalExp x else evalExp y
-    If b (C x) (C y) -> iff x y <$> evalExp b
-    If b x y -> evalExp b >>= iff (evalExp x) (evalExp y)
-    Eq (C x) y -> (==x) <$> evalExp y
-    Eq y (C x) -> (==x) <$> evalExp y
-    Eq x y -> liftM2 (==) (evalExp x) (evalExp y)
+evalExp (If b (C x) (C y)) = iff x y <$> evalExp b
+evalExp (If b x y) = evalExp b >>= iff (evalExp x) (evalExp y)
+evalExp (Eq (C x) y) = (==x) <$> evalExp y
+evalExp (Eq y (C x)) = (==x) <$> evalExp y
+evalExp (Eq x y) = liftM2 (==) (evalExp x) (evalExp y)
 
-    Not a -> complement <$> evalExp a
-    ShiftL a -> (`shiftL` 1) <$> evalExp a
-    ShiftR a -> (`shiftR` 1) <$> evalExp a
-    RotateL a -> (`rotateL` 1) <$> evalExp a
-    RotateR a -> (`rotateR` 1) <$> evalExp a
-    Sub (C a) b -> (a-) <$> evalExp b
-    Sub b (C a) -> (+(-a)) <$> evalExp b
-    Sub a b -> liftM2 (-) (evalExp a) (evalExp b)
-    Add (C a) b -> (+a) <$> evalExp b
-    Add b (C a) -> (+a) <$> evalExp b
-    Add a b -> liftM2 (+) (evalExp a) (evalExp b)
-    Mul a b -> liftM2 (*) (evalExp a) (evalExp b)
-    QuotRem a b -> liftM2 quotRem (evalExp a) (evalExp b)
-    And (C a) b -> (.&. a) <$> evalExp b
-    And b (C a) -> (.&. a) <$> evalExp b
-    And a b -> liftM2 (.&.) (evalExp a) (evalExp b)
-    Or (C a) b -> (.|. a) <$> evalExp b
-    Or b (C a) -> (.|. a) <$> evalExp b
-    Or  a b -> liftM2 (.|.) (evalExp a) (evalExp b)
-    Xor (C a) b -> (xor a) <$> evalExp b
-    Xor b (C a) -> (xor a) <$> evalExp b
+evalExp (Not a) = complement <$> evalExp a
+evalExp (ShiftL a) = (`shiftL` 1) <$> evalExp a
+evalExp (ShiftR a) = (`shiftR` 1) <$> evalExp a
+evalExp (RotateL a) = (`rotateL` 1) <$> evalExp a
+evalExp (RotateR a) = (`rotateR` 1) <$> evalExp a
+evalExp (Sub (C a) b) = (a-) <$> evalExp b
+evalExp (Sub b (C a)) = (+(-a)) <$> evalExp b
+evalExp (Sub a b) = liftM2 (-) (evalExp a) (evalExp b)
+evalExp (Add (C a) b) = (+a) <$> evalExp b
+evalExp (Add b (C a)) = (+a) <$> evalExp b
+evalExp (Add a b) = liftM2 (+) (evalExp a) (evalExp b)
+evalExp (Mul a b) = liftM2 (*) (evalExp a) (evalExp b)
+evalExp (QuotRem a b) = liftM2 quotRem (evalExp a) (evalExp b)
+evalExp (And (C a) b) = (.&. a) <$> evalExp b
+evalExp (And b (C a)) = (.&. a) <$> evalExp b
+evalExp (And a b) = liftM2 (.&.) (evalExp a) (evalExp b)
+evalExp (Or (C a) b) = (.|. a) <$> evalExp b
+evalExp (Or b (C a)) = (.|. a) <$> evalExp b
+evalExp (Or  a b) = liftM2 (.|.) (evalExp a) (evalExp b)
+evalExp (Xor (C a) b) = (xor a) <$> evalExp b
+evalExp (Xor b (C a)) = (xor a) <$> evalExp b
 --    Xor a b | a == b -> return zeroBits
-    Xor a b -> liftM2 xor (evalExp a) (evalExp b)
+evalExp (Xor a b) = liftM2 xor (evalExp a) (evalExp b)
 
-    EvenParity e -> even . popCount <$> evalExp e
+evalExp (EvenParity e) = even . popCount <$> evalExp e
 
 --    SegAddr (C i) (C f) -> return $ segAddr i f
-    SegAddr (C i) f -> (fromIntegral i `shiftL` 4 +) . fromIntegral <$> evalExp f
-    SegAddr e f -> liftM2 segAddr (evalExp e) (evalExp f)
-    Convert e -> fromIntegral <$> evalExp e    
+evalExp (SegAddr (C i) f) = (fromIntegral i `shiftL` 4 +) . fromIntegral <$> evalExp f
+evalExp (SegAddr e f) = liftM2 segAddr (evalExp e) (evalExp f)
+evalExp (Convert e) = fromIntegral <$> evalExp e    
 
-    Tuple a b -> liftM2 (,) (evalExp a) (evalExp b)
-    Fst p -> fst <$> evalExp p
-    Snd p -> snd <$> evalExp p
+evalExp (Tuple a b) = liftM2 (,) (evalExp a) (evalExp b)
+evalExp (Fst p) = fst <$> evalExp p
+evalExp (Snd p) = snd <$> evalExp p
 
 
 --evalExpM :: Cache -> ExpM Jump' -> Machine ()
-evalExpM e = let !m = evalEExpM e in runReaderT m Empty >>= \(JumpAddr c i) -> cs ..= c >> ip ..= i
+evalExpM' e = let !m = evalExpM mempty e in runReaderT m Empty >>= \(JumpAddr c i) -> cs ..= c >> ip ..= i
 
 liftMa :: Machine' e a -> Machine' (Con x e) a
 liftMa (ReaderT f) = ReaderT $ f . getPushEnv
 
-evalEExpM :: EExpM e a -> Machine' e a
-evalEExpM e = evalExpM mempty e
-  where
-  evalExpM :: forall e a . IM.IntMap (Machine' e Jump') -> EExpM e a -> Machine' e a
-  evalExpM ca = \case
+{-# NOINLINE evalExpM #-}
+evalExpM :: forall e a . IM.IntMap (Machine' e Jump') -> EExpM e a -> Machine' e a
 --    LetM(C e) f -> pushVal (evalExpM f) e
-    LetM e (DBM f) -> evalExp e >>= pushVal (evalExpM ca' f)
+evalExpM ca (LetM e (DBM f)) = evalExp e >>= pushVal (evalExpM (IM.map liftMa ca) f)
 --    LetMC e f g -> evalExp e >>= pushVal (evalExpM f) >> evalExpM g
-    Set p (C e') c -> case p of
-        Heap16 (C e_) -> lift (setWordAt (Program $ C e_) e_ e') >> evalExpM ca c
-        Heap16 e -> evalExp e >>= \e_ -> lift (setWordAt (Program e) e_ e') >> evalExpM ca c
+evalExpM ca (Set (Heap16 (C e_)) (C e') c) = lift (setWordAt (Program $ C e_) e_ e') >> evalExpM ca c
+evalExpM ca (Set (Heap16 e) (C e') c) = do
+    e_ <- evalExp e
+    lift (setWordAt (Program e) e_ e')
+    evalExpM ca c
 --        Heap8 (C e_) -> lift (setByteAt (Program $ C e_) e_ e') >> evalExpM c
-        Heap8 e -> evalExp e >>= \e_ -> lift (setByteAt (Program e) e_ e') >> evalExpM ca c
-        p -> let x = snd $ evalPart_ p in lift (x e') >> evalExpM ca c
-    Set p e' c -> case p of 
-        Heap16 (C e_) -> evalExp e' >>= \e_' -> lift (setWordAt (Program $ C e_) e_ e_') >> evalExpM ca c
-        Heap16 e -> evalExp e >>= \e_ -> evalExp e' >>= \e_' -> lift (setWordAt (Program e) e_ e_') >> evalExpM ca c
+evalExpM ca (Set (Heap8 e) (C e') c) = do
+    e_ <- evalExp e
+    lift (setByteAt (Program e) e_ e')
+    evalExpM ca c
+evalExpM ca (Set p (C e') c) = let x = snd $ evalPart_ p in lift (x e') >> evalExpM ca c
+evalExpM ca (Set (Heap16 (C e_)) e' c) = do
+    e_' <- evalExp e'
+    lift (setWordAt (Program $ C e_) e_ e_')
+    evalExpM ca c
+evalExpM ca (Set (Heap16 e) e' c) = do
+    e_ <- evalExp e
+    e_' <- evalExp e'
+    lift (setWordAt (Program e) e_ e_')
+    evalExpM ca c
 --        Heap8 (C e_) -> evalExp e' >>= \e_' -> lift (setByteAt (Program $ C e_) e_ e_') >> evalExpM c
-        Heap8 e -> evalExp e >>= \e_ -> evalExp e' >>= \e_' -> lift (setByteAt (Program e) e_ e_') >> evalExpM ca c
-        p -> let x = snd $ evalPart_ p in evalExp e' >>= lift . x >> evalExpM ca c
+evalExpM ca (Set (Heap8 e) e' c) = do
+    e_ <- evalExp e
+    e_' <- evalExp e'
+    lift (setByteAt (Program e) e_ e_')
+    evalExpM ca c
+evalExpM ca (Set p e' c) = let x = snd $ evalPart_ p in evalExp e' >>= lift . x >> evalExpM ca c
 {- temporarily comment out
-    Jump'' (C c) (C i) | Just (Compiled cs' ss' _ _ _ _ m) <- IM.lookup (segAddr c i) ca
-                       , cs' == c -> lift $ do
-                            checkInt 1
-                            ip .= i
-                            m
+Jump'' (C c) (C i) | Just (Compiled cs' ss' _ _ _ _ m) <- IM.lookup (segAddr c i) ca
+                   , cs' == c -> lift $ do
+                        checkInt 1
+                        ip .= i
+                        m
 -}
-    Ret (C a) -> return a
-    Ret a -> evalExp a
+evalExpM ca (Ret (C a)) = return a
+evalExpM ca (Ret a) = evalExp a
 
-    IfM (C b) x y -> if b then evalExpM ca x else evalExpM ca y
-    IfM b x y -> evalExp b >>= iff (evalExpM ca x) (evalExpM ca y)
+evalExpM ca (IfM (C b) x y) = if b then evalExpM ca x else evalExpM ca y
+evalExpM ca (IfM b x y) = evalExp b >>= iff (evalExpM ca x) (evalExpM ca y)
 
-    IfM' b x y (DBM f) -> evalExp b >>= iff (evalExpM ca x) (evalExpM ca y) >>= pushVal (evalExpM ca' f)
+evalExpM ca (IfM' b x y (DBM f)) = evalExp b >>= iff (evalExpM ca x) (evalExpM ca y) >>= pushVal (evalExpM (IM.map liftMa ca) f)
 
-    Replicate n (C True) e (DBM f) -> evalExp n >>= \n -> replicateM_ (fromIntegral n) (evalExpM mempty e) >> pushVal (evalExpM ca' f) (0 `asTypeOf` n)
-    Replicate n b e (DBM f) -> evalExp n >>= replicateM' (evalExp b) (evalExpM mempty e) >>= pushVal (evalExpM ca' f)
+evalExpM ca (Replicate n (C True) e (DBM f)) = do
+    n <- evalExp n
+    replicateM_ (fromIntegral n) (evalExpM mempty e)
+    pushVal (evalExpM (IM.map liftMa ca) f) (0 `asTypeOf` n)
+evalExpM ca (Replicate n b e (DBM f)) = evalExp n >>= replicateM' (evalExp b) (evalExpM mempty e) >>= pushVal (evalExpM (IM.map liftMa ca) f)
 
-    Input a (DBM f) -> evalExp a >>= lift . input >>= pushVal (evalExpM ca' f)
+evalExpM ca (Input a (DBM f)) = evalExp a >>= lift . input >>= pushVal (evalExpM (IM.map liftMa ca) f)
 
-    Output a b c -> join (lift <$> liftM2 output' (evalExp a) (evalExp b)) >> evalExpM ca c
+evalExpM ca (Output a b c) = join (lift <$> liftM2 output' (evalExp a) (evalExp b)) >> evalExpM ca c
 
-    Loc ip c ->
-        let m = evalExpM ca' c
-            ca' = IM.insert (fromIntegral ip) m ca
-        in m
-    Trace s c -> lift (trace_ s) >> evalExpM ca c
+evalExpM ca (Loc ip c) =
+    let m = evalExpM ca' c
+        ca' = IM.insert (fromIntegral ip) m ca
+    in m
+evalExpM ca (Trace s c) = lift (trace_ s) >> evalExpM ca c
 
-    Call c i ips cont -> do
-        st <- ask
-        lift $ do
-            sp' <- use' sp
-            stack ..%= ((sp', ips, flip runReaderT st $ evalExpM ca cont):)
-        liftM2 JumpAddr (evalExp c) (evalExp i)
+evalExpM ca (Call c i ips cont) = do
+    st <- ask
+    lift $ do
+        sp' <- use' sp
+        stack ..%= ((sp', ips, flip runReaderT st $ evalExpM ca cont):)
+    liftM2 JumpAddr (evalExp c) (evalExp i)
 
-    SelfJump prep fallback ip -> let
-            m1 = evalExpM mempty prep
-            m2 = ca IM.! fromIntegral ip
-            fa = evalExpM ca fallback
-        in do
-            checkInt' 1 fa (m1 >> m2)
+evalExpM ca (SelfJump prep fallback ip) = let
+        m1 = evalExpM mempty prep
+        m2 = ca IM.! fromIntegral ip
+        fa = evalExpM ca fallback
+    in do
+        checkInt' 1 fa (m1 >> m2)
 
-    Jump' (Left True) c i -> do
-        c' <- evalExp c
-        i' <- evalExp i
-        s <- lift $ use'' stack
-        sp' <- lift $ use' sp
-        let find [] = ([], Nothing)
-            find xs'@((sp'', ips, m): xs)
-                | sp' < sp'' = (xs', Nothing)
-                | sp' > sp'' = find xs
-                | ips == segAddr c' i' = (xs, Just m)
-                | otherwise = (xs', Nothing)
-            (s', r) = find s
-        lift $ stack ...= s'
-        case r of
-            Just m -> lift m
-            Nothing -> return $ JumpAddr c' i'
-    Jump' (Left False) (C c) (C i) -> return $ JumpAddr c i
-    Jump' (Left False) c i -> liftM2 JumpAddr (evalExp c) (evalExp i)
-    Jump' (Right ((cs, ip), table, fallback)) cs' ip' -> let
-        table' = IM.map (evalExpM ca) table
-        end = evalExpM ca fallback
-        in do
-            cs'' <- evalExp cs'
-            ip'' <- evalExp ip'
-            let ip''' = fromIntegral ip''
-            if cs /= cs'' then end else
-              case IM.lookup ip''' table' of
-                Just m -> m
-                Nothing -> do
-                    lift $ cache2 .%= alter' (segAddr cs ip) (IS.insert ip''')
-                    end
-   where
-    ca' :: IM.IntMap (Machine' (Con x e) Jump')
-    ca' = IM.map liftMa ca
+evalExpM ca (Jump' (Left True) c i) = do
+    c' <- evalExp c
+    i' <- evalExp i
+    s <- lift $ use'' stack
+    sp' <- lift $ use' sp
+    let find [] = ([], Nothing)
+        find xs'@((sp'', ips, m): xs)
+            | sp' < sp'' = (xs', Nothing)
+            | sp' > sp'' = find xs
+            | ips == segAddr c' i' = (xs, Just m)
+            | otherwise = (xs', Nothing)
+        (s', r) = find s
+    lift $ stack ...= s'
+    case r of
+        Just m -> lift m
+        Nothing -> return $ JumpAddr c' i'
+evalExpM ca (Jump' (Left False) (C c) (C i)) = return $ JumpAddr c i
+evalExpM ca (Jump' (Left False) c i) = liftM2 JumpAddr (evalExp c) (evalExp i)
+evalExpM ca (Jump' (Right ((cs, ip), table, fallback)) cs' ip') = let
+    table' = IM.map (evalExpM ca) table
+    end = evalExpM ca fallback
+    in do
+        cs'' <- evalExp cs'
+        ip'' <- evalExp ip'
+        let ip''' = fromIntegral ip''
+        if cs /= cs'' then end else
+          case IM.lookup ip''' table' of
+            Just m -> m
+            Nothing -> do
+                lift $ cache2 .%= alter' (segAddr cs ip) (IS.insert ip''')
+                end
 
 alter' i f = IM.alter (Just . maybe (f mempty) f) i
 

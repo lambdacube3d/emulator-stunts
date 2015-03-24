@@ -71,7 +71,7 @@ relevantLocations = \case
     SelfJump _ _ i -> IS.singleton $ fromIntegral i
 
 stripLocations :: IS.IntSet -> EExpM e a -> EExpM e a
-stripLocations s = undefined -- foldExpM id id 
+stripLocations s = foldExpM id id (\p a g -> Set p a $ stripLocations s g) undefined undefined undefined
 
 spTrans :: EExpM e a -> EExpM e a
 spTrans = spTr IM.empty (Get SP)

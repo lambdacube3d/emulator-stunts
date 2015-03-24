@@ -201,19 +201,31 @@ use'' k = (^. k) <$> readIORef emptyState
 k ...= v = modifyIORef' emptyState $ k .~ v
 k ..%= v = modifyIORef' emptyState $ k %~ v
 
+{-# INLINE ax #-}
 ax = ff 0
+{-# INLINE bx #-}
 bx = ff 1
+{-# INLINE cx #-}
 cx = ff 2
+{-# INLINE dx #-}
 dx = ff 3
+{-# INLINE si #-}
 si = ff 4
 {-# INLINE di #-}
 di = ff 5
+{-# INLINE cs #-}
 cs = ff 6
+{-# INLINE ss #-}
 ss = ff 7
+{-# INLINE ds #-}
 ds = ff 8
+{-# INLINE es #-}
 es = ff 9
+{-# INLINE sp #-}
 sp = ff 10
+{-# INLINE bp #-}
 bp = ff 11
+{-# INLINE ip #-}
 ip = ff 12
 {-# INLINE flags_ #-}
 flags_ = ff 13
@@ -224,17 +236,25 @@ ff i = (U.unsafeRead regs i, U.unsafeWrite regs i) :: MachinePart'' Word16
 flags :: MachinePart'' Word16
 flags = id *** (. wordToFlags) $ flags_
 
+{-# INLINE al #-}
 al = rLow 0
+{-# INLINE bl #-}
 bl = rLow 2
+{-# INLINE cl #-}
 cl = rLow 4
+{-# INLINE dl #-}
 dl = rLow 6
 
 {-# INLINE rLow #-}
 rLow i = (U.unsafeRead regs' i, U.unsafeWrite regs' i) :: MachinePart'' Word8
 
+{-# INLINE ah #-}
 ah = rHigh 1
+{-# INLINE bh #-}
 bh = rHigh 3
+{-# INLINE ch #-}
 ch = rHigh 5
+{-# INLINE dh #-}
 dh = rHigh 7
 
 {-# INLINE rHigh #-}
