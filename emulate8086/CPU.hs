@@ -46,7 +46,7 @@ type Blocks = IM.IntMap (ExpM Jump')
 --fetchBlock_ :: (Int -> Metadata) -> Word16 -> Word16 -> Maybe Word16 -> Maybe Word16 -> Word16 -> ExpM ()
 fetchBlock_ jumps fetch cs ss es ds ip
     = (1, [(ips, ips +1)], IM.singleton (fromIntegral ip) $
-        fetchBlock' IS.empty jumps fetch
+        fetchBlock' IM.empty jumps fetch
             cs ip ss (maybe (Get Es) C es) (maybe (Get Ds) C ds)
             (Get OF) (Get SF) (Get ZF) (Get PF) (Get CF))
   where
@@ -57,16 +57,22 @@ fetchBlock_ jumps fetch cs ss es ds ip
 type FlagTr = forall x . (Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> ExpM x)
                       -> (Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> ExpM x)
 
+type JoinPoints = IM.IntMap (Exp Word16, Exp Word16, Exp Bool, Exp Bool, Exp Bool, Exp Bool, Exp Bool)
+
 fetchBlock'
-    :: IS.IntSet
+    :: JoinPoints
     -> (Int -> IS.IntSet)
     -> Fetcher
     -> Word16 -> Word16 -> Word16 -> Exp Word16 -> Exp Word16
     -> Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool -> Exp Bool
     -> ExpM Jump'
-fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
+fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case IM.lookup (fromIntegral ip) visited of
 
-    _ | fromIntegral ip `IS.member` visited -> setFlags >> Jump' (Left False) (C cs) (C ip)
+  Just (es', ds', oF', sF', zF', pF', cF') -> do
+    setFlags
+    Jump' (Left False) (C cs) (C ip)
+
+  Nothing -> case inOpcode of
 
     _ | length inOperands > 2 -> error "more than 2 operands are not supported"
 
@@ -163,13 +169,21 @@ fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
     ~(op1: ~(op2:_)) = inOperands
     nextip = ip + fromIntegral mdLength
 
+    uSet' f _ = {- Get f -- -} C False
+
     c m = m >> cc
     cc = ccF oF sF zF pF cF
-    ccF = fetchBlock' visited' jumps fetch cs nextip ss es ds
-    uSet' f _ = {- Get f -- -} C False
     ccClean = ccF (Get OF) (Get SF) (Get ZF) (Get PF) (Get CF)
-    cont' es ds m = m >> fetchBlock' visited' jumps fetch cs nextip ss es ds oF sF zF pF cF
-    visited' = IS.insert (fromIntegral ip) visited
+
+    ccF = fetchBlock_ nextip es ds
+    cont' es ds m = m >> fetchBlock_ nextip es ds oF sF zF pF cF
+    continue :: Word16 -> ExpM Jump'
+    continue nextip = fetchBlock_ nextip es ds oF sF zF pF cF
+
+    fetchBlock_ ip' es' ds' oF' sF' zF' pF' cF'
+        = fetchBlock'
+            (IM.insert (fromIntegral ip) (es, ds, oF, sF, zF, pF, cF) visited)
+            jumps fetch cs ip' ss es' ds' oF' sF' zF' pF' cF'
 
     jump' :: Exp Word16 -> Exp Word16 -> ExpM Jump'
     jump' (C cs') (C nextip) | cs == cs' = continue nextip
@@ -178,9 +192,6 @@ fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
                               , setFlags >> Jump' (Left False) a b
                               )
                       ) a b
-
-    continue :: Word16 -> ExpM Jump'
-    continue nextip = fetchBlock' visited' jumps fetch cs nextip ss es ds oF sF zF pF cF
 
     setFlags = setF oF sF zF pF cF
     setF oF sF zF pF cF = setOF oF >> setSF sF >> setZF zF >> setPF pF >> setCF cF
@@ -466,7 +477,7 @@ fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
         push $ C nextip
         set IF $ C False
         let i = fromIntegral $ 4*v
-        Jump' (Left False) (Get $ Heap16 $ C $ i + 2) (Get $ Heap16 $ C i)
+        Jump' (Left False) (Get $ Heap16 $ C $ i + 2) (Get $ Heap16 $ C i)  -- TODO: Call
 
     modif p f = set p $ f $ Get p
 
