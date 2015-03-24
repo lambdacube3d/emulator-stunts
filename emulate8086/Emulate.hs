@@ -315,6 +315,8 @@ evalEExpM ca = evalExpM
             sp' <- use' sp
             stack ..%= ((sp', ips, flip runReaderT st $ evalExpM cont):)
         liftM2 JumpAddr (evalExp c) (evalExp i)
+    SelfJump _ fallback _ -> evalExpM fallback
+
     Jump' (Left True) c i -> do
         c' <- evalExp c
         i' <- evalExp i

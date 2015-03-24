@@ -4,6 +4,7 @@ module DeBruijn
     ) where
 
 import Data.Word
+import qualified Data.IntSet as IS
 import qualified Data.IntMap.Strict as IM
 import Control.Applicative
 --import Control.Arrow
@@ -40,6 +41,7 @@ convExpM = convM EmptyLayout where
         (\p a g -> Set (convPart lyt p) (conv lyt a) (convM lyt g))
         (\i cs ip -> Jump' ((\(x,y,z) -> (x, IM.map (convM lyt) y, convM lyt z)) <$> i) (conv lyt cs) (conv lyt ip))
         (\m m' ip -> SelfJump (convM lyt m) m' ip)
+        (\ip m -> Loc ip (convM lyt m))
 
     conv :: forall a e . Layout e e -> Exp a -> EExp e a
     conv lyt = foldExp
@@ -64,8 +66,15 @@ lift'' gv = foldExp (\(DB x) -> DB $ lift'' (incV gv) x) (Var . gv) (Get . mapPa
 
 ------------------------------
 
+relevantLocations :: EExpM e a -> IS.IntSet
+relevantLocations = \case
+    SelfJump _ _ i -> IS.singleton $ fromIntegral i
+
+stripLocations :: IS.IntSet -> EExpM e a -> EExpM e a
+stripLocations s = undefined -- foldExpM id id 
+
 spTrans :: EExpM e a -> EExpM e a
-spTrans = spTr (Get SP)
+spTrans = spTr IM.empty (Get SP)
   where
     spTrE :: forall e a . EExp e Word16 -> EExp e a -> EExp e a
     spTrE sp = foldExp (\(DB c) -> DB $ spTrE (lift' sp) c) Var get
@@ -74,23 +83,32 @@ spTrans = spTr (Get SP)
         get SP = sp
         get x = Get x
 
-    spTr :: forall e a . EExp e Word16 -> EExpM e a -> EExpM e a
-    spTr sp = foldExpM (spTrE sp) (\(DBM c) -> DBM $ spTr (lift' sp) c) set jump selfjump
+    spTr :: forall e a . IM.IntMap (EExp e Word16) -> EExp e Word16 -> EExpM e a -> EExpM e a
+    spTr im sp = foldExpM (spTrE sp) (\(DBM c) -> DBM $ spTr (IM.map lift' im) (lift' sp) c) set jump selfjump loc
       where
         set :: Part_ (EExp e) b -> EExp e b -> EExpM e x -> EExpM e x
-        set SP (add_ -> (i, Get SP)) c = spTr (add (C i) sp) c
-        set SP v c = Set SP (spTrE sp v) (spTr (Get SP) c)
-        set p v c = Set p (spTrE sp v) (spTr sp c)
+        set SP (add_ -> (i, Get SP)) c = spTr im (add (C i) sp) c
+        set SP v c = Set SP (spTrE sp v) (spTr im (Get SP) c)
+        set p v c = Set p (spTrE sp v) (spTr im sp c)
 
         jump :: JumpInfo (EExpM e) -> EExp e Word16 -> EExp e Word16 -> EExpM e Jump'
-        jump (Right (x, y, z)) cs ip = Jump' (Right (x, IM.map (spTr sp) y, spTr sp z)) (spTrE sp cs) (spTrE sp ip)
+        jump (Right (x, y, z)) cs ip = Jump' (Right (x, IM.map (spTr im sp) y, spTr im sp z)) (spTrE sp cs) (spTrE sp ip)
         jump (Left r) cs ip = case sp of
             Get SP -> cont
             sp -> Set SP sp cont
           where cont = Jump' (Left r) cs ip
 
         selfjump :: EExpM e () -> EExpM e Jump' -> Word16 -> EExpM e Jump'
-        selfjump _ m ip = m
+        selfjump prep m ip = case compatible (im IM.! fromIntegral ip) sp of
+            Nothing -> m
+            Just prep' -> SelfJump (prep' prep) m ip
+
+        loc :: Word16 -> EExpM e Jump' -> EExpM e Jump'
+        loc ip m = Loc ip $ spTr (IM.insert (fromIntegral ip) sp im) sp m
+
+compatible :: EExp e Word16 -> EExp e Word16 -> Maybe (EExpM e () -> EExpM e ())
+compatible (Get SP) (Get SP) = Just id
+compatible _ _ = Nothing
 
 add_ (Add (C j) x) = (j, x)
 add_ v = (0, v)

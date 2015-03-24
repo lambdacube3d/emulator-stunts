@@ -267,7 +267,7 @@ data ExpM_ (e :: * -> *) (c :: * -> * -> *) a where
 
     Input :: e Word16 -> c Word16 a -> ExpM_ e c a
     Output :: e Word16 -> e Word16 -> ExpM_ e c a -> ExpM_ e c a
-    Loc :: Word16 -> ExpM_ e c a -> ExpM_ e c a     -- location info (ip)
+    Loc :: Word16 -> ExpM_ e c Jump' -> ExpM_ e c Jump'     -- location info (ip)
     Trace :: String -> ExpM_ e c a -> ExpM_ e c a
 
 class {-Applicative (Ex c) => -} CC c where
@@ -303,7 +303,7 @@ instance (CC c, Ex c ~ Exp_ v c') => Monad (ExpM_ (Exp_ v c') c) where
         Call a b i g -> error "Call >>= " --Call a b i $ g >>= f
         Jump' _ _ _ -> error "Jump' >>="
         SelfJump _ _ _ -> error "SelfJump >>="
-        Loc s e -> Loc s $ e >>= f
+        Loc s e -> error "Loc >>="
         Trace s e -> Trace s $ e >>= f
 
 
@@ -334,8 +334,9 @@ foldExpM :: forall e e' c c' a
     -> (forall x b . Part_ e b -> e b -> ExpM_ e c x -> ExpM_ e' c' x)
     -> (JumpInfo (ExpM_ e c) -> e Word16 -> e Word16 -> ExpM_ e' c' Jump')
     -> (ExpM_ e c () -> ExpM_ e' c' Jump' -> Word16 -> ExpM_ e' c' Jump')
+    -> (Word16 -> ExpM_ e c Jump' -> ExpM_ e' c' Jump')
     -> ExpM_ e c a -> ExpM_ e' c' a
-foldExpM q tr set jump selfjump = k where
+foldExpM q tr set jump selfjump loc = k where
     k :: ExpM_ e c x -> ExpM_ e' c' x
     k = \case
         LetM e g -> LetM (q e) (tr g)
@@ -350,7 +351,7 @@ foldExpM q tr set jump selfjump = k where
         Set p a g -> set p a g
         Output a b c -> Output (q a) (q b) (k c)
         Ret x -> Ret (q x)
-        Loc s x -> Loc s (k x)
+        Loc s x -> loc s x
         Trace s x -> Trace s (k x)
 
 ---------------------- HOAS
