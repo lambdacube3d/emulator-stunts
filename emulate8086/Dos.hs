@@ -61,14 +61,18 @@ combine = iso (\(hi,lo) -> fromIntegral hi `shiftL` 8 .|. fromIntegral lo) (\d -
 paragraph :: Word16 -> Int
 paragraph = (`shiftL` 4) . fromIntegral
 
+hiret :: Machine ()
+hiret = do
+    pop >>= (ip ..=)
+    pop >>= (cs ..=)
+    pop >>= (flags ..=)
+
 iret :: Machine ()
 iret = do
-    ip' <- pop
-    cs' <- pop
+    pop >>= (ip ..=)
+    pop >>= (cs ..=)
     flags' <- pop
     interruptF ..= testBit flags' 9
-    cs ..= cs'
-    ip ..= ip'
 
 haltWith = error
 halt = error "CleanHalt"
@@ -156,15 +160,15 @@ imMax m | IM.null m = 0
 origInterrupt :: M.Map (Word16, Word16) (Word8, Machine ())
 origInterrupt = M.fromList
 
-  [ item 0x00 (0xf000,0x1060) $ do
+  [ hitem 0x00 (0xf000,0x1060) $ do
     trace_ "Divison by zero interrupt"
     haltWith $ "int 00"
 
-  , item 0x08 (0xf000,0xfea5) $ do
+  , hitem 0x08 (0xf000,0xfea5) $ do
 --    trace_ "orig timer"
     output' 0x20 0x20
 
-  , item 0x09 (0xf000,0xe987) $ do
+  , hitem 0x09 (0xf000,0xe987) $ do
     trace_ "Orig keyboard interrupt"
     haltWith $ "int 09"
 
@@ -455,7 +459,7 @@ origInterrupt = M.fromList
 
         _    -> haltWith $ "dos function #" ++ showHex' 2 v
 
-  , item 0x24 (0x0118,0x0110) $ do
+  , hitem 0x24 (0x0118,0x0110) $ do
     trace_ "critical error handler interrupt"
     haltWith "int 24"
 
@@ -488,6 +492,7 @@ origInterrupt = M.fromList
   where 
 --    item :: Word8 -> (Word16, Word16) -> Machine () -> ((Word16, Word16), (Word8, Machine ()))
     item a k m = (k, (a, m >> iret))
+    hitem a k m = (k, (a, m >> hiret))
 
     newHandle fn = do
         handle <- max 5 . imMax <$> use'' files
