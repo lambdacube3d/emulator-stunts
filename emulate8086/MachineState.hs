@@ -35,7 +35,6 @@ type Region = (Int, Int)
 type Regions = [Region]
 type MemPiece = ([(Word16, Word16)], Word16)
 
-type UVec = U.IOVector Word8
 type Cache = IM.IntMap CacheEntry
 type Cache2 = IM.IntMap IS.IntSet
 
@@ -44,13 +43,16 @@ data CacheEntry
     | BuiltIn !(Machine ())
     | DontCache !Int
 
-heap'' :: UVec
+heap'' :: U.IOVector Word8
 {-# NOINLINE heap'' #-}
-heap'' = unsafePerformIO $ U.new $ 0xb0000
+heap'' = unsafePerformIO $ U.new 0xb0000
 
 regs :: U.IOVector Word16
+regs = U.unsafeCast regs'
+
+regs' :: U.IOVector Word8
 {-# NOINLINE regs #-}
-regs = unsafePerformIO $ U.new $ 13 + 1
+regs' = unsafePerformIO $ U.new $ 2 * (13 + 1)
 
 type MachinePart'' a = (IO a, a -> IO ())
 
@@ -219,20 +221,20 @@ flags :: MachinePart'' Word16
 flags = id *** (. wordToFlags) $ flags_
 
 al = rLow 0
-bl = rLow 1
-cl = rLow 2
-dl = rLow 3
+bl = rLow 2
+cl = rLow 4
+dl = rLow 6
 
 {-# INLINE rLow #-}
-rLow i = (fromIntegral <$> U.unsafeRead regs i, \v -> U.unsafeRead regs i >>= U.unsafeWrite regs i . (.|. fromIntegral v) . (.&. 0xff00)) :: MachinePart'' Word8
+rLow i = (U.unsafeRead regs' i, U.unsafeWrite regs' i) :: MachinePart'' Word8
 
-ah = rHigh 0
-bh = rHigh 1
-ch = rHigh 2
-dh = rHigh 3
+ah = rHigh 1
+bh = rHigh 3
+ch = rHigh 5
+dh = rHigh 7
 
 {-# INLINE rHigh #-}
-rHigh i = (fromIntegral . (`shiftR` 8) <$> U.unsafeRead regs i, \v -> U.unsafeRead regs i >>= U.unsafeWrite regs i . (.|. fromIntegral v `shiftL` 8) . (.&. 0x00ff)) :: MachinePart'' Word8
+rHigh i = (U.unsafeRead regs' i, U.unsafeWrite regs' i) :: MachinePart'' Word8
 
 dxax, cxdx :: MachinePart'' Word32
 dxax = comb dx ax
@@ -259,7 +261,6 @@ carryF      = flag 0
 {-# INLINE flag #-}
 flag i = ((`testBit` i) <$> r, \b -> r >>= w . if b then (`setBit` i) else (`clearBit` i)) :: MachinePart'' Bool
   where (r, w) = flags_
-
 
 data Info
     = System
@@ -342,7 +343,4 @@ pop = do
     x <- getWordAt System ad
     sp .%= (+ 2)
     return x
-
-pad :: a -> Int -> [a] -> [a]
-pad x i xs = xs ++ replicate (i - length xs) x
 

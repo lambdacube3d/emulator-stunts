@@ -3,7 +3,7 @@ module Helper where
 
 import Numeric
 import Data.Word
-import Data.Bits hiding (bit)
+import Data.Bits
 
 instance Num Bool where
     (+) = xor

@@ -387,7 +387,7 @@ adjustCache = do
 
 
 loadCache getInst = do
-    trace_ "Loading cache"
+    trace_ "Loading cache..."
     (cf, jumps) <- readCache
 --    when (not $ unique [segAddr cs $ fromIntegral ip | (fromIntegral -> cs, ips) <- IM.toList cf, ip <- IS.toList ips]) $ error "corrupt cache"
     let fromIntegral' :: Int -> Maybe Word16
@@ -403,7 +403,7 @@ loadCache getInst = do
         return cf'
     cache .%= IM.union (IM.fromList cf')
     cache2 .%= IM.unionWith IS.union jumps
-    trace_ "cache loaded"
+    trace_' "ok"
 
 type CacheFile = (IM.IntMap (Int,Int,Int,Int), Cache2)
 

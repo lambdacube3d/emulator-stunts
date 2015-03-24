@@ -36,10 +36,7 @@ extend = convert
 signed :: (Integral a, Num (Signed a)) => Exp_ v c a -> Exp_ v c (Signed a)
 signed = convert
 
-
-disasmConfig = Config Intel Mode16 SyntaxIntel 0
-
-disassemble = head . disassembleMetadata disasmConfig
+disassemble = head . disassembleMetadata (Config Intel Mode16 SyntaxIntel 0)
 
 type Fetcher = Int -> Metadata
 
@@ -296,13 +293,11 @@ fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
         twoOp :: Bool -> (forall b . (Integral b, Bits b) => Exp b -> Exp b -> Exp b) -> ExpM Jump'
         twoOp store op = twoOp_ op (if store then setTr op1 else const $ return ()) op1v op2v
 
-        twoOp_ :: {-AsSigned a
-            => -}(forall a . (Integral a, Bits a) => Exp a -> Exp a -> Exp a)
-            -> (Exp a -> ExpM ()) -> Exp a -> Exp a -> ExpM Jump'
+        twoOp_ :: (forall a . (Integral a, Bits a) => Exp a -> Exp a -> Exp a)
+               -> (Exp a -> ExpM ()) -> Exp a -> Exp a -> ExpM Jump'
         twoOp_ op store a b = twoOp__ op store a b ccF oF sF zF pF cF
 
-        twoOp__ :: {-AsSigned a
-                => -}(forall a . (Integral a, Bits a) => Exp a -> Exp a -> Exp a)
+        twoOp__ :: (forall a . (Integral a, Bits a) => Exp a -> Exp a -> Exp a)
                 -> (Exp a -> ExpM ()) -> Exp a -> Exp a
                 -> FlagTr
         twoOp__ op store op1 b cont oF sF zF pF cF =
@@ -323,7 +318,7 @@ fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
         [RepNE]
             | inOpcode `elem` [Imovsb, Imovsw, Ilodsb, Ilodsw, Istosb, Istosw] -> cyc $ Not $ Get ZF -- cyc $ C True    -- ???
             | inOpcode `elem` [Icmpsb, Icmpsw, Iscasb, Iscasw] -> cyc $ Not $ Get ZF
-                
+
         [] -> body ccF oF sF zF pF cF
       where
         cyc cond = do
@@ -473,7 +468,4 @@ fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
         Jump' Nothing (Get $ Heap16 $ C $ i + 2) (Get $ Heap16 $ C i)
 
     modif p f = set p $ f $ Get p
-
-
-
 

@@ -135,19 +135,17 @@ output' v x = case v of
         f <- use'' frequency
         source <- use'' soundSource
         when (fromIntegral f >= 256) $ pitch source $= 2711 / fromIntegral f
-    0x43 -> do
-        trace_ $ "Set timer control " ++ showHex' 2 x
+    0x43 -> do      -- Set timer control
         case x of
-            0x36  -> trace_' "set timer frequency lsb+msb, square wave"
-            0xb6  -> trace_' "set speaker frequency lsb+msb, square wave"
+            0x36  -> trace_ "Set timer frequency, square wave"
+            0xb6  -> trace_ "Set speaker frequency, square wave"
     0x61 -> do
         x' <- use'' speaker
-        source <- use'' soundSource
         speaker ...= fromIntegral x
         when (x .&. 0xfc /= 0x30) $ trace_ $ "speaker <- " ++ showHex' 2 x
-        do
-            when (testBit x 0 /= testBit x' 0) $ sourceGain source $= if testBit x 0 then 0.1 else 0
-            when (testBit x 1 /= testBit x' 1) $ (if testBit x 1 then play else stop) [source]
+        source <- use'' soundSource
+        when (testBit x 0 /= testBit x' 0) $ sourceGain source $= if testBit x 0 then 0.1 else 0
+        when (testBit x 1 /= testBit x' 1) $ (if testBit x 1 then play else stop) [source]
     _ -> haltWith $ "output #" ++ showHex' 4 v ++ " 0x" ++ showHex' 4 x
 
 --------------------------------------------------------
@@ -170,8 +168,7 @@ origInterrupt = M.fromList
     trace_ "Orig keyboard interrupt"
     haltWith $ "int 09"
 
-  , item 0x10 (0xf000,0x1320) $ do
-    trace_ "Video Services"
+  , item 0x10 (0xf000,0x1320) $ do      -- Video Services
     v <- use' ah
     case v of
         0x00 -> do
@@ -308,10 +305,10 @@ origInterrupt = M.fromList
             handle <- fromIntegral <$> use' bx
             (fn, seek) <- (IM.! handle) <$> use'' files
             num <- fromIntegral <$> use' cx
-            trace_ $ "Read " ++ showHandle handle ++ " " ++ showBytes num
             loc <- dxAddr
             s <- BS.take num . BS.drop seek <$> BS.readFile fn
             let len = BS.length s
+            trace_ $ "Read " ++ showHandle handle ++ " " ++ showBytes len
             files ..%= flip IM.adjust handle (\(fn, p) -> (fn, p+len))
             setBytesAt loc $ BS.unpack s
             ax ..= "length" @: fromIntegral len
@@ -384,7 +381,7 @@ origInterrupt = M.fromList
 
         0x4a -> do
             new_requested_block_size_in_paragraphs <- use' bx
-            trace_ $ "Modify allocated memory blocks to " ++ showBlocks new_requested_block_size_in_paragraphs
+            trace_ $ "Modify allocated memory to " ++ showBlocks new_requested_block_size_in_paragraphs
             segment_of_the_block <- use' es      -- (MCB + 1para)
             h <- use'' heap
             case modifyAllocated segment_of_the_block new_requested_block_size_in_paragraphs h of
@@ -489,7 +486,7 @@ origInterrupt = M.fromList
         _    -> haltWith $ "Int 33h, #" ++ showHex' 2 v
   ]
   where 
-    item :: Word8 -> (Word16, Word16) -> Machine () -> ((Word16, Word16), (Word8, Machine ()))
+--    item :: Word8 -> (Word16, Word16) -> Machine () -> ((Word16, Word16), (Word8, Machine ()))
     item a k m = (k, (a, m >> iret))
 
     newHandle fn = do
