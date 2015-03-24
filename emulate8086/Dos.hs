@@ -30,7 +30,7 @@ exePath = "../original"
 ---------------------------------------------- memory allocation
 
 allocateMem :: Word16 -> MemPiece -> (Word16, MemPiece)
-allocateMem req' (alloc, end) = (r + 1, (alloc ++ [(r, r + req' + 1)], end))
+allocateMem req' (alloc, end) = (r + 1, (alloc ++ [(r, r + 1 + req')], end))
   where
     r = snd $ last alloc
 
@@ -160,19 +160,19 @@ imMax m | IM.null m = 0
 origInterrupt :: M.Map (Word16, Word16) (Word8, Machine ())
 origInterrupt = M.fromList
 
-  [ hitem 0x00 (0xf000,0x1060) $ do
+  [ hitem 0x00 (0xf000, 0x1060) $ do
     trace_ "Divison by zero interrupt"
     haltWith $ "int 00"
 
-  , hitem 0x08 (0xf000,0xfea5) $ do
+  , hitem 0x08 (0xf000, 0xfea5) $ do
 --    trace_ "orig timer"
     output' 0x20 0x20
 
-  , hitem 0x09 (0xf000,0xe987) $ do
+  , hitem 0x09 (0xf000, 0xe987) $ do
     trace_ "Orig keyboard interrupt"
     haltWith $ "int 09"
 
-  , item 0x10 (0xf000,0x1320) $ do      -- Video Services
+  , item 0x10 (0xf000, 0x1320) $ do      -- Video Services
     v <- use' ah
     case v of
         0x00 -> do
@@ -217,7 +217,7 @@ origInterrupt = M.fromList
 
         v  -> haltWith $ "interrupt #10,#" ++ showHex' 2 v
 
-  , item 0x15 (0xf000,0x11e0) $ do     -- Misc System Services
+  , item 0x15 (0xf000, 0x11e0) $ do     -- Misc System Services
     v <- use' ah
     case v of
       0xc2 -> do    -- Pointing device BIOS interface
@@ -230,7 +230,7 @@ origInterrupt = M.fromList
             returnOK
       v  -> haltWith $ "interrupt #15,#" ++ showHex' 2 v
 
-  , item 0x16 (0xf000,0x1200) $ do  -- Keyboard Services
+  , item 0x16 (0xf000, 0x1200) $ do  -- Keyboard Services
     v <- use' ah
     case v of
         0x00 -> do
@@ -246,7 +246,7 @@ origInterrupt = M.fromList
     trace_ "interrupt halt"
     halt
 
-  , item 0x21 (0xf000,0x14c0) $ do  -- DOS rutine
+  , item 0x21 (0xf000, 0x14c0) $ do  -- DOS rutine
     v <- use' ah
     case v of
         0x00 -> do
@@ -288,6 +288,7 @@ origInterrupt = M.fromList
               else do
                 writeFile fn ""
                 newHandle fn
+
         0x3d -> do
             trace_ "Open"
             open_access_mode <- use' al
@@ -463,7 +464,7 @@ origInterrupt = M.fromList
     trace_ "critical error handler interrupt"
     haltWith "int 24"
 
-  , item 0x33 (0xc7ff,0x0010) $ do     -- Mouse Services
+  , item 0x33 (0xc7ff, 0x0010) $ do     -- Mouse Services
     v <- use' ax
     case v of
         0x00 -> do
@@ -614,11 +615,11 @@ loadExe loadSegment gameExe = do
     dx ..=  pspSegment -- why?
     bp ..=  0x091c -- why?
     si ..=  0x0012 -- why?
-    di ..=  0x1f40 -- why?
+    di ..=  envvarsSegment `shiftL` 4
     labels ...= mempty
 
-    setWordAt System (0x410) $ "equipment word" @: 0xd426 --- 0x4463   --- ???
-    setByteAt System (0x417) $ "keyboard shift flag 1" @: 0x20
+    setWordAt System 0x410 $ "equipment word" @: 0xd426 --- 0x4463   --- ???
+    setByteAt System 0x417 $ "keyboard shift flag 1" @: 0x20
 
     forM_ [(fromIntegral a, b, m) | (b, (a, m)) <- M.toList origInterrupt] $ \(i, (hi, lo), m) -> do
         setWordAt System (4*i) $ "interrupt lo" @: lo

@@ -182,7 +182,7 @@ evalPart__ = \case
     Edsl.Flags -> flags
     DXAX -> dxax
 
-
+-------------
 
 data Env :: List * -> * where
   Empty :: Env Nil
@@ -193,8 +193,6 @@ prj VarZ = getPushVal
 prj (VarS ix) = prj ix . getPushEnv
 
 type Machine' e = ReaderT (Env e) IO
-
----------------------------------
 
 iterateM 0 _ a = return a
 iterateM n f a = f a >>= iterateM (n-1) f
@@ -310,10 +308,31 @@ evalEExpM ca = evalExpM
 
     Trace s c -> lift (trace_ s) >> evalExpM c
 
-    Call c i _ _ -> liftM2 JumpAddr (evalExp c) (evalExp i)
-    Jump' Nothing (C c) (C i) -> return $ JumpAddr c i
-    Jump' Nothing c i -> liftM2 JumpAddr (evalExp c) (evalExp i)
-    Jump' (Just ((cs, ip), table, fallback)) cs' ip' -> let
+    Call c i ips cont -> do
+        st <- ask
+        lift $ do
+            sp' <- use' sp
+            stack ..%= ((sp', ips, flip runReaderT st $ evalExpM cont):)
+        liftM2 JumpAddr (evalExp c) (evalExp i)
+    Jump' (Left True) c i -> do
+        c' <- evalExp c
+        i' <- evalExp i
+        s <- lift $ use'' stack
+        sp' <- lift $ use' sp
+        let find [] = ([], Nothing)
+            find xs'@((sp'', ips, m): xs)
+                | sp' < sp'' = (xs', Nothing)
+                | sp' > sp'' = find xs
+                | ips == segAddr c' i' = (xs, Just m)
+                | otherwise = (xs', Nothing)
+            (s', r) = find s
+        lift $ stack ...= s'
+        case r of
+            Just m -> lift m
+            Nothing -> return $ JumpAddr c' i'
+    Jump' (Left False) (C c) (C i) -> return $ JumpAddr c i
+    Jump' (Left False) c i -> liftM2 JumpAddr (evalExp c) (evalExp i)
+    Jump' (Right ((cs, ip), table, fallback)) cs' ip' -> let
         table' = IM.map evalExpM table
         end = evalExpM fallback
         in do

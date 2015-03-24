@@ -66,7 +66,7 @@ fetchBlock'
     -> ExpM Jump'
 fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
 
-    _ | fromIntegral ip `IS.member` visited -> setFlags >> Jump' Nothing (C cs) (C ip)
+    _ | fromIntegral ip `IS.member` visited -> setFlags >> Jump' (Left False) (C cs) (C ip)
 
     _ | length inOperands > 2 -> error "more than 2 operands are not supported"
 
@@ -90,7 +90,7 @@ fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
         cs' <- if inOpcode == Iret then return $ C cs else pop
         if inOpcode == Iiretw then pop' $ set Flags else setFlags
         when (length inOperands == 1) $ modif SP $ add (getWordOperand op1)
-        Jump' Nothing cs' ip'
+        Jump' (Left True) cs' ip'
 
     Iint  -> case getByteOperand op1 of C n -> interrupt n
     Iinto -> ifM oF (interrupt 4) cc
@@ -173,9 +173,10 @@ fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
 
     jump' :: Exp Word16 -> Exp Word16 -> ExpM Jump'
     jump' (C cs') (C nextip) | cs == cs' = continue nextip
-    jump' a b = Jump' ( Just ((cs, ip)
-                      , IM.fromSet (continue . fromIntegral) $ jumps $ segAddr cs ip
-                      , setFlags >> Jump' Nothing a b)
+    jump' a b = Jump' ( Right ( (cs, ip)
+                              , IM.fromSet (continue . fromIntegral) $ jumps $ segAddr cs ip
+                              , setFlags >> Jump' (Left False) a b
+                              )
                       ) a b
 
     continue :: Word16 -> ExpM Jump'
@@ -465,7 +466,7 @@ fetchBlock' visited jumps fetch cs ip ss es ds oF sF zF pF cF = case inOpcode of
         push $ C nextip
         set IF $ C False
         let i = fromIntegral $ 4*v
-        Jump' Nothing (Get $ Heap16 $ C $ i + 2) (Get $ Heap16 $ C i)
+        Jump' (Left False) (Get $ Heap16 $ C $ i + 2) (Get $ Heap16 $ C i)
 
     modif p f = set p $ f $ Get p
 

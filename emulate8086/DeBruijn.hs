@@ -82,11 +82,11 @@ spTrans = spTr (Get SP)
         set p v c = Set p (spTrE sp v) (spTr sp c)
 
         jump :: JumpInfo (EExpM e) -> EExp e Word16 -> EExp e Word16 -> EExpM e Jump'
-        jump (Just (x, y, z)) cs ip = Jump' (Just (x, IM.map (spTr sp) y, spTr sp z)) (spTrE sp cs) (spTrE sp ip)
-        jump Nothing cs ip = case sp of
+        jump (Right (x, y, z)) cs ip = Jump' (Right (x, IM.map (spTr sp) y, spTr sp z)) (spTrE sp cs) (spTrE sp ip)
+        jump (Left r) cs ip = case sp of
             Get SP -> cont
             sp -> Set SP sp cont
-          where cont = Jump' Nothing cs ip
+          where cont = Jump' (Left r) cs ip
 
 add_ (Add (C j) x) = (j, x)
 add_ v = (0, v)

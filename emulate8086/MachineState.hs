@@ -27,7 +27,6 @@ import System.IO.Unsafe
 data Request
     = AskKeyInterrupt Word16
     | AskTimerInterrupt Int
---    | PrintFreqTable (MVar ())
 
 type Flags = Word16
 
@@ -106,6 +105,7 @@ data MachineState = MachineState
     , _speaker          :: !Word8     -- 0x61 port
 
     , _heap     :: !MemPiece     -- heap layout
+    , _stack    :: [(Word16, Int, Machine Jump')]
 
     , _retrace  :: ![Word16]
     , _intMask  :: !Word8
@@ -128,12 +128,13 @@ wordToFlags w = fromIntegral $ (w .&. 0x0ed3) .|. 0x2
 emptyState = unsafePerformIO $ do
   ivar <- newMVar []
   newIORef $ MachineState
-    { _heap     = ([],0xa000)
-    , _labels   = IM.empty
-    , _files    = IM.empty
-    , _dta      = 0
-    , _retrace  = cycle [1,9,0,8] --     [1,0,0,0,0,0,0,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0]
-    , _intMask  = 0xf8
+    { _heap         = ([],0xa000)
+    , _stack        = []
+    , _labels       = IM.empty
+    , _files        = IM.empty
+    , _dta          = 0
+    , _retrace      = cycle [1,9,0,8] --     [1,0,0,0,0,0,0,1,1,0,0,0,0,0,0,1,0,0,0,0,0,0]
+    , _intMask      = 0xf8
     , _verboseLevel = 2
     , _showCache    = True
     , _instPerSec   = 100

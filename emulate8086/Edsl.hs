@@ -219,7 +219,7 @@ type EExp e = Exp_ (Var e) (DB e)
 --------------------------------------------------------------------------------
 
 data Jump' = JumpAddr Word16 Word16
-type JumpInfo e = Maybe ((Word16, Word16), IM.IntMap (e Jump'), e Jump')
+type JumpInfo e = Either Bool ((Word16, Word16), IM.IntMap (e Jump'), e Jump')
 
 data ExpM_ (e :: * -> *) (c :: * -> * -> *) a where
     Ret :: e a -> ExpM_ e c a
