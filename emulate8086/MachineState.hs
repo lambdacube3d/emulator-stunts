@@ -88,6 +88,10 @@ _cache2    :: IORef Cache2
 {-# NOINLINE _cache2 #-}
 _cache2 = unsafePerformIO $ newIORef IM.empty
 
+{-# NOINLINE changeState #-}
+changeState :: MVar (IO ())
+changeState = unsafePerformIO $ newMVar $ return ()
+
 data MachineState = MachineState
     { _verboseLevel     :: !Int
     , _showCache        :: !Bool
@@ -106,7 +110,6 @@ data MachineState = MachineState
 
     , _heap     :: !MemPiece     -- heap layout
     , _stack    :: [(Word16, Int, Machine Jump')]
-
     , _retrace  :: ![Word16]
     , _intMask  :: !Word8
 

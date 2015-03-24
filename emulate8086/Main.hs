@@ -26,7 +26,6 @@ main = withProgNameAndArgs runALUT $ \_ args -> do
     buffer source $= Just buff
 
     hSetBuffering stdout NoBuffering
-    changeState <- newMVar $ return ()
     let addChange m = modifyMVar_ changeState $ \n -> return $ n >> m
 --    l <- getLabels
     tid <- myThreadId
@@ -38,7 +37,7 @@ main = withProgNameAndArgs runALUT $ \_ args -> do
         getInst <- loadExe loadSegment game
         loadCache getInst
         _ <- forkIO timerThread
-        let cyc = mkStep >>= checkInt changeState cycles cyc
+        let cyc = mkStep >>= checkInt cycles cyc
         cyc
         killThread tid
     drawWithFrameBuffer addChange (\r -> modifyMVar_ ir $ return . (++[r])) $ return ()
