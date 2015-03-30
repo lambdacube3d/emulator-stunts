@@ -61,7 +61,7 @@ type JoinPoints = IM.IntMap (Exp Word16, Exp Word16, Exp Bool, Exp Bool, Exp Boo
 
 solveFlag :: Part a -> Exp a -> Exp a -> Maybe (ExpM ())
 solveFlag f (Get f') (Get f'') | f == f' && f == f'' = Just $ return ()
-solveFlag f x (Get f'') | f == f'' = Just $ set f x
+--solveFlag f x (Get f'') | f == f'' = Just $ set f x
 solveFlag _ _ _ = Nothing
 solveReg = solveFlag
 
