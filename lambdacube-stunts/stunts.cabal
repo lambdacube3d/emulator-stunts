@@ -29,7 +29,6 @@ License-File:  LICENSE
 Stability:     experimental
 Build-Type:    Simple
 Extra-Source-Files:
-  README
   Stunts/Loader.hs
   Stunts/Unpack.hs
   BulletUtil.hs
@@ -67,7 +66,7 @@ Executable stunts
                 , bytestring
                 , bytestring-trie
                 , zlib
-                , binary < 7.1
+                , binary
                 , mmap
                 , filepath
                 , directory
@@ -77,7 +76,7 @@ Executable stunts
 
                 , elerea
                 , OpenGLRaw
-                , GLFW-b == 0.1.0.5
+                , GLFW-b
                 , bullet
                 , JuicyPixels
                 , FontyFruity
