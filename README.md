@@ -14,16 +14,3 @@ Remake of Stunts 4D Sports Driving in Haskell
    *These libraries required for OpenGL development.*
 
 
-#### Compile & Run:
-
-To compile you will need [Haskell Stack](https://docs.haskellstack.org/en/stable/README/).
-
-```
-stack setup
-stack build
-
-stack exec -- lambdacube-hello
-stack exec -- lambdacube-shadowmapping
-stack exec -- lambdacube-cubemap
-stack exec -- lambdacube-convolutionfilter
-```
