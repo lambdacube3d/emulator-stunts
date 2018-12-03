@@ -1,6 +1,6 @@
 # Stunts Emulator
 
-Emulated version of Stunts 4D Sports Driving in Haskell
+A revival of the classic game Stunts 4D Driving with 8086 CPU and DOS emulation in Haskell
 
 ### System Requirements
 - OS: Windows/Linux/OSX
