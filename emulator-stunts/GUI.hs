@@ -11,7 +11,7 @@ import qualified Data.Vector.Storable.Mutable as U
 import Control.Monad as Prelude
 import Control.Lens
 import Control.Concurrent
-import Graphics.Rendering.OpenGL.Raw.Core32
+import Graphics.GL.Core32
 import Graphics.UI.GLFW as GLFW
 import Foreign
 
@@ -145,8 +145,8 @@ drawWithFrameBuffer changeSt interrupt draw = do
                             drawPix (x - j) y
                             drawPix x (y + j)
                             drawPix x (y - j)
-                U.unsafeWith vec $ glTexSubImage2D gl_TEXTURE_2D 0 0 0 320 200 gl_RGBA gl_UNSIGNED_INT_8_8_8_8
-                glBlitFramebuffer 0 200 320 0 0 0 (fromIntegral winW) (fromIntegral winH) gl_COLOR_BUFFER_BIT gl_NEAREST
+                U.unsafeWith vec $ glTexSubImage2D GL_TEXTURE_2D 0 0 0 320 200 GL_RGBA GL_UNSIGNED_INT_8_8_8_8
+                glBlitFramebuffer 0 200 320 0 0 0 (fromIntegral winW) (fromIntegral winH) GL_COLOR_BUFFER_BIT GL_NEAREST
                 GLFW.swapBuffers window
                 post
                 GLFW.pollEvents
@@ -165,19 +165,19 @@ onScreen str = putStrLn str
 
 mkBackBuffer = do
   fbo <- alloca $! \pbo -> glGenFramebuffers 1 pbo >> peek pbo
-  glBindFramebuffer gl_DRAW_FRAMEBUFFER fbo
+  glBindFramebuffer GL_DRAW_FRAMEBUFFER fbo
   tex <- alloca $! \pto -> glGenTextures 1 pto >> peek pto
-  glBindTexture gl_TEXTURE_2D tex
-  glTexParameteri gl_TEXTURE_2D gl_TEXTURE_MAG_FILTER $ fromIntegral gl_NEAREST
-  glTexParameteri gl_TEXTURE_2D gl_TEXTURE_MIN_FILTER $ fromIntegral gl_NEAREST
-  glTexImage2D gl_TEXTURE_2D 0 (fromIntegral gl_RGBA) 320 200 0 (fromIntegral gl_RGBA) gl_UNSIGNED_BYTE nullPtr
-  glFramebufferTexture2D gl_DRAW_FRAMEBUFFER gl_COLOR_ATTACHMENT0 gl_TEXTURE_2D tex 0
-  status <- glCheckFramebufferStatus gl_FRAMEBUFFER
-  if (status /= gl_FRAMEBUFFER_COMPLETE)
+  glBindTexture GL_TEXTURE_2D tex
+  glTexParameteri GL_TEXTURE_2D GL_TEXTURE_MAG_FILTER $ fromIntegral GL_NEAREST
+  glTexParameteri GL_TEXTURE_2D GL_TEXTURE_MIN_FILTER $ fromIntegral GL_NEAREST
+  glTexImage2D GL_TEXTURE_2D 0 (fromIntegral GL_RGBA) 320 200 0 (fromIntegral GL_RGBA) GL_UNSIGNED_BYTE nullPtr
+  glFramebufferTexture2D GL_DRAW_FRAMEBUFFER GL_COLOR_ATTACHMENT0 GL_TEXTURE_2D tex 0
+  status <- glCheckFramebufferStatus GL_FRAMEBUFFER
+  if (status /= GL_FRAMEBUFFER_COMPLETE)
     then do
       putStrLn $ "incomplete framebuffer: " ++ show status
     else do
-      glBindFramebuffer gl_READ_FRAMEBUFFER fbo
-      glBindFramebuffer gl_DRAW_FRAMEBUFFER 0
+      glBindFramebuffer GL_READ_FRAMEBUFFER fbo
+      glBindFramebuffer GL_DRAW_FRAMEBUFFER 0
   return (tex,fbo)
 
