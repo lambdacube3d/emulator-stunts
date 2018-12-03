@@ -8,7 +8,7 @@ Emulated version of Stunts 4D Sports Driving in Haskell
 
 ## Setup
 
-#### On **Linux** install the following libraries.
+#### 1. On **Linux** install the following libraries.
    i.e. on Ubuntu:
    ```
    sudo apt install libgl1-mesa-dev libxi-dev libxcursor-dev libxinerama-dev libxrandr-dev zlib1g-dev libpulse-dev libalut-dev libopenal-dev
@@ -17,13 +17,13 @@ Emulated version of Stunts 4D Sports Driving in Haskell
 
    *These libraries required for OpenGL development and OpenAL audio library.*
 
-#### Get restunts project
+#### 2. Get restunts project
 
   ```
   svn co svn://anders-e.com/restunts/trunk/restunts
   ```
 
-#### Compile & Run
+#### 3. Compile & Run
 
 To compile you will need [Haskell Stack](https://docs.haskellstack.org/en/stable/README/).
 
