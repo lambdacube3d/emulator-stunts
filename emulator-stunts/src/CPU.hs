@@ -1,6 +1,6 @@
 module CPU where
 
-import Data.List
+import Data.List hiding (iterate')
 import Data.Maybe
 import Data.Int
 import Data.Word

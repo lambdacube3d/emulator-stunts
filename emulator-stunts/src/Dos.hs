@@ -25,7 +25,7 @@ import Prelude
 import Helper
 import MachineState
 
-exePath = "../original"
+exePath = "restunts/stunts"
 
 ---------------------------------------------- memory allocation
 
