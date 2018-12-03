@@ -32,3 +32,5 @@ stack setup
 stack build
 stack exec stuntsemulator
 ```
+
+![Haskell emulated stunts](https://raw.githubusercontent.com/csabahruska/emulator-stunts/master/emulator-stunts.jpg)
