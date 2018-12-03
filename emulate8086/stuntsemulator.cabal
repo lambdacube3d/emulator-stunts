@@ -11,11 +11,11 @@ License-File:  LICENSE
 Stability:     experimental
 Build-Type:    Simple
 Extra-Source-Files:
-  src/Utils/Compare.hs
-  src/Utils/Parse.hs
+  Utils/Compare.hs
+  Utils/Parse.hs
 
 Executable stuntsemulator
-  HS-Source-Dirs: src
+  HS-Source-Dirs: .
   other-modules:
     CPU
     DeBruijn
