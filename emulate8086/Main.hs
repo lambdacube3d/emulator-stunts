@@ -10,7 +10,7 @@ import MachineState
 
 --------------------------------------------------------------------------------
 
-gameFile = "../original/game.exe"
+gameFile = "restunts/stunts/game.exe"
 loadSegment = 0x20e
 
 main = withProgNameAndArgs runALUT $ \_ args -> do

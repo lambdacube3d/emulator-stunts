@@ -11,17 +11,20 @@ License-File:  LICENSE
 Stability:     experimental
 Build-Type:    Simple
 Extra-Source-Files:
-  Helper.hs
-  Edsl.hs
-  DeBruijn.hs
-  CPU.hs
-  MachineState.hs
-  Emulate.hs
-  Dos.hs
-  GUI.hs
+  src/Utils/Compare.hs
+  src/Utils/Parse.hs
 
 Executable stuntsemulator
-  HS-Source-Dirs: .
+  HS-Source-Dirs: src
+  other-modules:
+    CPU
+    DeBruijn
+    Dos
+    Edsl
+    Emulate
+    GUI
+    Helper
+    MachineState
   Main-IS:        Main.hs
   GHC-Options:  -Wall
                 -fno-warn-type-defaults
