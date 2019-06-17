@@ -2,7 +2,7 @@ resolver: lts-12.21
 
 packages:
 - 'emulate8086'
-- location:
-    git: https://github.com/sgraf812/hdis86.git
-    commit: 98c0aa1647a8dce6c35419e51d31dc5e3583aa25
-  extra-dep: true
+
+extra-deps:
+- github: sgraf812/hdis86
+  commit: 98c0aa1647a8dce6c35419e51d31dc5e3583aa25
